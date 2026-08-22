@@ -1,0 +1,5 @@
+.venv/
+bot.db
+seen_messages.json
+__pycache__/
+*.pyc
