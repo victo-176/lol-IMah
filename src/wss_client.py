@@ -196,12 +196,12 @@ class WSSClient:
             receive_timeout=30.0,
             timeout=aiohttp.ClientTimeout(total=15, sock_connect=10),
         ) as ws:
-            # Send Socket.IO connect packet with auth
+            # Send Socket.IO CONNECT packet (type 40 = Engine.IO message + Socket.IO connect)
             connect_payload = json.dumps({
                 "token": settings.ivasms_auth_token,
                 "user": settings.ivasms_user_id,
             })
-            await ws.send_str(f"{SIO_PACKET_MESSAGE}42{connect_payload}")
+            await ws.send_str(f"{SIO_PACKET_MESSAGE}0{connect_payload}")
 
             self._connected = True
             self._connect_time = time.time()
