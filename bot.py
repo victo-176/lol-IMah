@@ -70,7 +70,17 @@ EMOJI_FILE = "emoji.txt"
 PREMIUM_EMOJI_IDS = {
     "whatsapp": "5233354831984353090",
     "togo": "5294097669688415562",
-    # Add more if needed
+    "phone": "5967591100532134862",   # telefon in emoji.txt
+    "flash": "5424972470023104089",   # fire emoji (flash icon)
+    "hourglass": "5375338737028841420",  # refresh
+    "admin": "5931415565955503486",   # bot_ai
+    "announce_bw": "5771695636411847302",
+    "data": "5877485980901971030",
+    "verified": "5805532930662996322",
+    "wallet": "5769403330761593044",
+    "music": "5891249688933305846",
+    "envelope": "5967280668885913944",
+    "key": "6005570495603282482",
 }
 
 def load_premium_emojis(path=EMOJI_FILE):
@@ -80,11 +90,17 @@ def load_premium_emojis(path=EMOJI_FILE):
             content = f.read()
     except Exception:
         return icons, flags
+    # Pattern 1: "key": "id" (quoted entries like app icons)
     for key, val in re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"(\d{15,})"', content):
         if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
             flags[key.split('_')[0]] = val
         else:
             icons[key.lower()] = val
+    # Pattern 2: KEY: "id" (unquoted entries like country flags)
+    for key, val in re.findall(r'^\s*([A-Z]{2}(?:_2)?)\s*:\s*"(\d{15,})"', content, re.MULTILINE):
+        if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
+            flags[key.split('_')[0]] = val
+    # Pattern 3: id - name (numbered list entries)
     for val, key in re.findall(r'(\d{15,})\s+-\s+([A-Za-z0-9_]+)', content):
         icons[key.lower()] = val
     return icons, flags
@@ -100,31 +116,40 @@ def premium_icon(name):
         return PREMIUM_EMOJI_IDS[n.lower()]
     return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
 
-_PE_MAP = {
-    "star": "⭐", "wave": "👋", "phone": "📱", "stats": "📊",
-    "lock": "🔒", "top": "🏆", "chart_up": "📈", "headphones": "🎧",
-    "people": "👥", "card": "💳", "record": "🎙️", "flash": "⚡",
-    "chat": "💬", "checkmark": "✅", "cross": "❌", "bell": "🔔",
-    "pin": "📍", "dollar": "💲", "fire": "🔥", "bookmark": "🔖",
-    "letter": "✉️", "paperclip": "📎", "settings": "⚙️", "speaker": "📢",
-    "download": "⬇️", "calendar": "📅", "idea": "💡", "free": "🆓",
-    "pencil": "✏️", "trash": "🗑️", "back": "↩️", "plus": "➕",
-    "search": "🔍", "refresh": "🔄", "new_badge": "🆕", "soon": "🔜",
-    "location": "📍", "lock": "🔒", "toggle": "🔀", "admin": "🛡️",
-    "hourglass": "⏳", "support": "🆘", "announce_bw": "📢",
-    "data": "📊", "verified": "✅", "wallet": "💰", "music": "🎵",
-    "envelope": "✉️", "people": "👥", "key": "🔑",
-}
+# Premium custom emoji marker — will be auto-replaced when sending messages
+_PREMIUM_TAG = "\U000e0001"  # Private Use Area codepoint, invisible in text
+
+# All premium emoji IDs from emoji.txt, indexed by icon name
+_PREMIUM_IDS = {}
+for _k, _v in PREMIUM_ICONS.items():
+    _PREMIUM_IDS[_k] = _v
+for _k, _v in PREMIUM_FLAGS.items():
+    _PREMIUM_IDS[_k.lower()] = _v
+# Hardcoded extras
+_PREMIUM_IDS.update(PREMIUM_EMOJI_IDS)
 
 def pe(name, fallback="•", emoji_id=None):
-    """Return premium Unicode emoji with fallback."""
+    """Return premium custom emoji tag or fallback.
+
+    When the name maps to a premium emoji ID from emoji.txt,
+    returns a marker tag that auto-replaces into a real premium
+    custom emoji when sent via bot.send_message.
+    Falls back to a plain Unicode emoji if no premium ID exists.
+    """
     n = str(name).strip() if name else ""
-    if n.lower() in _PE_MAP:
-        return _PE_MAP[n.lower()]
-    eid = emoji_id or premium_icon(n)
+    eid = emoji_id or premium_icon(n) or _PREMIUM_IDS.get(n.lower())
     if eid:
-        return _PE_MAP.get(n.lower(), fallback)
-    return fallback
+        return f"{_PREMIUM_TAG}{eid}{_PREMIUM_TAG}{fallback}{_PREMIUM_TAG}"
+    # Fallback to common Unicode emoji
+    _fb = {"star": "⭐", "wave": "👋", "phone": "📱", "stats": "📊",
+           "lock": "🔒", "top": "🏆", "chart_up": "📈", "headphones": "🎧",
+           "people": "👥", "card": "💳", "record": "🎙️", "flash": "⚡",
+           "chat": "💬", "checkmark": "✅", "cross": "❌", "bell": "🔔",
+           "pin": "📍", "dollar": "💲", "fire": "🔥", "trash": "🗑️",
+           "back": "↩️", "plus": "➕", "search": "🔍", "refresh": "🔄",
+           "admin": "🛡️", "hourglass": "⏳", "support": "🆘",
+           "wallet": "💰", "key": "🔑", "settings": "⚙️"}
+    return _fb.get(n.lower(), fallback)
 
 def flag_icon_id(iso):
     return premium_icon(iso) or premium_icon("XX")
@@ -133,23 +158,23 @@ def app_icon_id(app_name):
     return premium_icon(app_name) or premium_icon(app_name.lower()) or premium_icon("DEFAULT")
 
 def flag_emoji_html(iso):
-    """Return Unicode flag emoji from ISO code."""
+    """Return premium flag emoji from emoji.txt via custom emoji tag."""
     if not iso or len(str(iso)) != 2:
         return "🌍"
     code = str(iso).upper()
+    eid = PREMIUM_FLAGS.get(code) or PREMIUM_FLAGS.get(code.split("_")[0])
+    if eid:
+        return f"{_PREMIUM_TAG}{eid}{_PREMIUM_TAG}🏳️{_PREMIUM_TAG}"
+    # Fallback to Unicode flag
     return chr(0x1F1E6 + ord(code[0]) - ord('A')) + chr(0x1F1E6 + ord(code[1]) - ord('A'))
 
 def app_emoji_html(app_name):
-    """Return Unicode emoji for app name."""
-    _app_map = {
-        "whatsapp": "💬", "facebook": "🔵", "instagram": "📷",
-        "telegram": "✈️", "twitter": "🐦", "google": "🔍",
-        "tiktok": "🎵", "snapchat": "👻", "paypal": "💳",
-        "discord": "🎮", "line": "🟢", "viber": "💜",
-        "amazon": "📦", "apple": "🍎", "microsoft": "🪟",
-        "netflix": "🎬", "spotify": "🎧", "uber": "🚗",
-    }
-    return _app_map.get(str(app_name).lower(), "📱")
+    """Return premium app emoji from emoji.txt via custom emoji tag."""
+    name = str(app_name).lower().strip()
+    eid = PREMIUM_ICONS.get(name) or PREMIUM_EMOJI_IDS.get(name) or PREMIUM_ICONS.get("default")
+    if eid:
+        return f"{_PREMIUM_TAG}{eid}{_PREMIUM_TAG}📱{_PREMIUM_TAG}"
+    return "📱"
 
 # =========================== CUSTOM BUTTON HELPERS ===========================
 _old_inline_dict = types.InlineKeyboardButton.to_dict
@@ -228,6 +253,29 @@ def raw_btn(text, url=None, callback_data=None, style=None, icon=None):
     if icon_id:
         b["icon_custom_emoji_id"] = icon_id
     return b
+
+# =========================== PREMIUM EMOJI AUTO-REPLACE ===========================
+_original_send_message = bot.send_message
+
+def _send_with_premium(chat_id, text, **kwargs):
+    """Auto-replace premium emoji tags with real custom emoji entities."""
+    if _PREMIUM_TAG in str(text):
+        import re as _re
+        _pat = _re.compile(_re.escape(_PREMIUM_TAG) + r'(\d{15,})' + _re.escape(_PREMIUM_TAG) + r'(.)' + _re.escape(_PREMIUM_TAG))
+        entities = kwargs.get("entities") or []
+        offset = 0
+        def _repl(m):
+            nonlocal offset
+            eid, char = m.group(1), m.group(2)
+            pos = m.start() + offset
+            offset += 1 - (m.end() - m.start())
+            entities.append({"type": "custom_emoji", "offset": pos, "length": 1, "custom_emoji_id": eid})
+            return char
+        text = _pat.sub(_repl, text)
+        kwargs["entities"] = entities
+    return _original_send_message(chat_id, text, **kwargs)
+
+bot.send_message = _send_with_premium
 
 # =========================== DB SETUP ===========================
 def init_db():
