@@ -13,6 +13,6 @@ COPY src/ ./src/
 RUN mkdir -p /app/data
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import socketio; print('ok')" || exit 1
+    CMD python -c "import aiohttp; print('ok')" || exit 1
 
 CMD ["python", "-m", "src"]

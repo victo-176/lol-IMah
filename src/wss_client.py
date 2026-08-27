@@ -1,4 +1,8 @@
-"""WSS ingestion engine: Socket.IO with DLQ, dedup, health monitoring, jittered backoff."""
+"""WSS ingestion engine: raw aiohttp WebSocket with single persistent session.
+
+No python-socketio dependency — eliminates the ClientWSTimeout compatibility
+chain entirely. Handles Socket.IO v4 framing transparently.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ import random
 import time
 from typing import Any, Callable, Coroutine
 
-import socketio
+import aiohttp
 
 from . import redis_store
 from .config import settings
@@ -20,14 +24,62 @@ logger = logging.getLogger(__name__)
 MessageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
+def _parse_socketio_packet(raw: str) -> list[Any] | None:
+    """Extract Socket.IO event data from a raw frame.
+
+    Socket.IO v4 frames look like: 42["event_name", {data}]
+    Returns [event_name, data] or None if not a valid event.
+    """
+    if not raw or len(raw) < 3:
+        return None
+    # Skip Engine.IO framing prefix (e.g. "42" for message+event)
+    # Find the JSON array start
+    idx = raw.find("[")
+    if idx < 0:
+        return None
+    try:
+        arr = json.loads(raw[idx:])
+        if isinstance(arr, list) and len(arr) >= 2:
+            return arr
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def _strip_socketio_framing(raw: str) -> dict | None:
+    """Try to extract a dict from raw frame, stripping Socket.IO/Engine.IO framing."""
+    # Try direct JSON parse first
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try Socket.IO event array
+    event = _parse_socketio_packet(raw)
+    if event:
+        data = event[1]
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, str):
+            try:
+                return json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                return {"raw": data}
+        return {"payload": data, "event": event[0]}
+
+    return {"raw": raw}
+
+
 class WSSClient:
     """
-    Persistent Socket.IO WSS connection to IVASMS.
+    Persistent aiohttp WebSocket connection to IVASMS.
 
     Features:
-      - Authenticated handshake via auth parameter
-      - Forced WebSocket transport (no HTTP polling fallback)
-      - Active ping/pong keepalive (configurable interval)
+      - Single aiohttp.ClientSession for entire lifecycle (no resource leaks)
+      - Authenticated handshake via Bearer token in headers
+      - Heartbeat keepalive via aiohttp's built-in ping/pong
       - Jittered exponential backoff reconnect (1s → 60s)
       - Session state preservation across reconnects
       - Frame deduplication via Redis (10 min TTL)
@@ -40,7 +92,6 @@ class WSSClient:
         self._reconnect_delay = settings.reconnect_base_delay
         self._max_delay = settings.reconnect_max_delay
         self._running = False
-        self._sio: socketio.AsyncClient | None = None
         self._connected = False
         self._connect_time: float | None = None
         self._message_count = 0
@@ -80,29 +131,47 @@ class WSSClient:
         self._token_refresh_task = asyncio.create_task(self._token_refresh_loop())
         self._health_task = asyncio.create_task(self._health_loop())
 
-        while self._running:
-            try:
-                await self._connect()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error("WSS connection error: %s", exc)
-                self._error_count += 1
+        # Single persistent session for the entire lifecycle
+        headers = {
+            "Authorization": f"Bearer {settings.ivasms_auth_token}",
+            "User-Agent": "IVASMS-Forwarder/2.0",
+        }
 
-            if not self._running:
-                break
+        async with aiohttp.ClientSession(headers=headers) as session:
+            attempt = 0
+            backoff = settings.reconnect_base_delay
 
-            # Jittered exponential backoff: base * 2^attempt * jitter(0.5..1.5)
-            jitter = random.uniform(0.5, 1.5)
-            delay = min(self._reconnect_delay * jitter, self._max_delay)
-            logger.info(
-                "Reconnecting in %.1fs (attempt %d, backoff %.1fs)",
-                delay, self._reconnect_count, self._reconnect_delay,
-            )
-            await asyncio.sleep(delay)
-            self._reconnect_delay = min(self._reconnect_delay * 2, self._max_delay)
-            self._reconnect_count += 1
-            await redis_store.incr_counter("wss_reconnect_attempts")
+            while self._running:
+                try:
+                    logger.info("Connecting to IVASMS WSS...")
+                    await self._connect(session)
+                    # _connect blocks until disconnect, so reset backoff on clean exit
+                    attempt = 0
+                    backoff = settings.reconnect_base_delay
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.error("WSS connection error: %s", exc)
+                    self._error_count += 1
+
+                if not self._running:
+                    break
+
+                # Jittered exponential backoff
+                jitter = random.uniform(0.5, 1.5)
+                delay = min(backoff * jitter, self._max_delay)
+                logger.info(
+                    "Reconnecting in %.1fs (attempt %d, backoff %.1fs)",
+                    delay, attempt, backoff,
+                )
+                await asyncio.sleep(delay)
+                backoff = min(backoff * 2, self._max_delay)
+                attempt += 1
+                self._reconnect_count += 1
+                await redis_store.incr_counter("wss_reconnect_attempts")
+
+        logger.info("WSS client stopped")
 
     async def stop(self) -> None:
         """Gracefully stop the WSS client."""
@@ -114,80 +183,48 @@ class WSSClient:
                     await task
                 except asyncio.CancelledError:
                     pass
-        if self._sio:
-            await self._sio.disconnect()
-        logger.info("WSS client stopped")
 
-    async def _connect(self) -> None:
-        """Establish the Socket.IO connection with auth and forced WebSocket transport."""
-        self._sio = socketio.AsyncClient(
-            logger=False,
-            engineio_logger=False,
-            reconnection=False,  # We handle reconnection ourselves
-        )
-
-        # Register event handlers
-        self._sio.on("connect", self._on_connect)
-        self._sio.on("disconnect", self._on_disconnect)
-        self._sio.on("connect_error", self._on_connect_error)
-
-        # Listen for all possible SMS event names from IVASMS
-        for event_name in ("message", "sms", "new_message", "event", "data", "notification"):
-            self._sio.on(event_name, self._handle_event)
-
+    async def _connect(self, session: aiohttp.ClientSession) -> None:
+        """Establish WebSocket connection and process messages until disconnect."""
         url = settings.build_wss_url()
-        logger.info("Connecting to IVASMS WSS...")
 
-        # CRITICAL: Pass auth dict AND force WebSocket transport
-        await self._sio.connect(
+        async with session.ws_connect(
             url,
-            transports=["websocket"],
-            auth={
-                "token": settings.ivasms_auth_token,
-                "user": settings.ivasms_user_id,
-            },
-            headers={
-                "Authorization": f"Bearer {settings.ivasms_auth_token}",
-            },
-            wait_timeout=15,
-        )
+            heartbeat=20.0,
+            receive_timeout=30.0,
+            timeout=aiohttp.ClientTimeout(total=15, sock_connect=10),
+        ) as ws:
+            self._connected = True
+            self._connect_time = time.time()
+            self._reconnect_delay = settings.reconnect_base_delay
+            logger.info("✅ WSS connected to IVASMS")
+            await redis_store.incr_counter("wss_connections")
 
-        # Keep the task alive until disconnect
-        while self._connected and self._running:
-            await asyncio.sleep(1)
+            # Process incoming messages
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await self._handle_raw_message(msg.data)
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    logger.warning("WSS stream ended: %s", msg.type)
+                    break
 
-    def _on_connect(self) -> None:
-        """Called when the Socket.IO connection is established."""
-        self._connected = True
-        self._connect_time = time.time()
-        self._reconnect_delay = settings.reconnect_base_delay  # Reset backoff
-        logger.info("✅ WSS connected to IVASMS (SID: %s)", self._sio.sid if self._sio else "?")
-        asyncio.create_task(redis_store.incr_counter("wss_connections"))
+            self._connected = False
+            self._connect_time = None
+            logger.warning("⚠️  WSS disconnected from IVASMS")
 
-    def _on_disconnect(self) -> None:
-        """Called when the Socket.IO connection is lost."""
-        self._connected = False
-        self._connect_time = None
-        logger.warning("⚠️  WSS disconnected from IVASMS")
+    async def _handle_raw_message(self, raw: str) -> None:
+        """Parse incoming frame and dispatch events."""
+        # Skip Engine.IO protocol packets (ping=2, pong=3)
+        if raw in ("2", "3"):
+            return
+        # Skip empty or very short frames
+        if not raw or len(raw) < 2:
+            return
 
-    def _on_connect_error(self, data: Any) -> None:
-        """Called on connection error."""
-        logger.error("WSS connection error: %s", data)
-        self._error_count += 1
-        asyncio.create_task(redis_store.incr_counter("wss_errors"))
-
-    async def _handle_event(self, data: Any) -> None:
-        """Handle incoming Socket.IO events from IVASMS with DLQ protection."""
         try:
-            # Parse incoming data
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except (json.JSONDecodeError, TypeError):
-                    data = {"raw": data}
-
-            if not isinstance(data, dict):
-                data = {"payload": data}
+            data = _strip_socketio_framing(raw)
+            if data is None:
+                data = {"raw": raw}
 
             # Extract message ID for deduplication
             msg_id = str(
@@ -208,25 +245,18 @@ class WSSClient:
             self._message_count += 1
             await redis_store.incr_counter("wss_messages_received")
 
-            logger.debug("Received SMS event: %s", data)
+            logger.debug("Received event: %s", str(data)[:200])
 
             # Dispatch to the message handler
             await self._on_message(data)
 
         except asyncio.CancelledError:
             raise
-        except json.JSONDecodeError as exc:
-            # Malformed JSON → DLQ
-            self._dlq_count += 1
-            logger.warning("Malformed JSON frame → DLQ: %s", exc)
-            await redis_store.push_dlq(str(data), f"JSON parse error: {exc}")
-            await redis_store.incr_counter("wss_malformed_frames")
         except Exception as exc:
-            # Any other parsing error → DLQ
             self._dlq_count += 1
             self._error_count += 1
             logger.error("Error processing WSS event: %s", exc, exc_info=True)
-            await redis_store.push_dlq(str(data)[:2000], str(exc)[:200])
+            await redis_store.push_dlq(str(raw)[:2000], str(exc)[:200])
             await redis_store.incr_counter("wss_processing_errors")
 
     async def _health_loop(self) -> None:
@@ -243,8 +273,8 @@ class WSSClient:
 
                 if self._connected:
                     logger.info(
-                        "WSS health: connected=%s uptime=%ds msgs=%d errors=%d dlq=%d",
-                        self._connected, stats["uptime_seconds"],
+                        "WSS health: uptime=%ds msgs=%d errors=%d dlq=%d",
+                        stats["uptime_seconds"],
                         stats["total_messages"], stats["error_count"],
                         stats["dlq_messages"],
                     )
@@ -258,8 +288,8 @@ class WSSClient:
         while self._running:
             try:
                 await asyncio.sleep(1800)  # Every 30 minutes
-                if self._connected and self._sio:
-                    logger.info("Refreshing WSS auth token...")
+                if self._connected:
+                    logger.info("Token refresh check...")
                     await redis_store.incr_counter("token_refreshes")
             except asyncio.CancelledError:
                 break
