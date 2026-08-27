@@ -254,9 +254,7 @@ def raw_btn(text, url=None, callback_data=None, style=None, icon=None):
         b["callback_data"] = callback_data
     if style:
         b["style"] = style
-    icon_id = premium_icon(icon)
-    if icon_id:
-        b["icon_custom_emoji_id"] = icon_id
+    # Note: icon_custom_emoji_id omitted for raw API calls (no safe wrapper)
     return b
 
 # =========================== DB SETUP ===========================
@@ -1082,7 +1080,9 @@ def _strip_markup_icons(markup):
 
 def _premium_rejected(err):
     msg = str(err).lower()
-    return "custom emoji" in msg or "custom_emoji" in msg
+    return ("custom emoji" in msg or "custom_emoji" in msg
+            or "parse" in msg or "entity" in msg
+            or "tg-emoji" in msg)
 
 _orig_send_message = bot.send_message
 def _safe_send_message(chat_id, text, *args, **kwargs):
@@ -1563,16 +1563,16 @@ def show_stock_info(chat_id):
 
 def show_support(chat_id):
     support_link = get_setting('support_link') or "https://t.me/Jibohu1"
-    text = (f"┏━━━━━━━ {pe('secret', '🌙')} ━━━━━━━┓\n"
-            f"═《 <b>𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b> 》═\n"
-            f"━━━━━━━━━━━━━\n"
-            f"{pe('chat', '💬')} <b>𝗪𝗘𝗟𝗖𝗢𝗠𝗘 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b>\n"
-            f"{pe('strelka_right', '➤')} <b>𝗧𝗔𝗣 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗕𝗨𝗧𝗧𝗢𝗡</b>\n"
-            f"{pe('strelka_right', '➤')} <b>𝗧𝗢 𝗖𝗢𝗡𝗧𝗔𝗖𝗧 𝗔𝗗𝗠𝗜𝗡</b>\n"
-            f"┗━━━━━━━ {pe('flash', '⚡')} ━━━━━━━┛")
+    text = ("┏━━━━━━━ 🌙 ━━━━━━━┓\n"
+            "═《 <b>𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b> 》═\n"
+            "━━━━━━━━━━━━━\n"
+            "💬 <b>𝗪𝗘𝗟𝗖𝗢𝗠𝗘 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b>\n"
+            "➤ <b>𝗧𝗔𝗣 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗕𝗨𝗧𝗧𝗢𝗡</b>\n"
+            "➤ <b>𝗧𝗢 𝗖𝗢𝗡𝗧𝗔𝗖𝗧 𝗔𝗗𝗠𝗜𝗡</b>\n"
+            "┗━━━━━━━ ⚡ ━━━━━━━┛")
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("SUPPORT", url=support_link, style="success"))
-    markup.add(ibtn("💬 Live Chat", callback_data="live_chat", style="primary", icon="chat"))
+    markup.add(ibtn("💬 Live Chat", callback_data="live_chat", style="primary"))
     markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
