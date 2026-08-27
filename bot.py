@@ -1361,6 +1361,14 @@ else:
             time.sleep(60)
 
 # =========================== USER HANDLERS ===========================
+@bot.message_handler(commands=['cancel'])
+def cancel_handler(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    user_states.pop(chat_id, None)
+    user_states.pop(user_id, None)
+    show_main_menu(chat_id, user_id, message.from_user.first_name)
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
@@ -1661,13 +1669,18 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
     if data == "live_chat":
         admin_id = get_all_admins()[0] if get_all_admins() else None
         if admin_id:
+            # Enter live chat mode for this user
+            user_states[chat_id] = {"mode": "live_chat", "target_admin": admin_id}
+            user_states[user_id] = user_states[chat_id]
             try:
                 user = get_user(user_id)
                 uname = ""
                 if user and user[2]:
                     uname = user[2]
-                bot.send_message(admin_id, f"💬 <b>Live Chat Request</b>\nUser: <a href='tg://user?id={user_id}'>{uname or user_id}</a>\nID: <code>{user_id}</code>\n\n✏️ Reply to this message to respond.", parse_mode="HTML")
-                bot.answer_callback_query(call.id, "✅ Support notified! Wait for reply.", show_alert=True)
+                kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname or user_id}", "callback_data": f"reply_user|{user_id}"}]]})
+                bot.send_message(admin_id, f"💬 <b>Live Chat Request</b>\nUser: <a href='tg://user?id={user_id}'>{uname or user_id}</a>\nID: <code>{user_id}</code>", parse_mode="HTML", reply_markup=kb)
+                bot.answer_callback_query(call.id, "✅ Live chat started! Send your message.", show_alert=True)
+                bot.send_message(chat_id, "💬 <b>Live Chat Mode</b>\n\nType your message and it will be sent to admin.\nType /cancel to exit.", parse_mode="HTML")
             except Exception as e:
                 bot.answer_callback_query(call.id, "❌ Could not reach admin.", show_alert=True)
         else:
@@ -2766,24 +2779,56 @@ def add_force_channel_handler(message):
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
 
-# ---- Admin reply to live chat ----
-@bot.message_handler(func=lambda msg: is_admin(msg.from_user.id) and msg.reply_to_message and not msg.text.startswith('/'))
-def admin_reply_handler(message):
-    """When admin replies to a live-chat notification, forward the reply to the user."""
-    replied = message.reply_to_message
-    if not replied or not replied.text:
+# ---- Live chat: user sends message to admin ----
+@bot.message_handler(func=lambda msg: isinstance(user_states.get(msg.chat.id, {}), dict) and user_states.get(msg.chat.id, {}).get("mode") == "live_chat" and not is_admin(msg.from_user.id))
+def live_chat_user_message(message):
+    """Forward user messages to admin during live chat."""
+    state = user_states.get(message.chat.id, {})
+    admin_id = state.get("target_admin")
+    if not admin_id:
+        bot.send_message(message.chat.id, "❌ Live chat session expired. Click Support again.", parse_mode="HTML")
+        user_states.pop(message.chat.id, None)
         return
-    # Extract user ID from the notification message
-    import re
-    m = re.search(r'ID: <code>(\d+)</code>', replied.text)
-    if not m:
+    user_id = message.from_user.id
+    uname = message.from_user.first_name or str(user_id)
+    try:
+        kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{user_id}"}]]})
+        bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{user_id}</code>):\n\n{message.text}", parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logger.error(f"Live chat forward failed: {e}")
+
+# ---- Admin reply via callback button ----
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reply_user|"))
+def admin_reply_callback(call):
+    """Admin clicks Reply button → enters reply mode for that user."""
+    target_user = int(call.data.split("|")[1])
+    user_states[call.from_user.id] = {"mode": "admin_reply", "target_user": target_user}
+    try:
+        uname = ""
+        user = get_user(target_user)
+        if user and user[2]:
+            uname = user[2]
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.from_user.id, f"✏️ <b>Replying to {uname or target_user}</b>\nType your message:", parse_mode="HTML")
+    except:
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+
+# ---- Admin sends reply to user ----
+@bot.message_handler(func=lambda msg: isinstance(user_states.get(msg.chat.id, {}), dict) and user_states.get(msg.chat.id, {}).get("mode") == "admin_reply" and is_admin(msg.from_user.id))
+def admin_send_reply(message):
+    """Admin types a reply → forward to user."""
+    state = user_states.get(message.chat.id, {})
+    target_user = state.get("target_user")
+    if not target_user:
+        bot.send_message(message.chat.id, "❌ No user selected.", parse_mode="HTML")
         return
-    target_user = int(m.group(1))
     try:
         bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{message.text}", parse_mode="HTML")
-        bot.reply_to(message, f"✅ Sent to user {target_user}.")
+        bot.reply_to(message, f"✅ Sent to {target_user}.")
     except:
         bot.reply_to(message, "❌ Could not send to user.")
+    # Stay in admin_reply mode so admin can send multiple messages
+    # User types /cancel or clicks a button to exit
 
 # =========================== MAIN ===========================
 def main():
