@@ -127,6 +127,7 @@ async def _wait_for_redis(max_attempts: int = 30, delay: float = 2.0) -> None:
         try:
             r = await redis_store.get_redis()
             await r.ping()
+            await redis_store.mark_connected()
             logger.info("Redis connected ✓ (attempt %d)", attempt)
             return
         except Exception as exc:

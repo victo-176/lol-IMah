@@ -123,8 +123,6 @@ class WSSClient:
         self._sio = socketio.AsyncClient(
             logger=False,
             engineio_logger=False,
-            ping_timeout=30,
-            ping_interval=settings.heartbeat_interval,
             reconnection=False,  # We handle reconnection ourselves
         )
 
