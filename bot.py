@@ -101,10 +101,7 @@ def premium_icon(name):
     return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
 
 def pe(name, fallback="•", emoji_id=None):
-    """Return a safe <tg-emoji> tag with given ID or fallback."""
-    eid = emoji_id or premium_icon(name)
-    if eid:
-        return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>'
+    """Return a safe fallback emoji (tg-emoji tags break HTML parse mode)."""
     return fallback
 
 def flag_icon_id(iso):
