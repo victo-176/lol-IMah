@@ -162,12 +162,7 @@ def app_icon_id(app_name):
     return premium_icon(app_name) or premium_icon(app_name.lower()) or premium_icon("DEFAULT")
 
 def flag_emoji_html(iso):
-    eid = flag_icon_id(iso)
-    if eid and PREMIUM_EMOJI_OK:
-        unicode_flag = "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in iso.upper()) if iso and len(iso) == 2 else "🌍"
-        return f'<tg-emoji emoji-id="{eid}">{unicode_flag}</tg-emoji>'
-    if iso and len(iso) == 2:
-        return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in iso.upper())
+    """Return default globe emoji for all countries."""
     return "🌍"
 
 def app_emoji_html(app_name):
