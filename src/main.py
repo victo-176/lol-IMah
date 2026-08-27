@@ -32,7 +32,7 @@ def setup_logging() -> None:
         datefmt=LOG_DATE,
         stream=sys.stdout,
     )
-    for lib in ("aiogram", "aiohttp", "redis"):
+    for lib in ("aiogram", "engineio", "socketio", "aiohttp", "redis"):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 

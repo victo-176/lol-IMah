@@ -2,8 +2,9 @@
 aiogram==3.15.0
 aiohttp>=3.9.0,<4.0.0
 
-# WebSocket (raw aiohttp handles Socket.IO v4 directly)
-# python-socketio/engineio removed — causes aiohttp ClientWSTimeout conflicts
+# WebSocket / Socket.IO client (pinned to avoid aiohttp ClientWSTimeout)
+python-socketio==5.11.0
+python-engineio==4.9.0
 
 # Redis (async state store + caching)
 redis[hiredis]>=5.0.0,<6.0.0
