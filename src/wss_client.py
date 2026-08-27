@@ -24,52 +24,52 @@ logger = logging.getLogger(__name__)
 MessageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
-def _parse_socketio_packet(raw: str) -> list[Any] | None:
-    """Extract Socket.IO event data from a raw frame.
+def process_raw_ws_payload(raw_text: str) -> dict | None:
+    """Filter out Socket.IO/Engine.IO protocol frames, return only real SMS data.
 
-    Socket.IO v4 frames look like: 42["event_name", {data}]
-    Returns [event_name, data] or None if not a valid event.
+    Protocol frame types that are NOT SMS data:
+      0  = Engine.IO open/handshake (contains sid, pingInterval)
+      2  = Engine.IO ping
+      3  = Engine.IO pong
+      40 = Socket.IO connect ack
+      41 = Socket.IO disconnect
+
+    Returns parsed dict for real SMS events, None for control frames.
     """
-    if not raw or len(raw) < 3:
+    if not raw_text:
         return None
-    # Skip Engine.IO framing prefix (e.g. "42" for message+event)
-    # Find the JSON array start
-    idx = raw.find("[")
-    if idx < 0:
+
+    # 1. Ignore Engine.IO control frames and Socket.IO connect/disconnect
+    if raw_text.startswith(("0", "2", "3", "40", "41")):
         return None
+
+    # 2. Extract Socket.IO event payloads (starts with '42')
+    if raw_text.startswith("42"):
+        try:
+            payload_array = json.loads(raw_text[2:])
+            event_name = payload_array[0]
+            data = payload_array[1]
+            # Return data only if it represents an actual SMS message
+            if isinstance(data, dict):
+                return data
+            if isinstance(data, str):
+                try:
+                    return json.loads(data)
+                except (json.JSONDecodeError, ValueError):
+                    return {"raw": data, "event": event_name}
+            return {"payload": data, "event": event_name}
+        except (json.JSONDecodeError, IndexError, TypeError):
+            return None
+
+    # 3. Fallback for raw JSON objects (skip handshake dicts with sid/pingInterval)
     try:
-        arr = json.loads(raw[idx:])
-        if isinstance(arr, list) and len(arr) >= 2:
-            return arr
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return None
-
-
-def _strip_socketio_framing(raw: str) -> dict | None:
-    """Try to extract a dict from raw frame, stripping Socket.IO/Engine.IO framing."""
-    # Try direct JSON parse first
-    try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict):
-            return obj
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Try Socket.IO event array
-    event = _parse_socketio_packet(raw)
-    if event:
-        data = event[1]
-        if isinstance(data, dict):
+        data = json.loads(raw_text)
+        if isinstance(data, dict) and "sid" not in data and "pingInterval" not in data:
             return data
-        if isinstance(data, str):
-            try:
-                return json.loads(data)
-            except (json.JSONDecodeError, ValueError):
-                return {"raw": data}
-        return {"payload": data, "event": event[0]}
+    except (json.JSONDecodeError, ValueError):
+        pass
 
-    return {"raw": raw}
+    return None
 
 
 class WSSClient:
@@ -213,18 +213,12 @@ class WSSClient:
             logger.warning("⚠️  WSS disconnected from IVASMS")
 
     async def _handle_raw_message(self, raw: str) -> None:
-        """Parse incoming frame and dispatch events."""
-        # Skip Engine.IO protocol packets (ping=2, pong=3)
-        if raw in ("2", "3"):
-            return
-        # Skip empty or very short frames
-        if not raw or len(raw) < 2:
-            return
-
+        """Parse incoming frame, filter control frames, dispatch real SMS events."""
         try:
-            data = _strip_socketio_framing(raw)
+            # Strict filter: returns None for control frames (0, 2, 3, 40, 41)
+            data = process_raw_ws_payload(raw)
             if data is None:
-                data = {"raw": raw}
+                return  # Skip control frames / non-SMS messages completely
 
             # Extract message ID for deduplication
             msg_id = str(
@@ -245,7 +239,7 @@ class WSSClient:
             self._message_count += 1
             await redis_store.incr_counter("wss_messages_received")
 
-            logger.debug("Received event: %s", str(data)[:200])
+            logger.debug("Received SMS event: %s", str(data)[:200])
 
             # Dispatch to the message handler
             await self._on_message(data)
