@@ -1490,8 +1490,15 @@ def admin_panel_handler(message):
 
 # ---- User show functions ----
 def show_user_services(chat_id):
-    # Only show WhatsApp
-    apps = ["WhatsApp"]
+    # Show all apps that have active combos
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT app_name FROM combos")
+    rows = c.fetchall()
+    conn.close()
+    apps = [r[0] for r in rows if r[0]]
+    if not apps:
+        apps = ["WhatsApp"]
     markup = types.InlineKeyboardMarkup(row_width=2)
     for app in apps:
         markup.add(ibtn(app, callback_data=f"usr_app|{app}", style="primary", icon_id=app_icon_id(app)))
