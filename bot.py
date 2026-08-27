@@ -1070,7 +1070,7 @@ def _convert_premium_entities(text):
 
 def _strip_premium_text(text):
     """Strip <tg-emoji> tags to plain fallback text."""
-    return _TG_EMOJI_RE.sub(r'\1', text) if isinstance(text, str) else text
+    return _TG_EMOJI_RE.sub(r'\2', text) if isinstance(text, str) else text
 
 def _strip_markup_icons(markup):
     """Remove premium emoji icons from keyboard buttons."""
@@ -1091,67 +1091,76 @@ def _premium_rejected(err):
 _orig_send_message = bot.send_message
 def _safe_send_message(chat_id, text, *args, **kwargs):
     global PREMIUM_EMOJI_OK
-    if PREMIUM_EMOJI_OK:
-        try:
-            clean_text, pe_ents = _convert_premium_entities(text)
-            if pe_ents:
-                existing = kwargs.get("entities") or []
-                existing.extend(pe_ents)
-                kwargs["entities"] = existing
-                kwargs.pop("parse_mode", None)
-            return _orig_send_message(chat_id, clean_text, *args, **kwargs)
-        except Exception as e:
-            if not _premium_rejected(e):
-                raise
-            PREMIUM_EMOJI_OK = False
-            logger.warning("Premium emojis rejected — switching to unicode fallbacks.")
+    if isinstance(text, str) and '<tg-emoji' in text:
+        if PREMIUM_EMOJI_OK:
+            try:
+                clean_text, pe_ents = _convert_premium_entities(text)
+                if pe_ents:
+                    existing = kwargs.get("entities") or []
+                    existing.extend(pe_ents)
+                    kwargs["entities"] = existing
+                    kwargs.pop("parse_mode", None)
+                return _orig_send_message(chat_id, clean_text, *args, **kwargs)
+            except Exception as e:
+                if not _premium_rejected(e):
+                    raise
+                PREMIUM_EMOJI_OK = False
+                logger.warning("Premium emojis rejected — switching to unicode fallbacks.")
+        text = _strip_premium_text(text)
+        kwargs.pop("parse_mode", None)
     if kwargs.get("reply_markup") is not None:
         kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
-    return _orig_send_message(chat_id, _strip_premium_text(text), *args, **kwargs)
+    return _orig_send_message(chat_id, text, *args, **kwargs)
 bot.send_message = _safe_send_message
 
 # --- Wrap reply_to ---
 _orig_reply_to = bot.reply_to
 def _safe_reply_to(message, text, *args, **kwargs):
     global PREMIUM_EMOJI_OK
-    if PREMIUM_EMOJI_OK:
-        try:
-            clean_text, pe_ents = _convert_premium_entities(text)
-            if pe_ents:
-                existing = kwargs.get("entities") or []
-                existing.extend(pe_ents)
-                kwargs["entities"] = existing
-                kwargs.pop("parse_mode", None)
-            return _orig_reply_to(message, clean_text, *args, **kwargs)
-        except Exception as e:
-            if not _premium_rejected(e):
-                raise
-            PREMIUM_EMOJI_OK = False
+    if isinstance(text, str) and '<tg-emoji' in text:
+        if PREMIUM_EMOJI_OK:
+            try:
+                clean_text, pe_ents = _convert_premium_entities(text)
+                if pe_ents:
+                    existing = kwargs.get("entities") or []
+                    existing.extend(pe_ents)
+                    kwargs["entities"] = existing
+                    kwargs.pop("parse_mode", None)
+                return _orig_reply_to(message, clean_text, *args, **kwargs)
+            except Exception as e:
+                if not _premium_rejected(e):
+                    raise
+                PREMIUM_EMOJI_OK = False
+        text = _strip_premium_text(text)
+        kwargs.pop("parse_mode", None)
     if kwargs.get("reply_markup") is not None:
         kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
-    return _orig_reply_to(message, _strip_premium_text(text), *args, **kwargs)
+    return _orig_reply_to(message, text, *args, **kwargs)
 bot.reply_to = _safe_reply_to
 
 # --- Wrap edit_message_text ---
 _orig_edit_message_text = bot.edit_message_text
 def _safe_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
     global PREMIUM_EMOJI_OK
-    if PREMIUM_EMOJI_OK:
-        try:
-            clean_text, pe_ents = _convert_premium_entities(text)
-            if pe_ents:
-                existing = kwargs.get("entities") or []
-                existing.extend(pe_ents)
-                kwargs["entities"] = existing
-                kwargs.pop("parse_mode", None)
-            return _orig_edit_message_text(clean_text, chat_id=chat_id, message_id=message_id, *args, **kwargs)
-        except Exception as e:
-            if not _premium_rejected(e):
-                raise
-            PREMIUM_EMOJI_OK = False
+    if isinstance(text, str) and '<tg-emoji' in text:
+        if PREMIUM_EMOJI_OK:
+            try:
+                clean_text, pe_ents = _convert_premium_entities(text)
+                if pe_ents:
+                    existing = kwargs.get("entities") or []
+                    existing.extend(pe_ents)
+                    kwargs["entities"] = existing
+                    kwargs.pop("parse_mode", None)
+                return _orig_edit_message_text(clean_text, chat_id=chat_id, message_id=message_id, *args, **kwargs)
+            except Exception as e:
+                if not _premium_rejected(e):
+                    raise
+                PREMIUM_EMOJI_OK = False
+        text = _strip_premium_text(text)
+        kwargs.pop("parse_mode", None)
     if kwargs.get("reply_markup") is not None:
         kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
-    return _orig_edit_message_text(_strip_premium_text(text), chat_id=chat_id, message_id=message_id, *args, **kwargs)
+    return _orig_edit_message_text(text, chat_id=chat_id, message_id=message_id, *args, **kwargs)
 bot.edit_message_text = _safe_edit_message_text
 
 
