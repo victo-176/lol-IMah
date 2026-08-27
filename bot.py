@@ -1136,6 +1136,71 @@ def _send_with_premium(chat_id, text, **kwargs):
 
     return _original_send_message(chat_id, text, **kwargs)
 
+# Also wrap reply_to and edit_message_text for premium emoji
+_original_reply_to = bot.reply_to
+def _reply_with_premium(message, text, **kwargs):
+    if _PREMIUM_TAG in str(text):
+        return _send_with_premium(message.chat.id, text, reply_to_message_id=message.message_id, **kwargs)
+    return _original_reply_to(message, text, **kwargs)
+bot.reply_to = _reply_with_premium
+
+_original_edit = bot.edit_message_text
+def _edit_with_premium(text, chat_id, message_id, **kwargs):
+    if _PREMIUM_TAG not in str(text):
+        return _original_edit(text, chat_id, message_id, **kwargs)
+    import re as _re
+    html_pat = _re.compile(
+        r"<b>(.+?)</b>"
+        r"|<a\s+href=['\"]([^'\"]*?)['\"]\s*>(.+?)</a>"
+        r"|<code>(.+?)</code>"
+        r"|<i>(.+?)</i>",
+        _re.DOTALL,
+    )
+    entities = []
+    parts = []
+    pos = 0
+    for m in html_pat.finditer(text):
+        parts.append({"text": text[pos:m.start()]})
+        if m.group(1):
+            parts.append({"text": m.group(1), "entity": "bold"})
+        elif m.group(2):
+            parts.append({"text": m.group(3), "entity": "text_link", "url": m.group(2)})
+        elif m.group(4):
+            parts.append({"text": m.group(4), "entity": "code"})
+        elif m.group(5):
+            parts.append({"text": m.group(5), "entity": "italic"})
+        pos = m.end()
+    parts.append({"text": text[pos:]})
+    clean = ""
+    for p in parts:
+        eoff = len(clean)
+        clean += p["text"]
+        if "entity" in p:
+            ent = {"type": p["entity"], "offset": eoff, "length": len(p["text"])}
+            if "url" in p:
+                ent["url"] = p["url"]
+            entities.append(ent)
+    text = clean
+    _pat = _re.compile(
+        _re.escape(_PREMIUM_TAG) + r'(\d{15,})' +
+        _re.escape(_PREMIUM_TAG) + r'(.)' +
+        _re.escape(_PREMIUM_TAG)
+    )
+    _off = 0
+    def _pe_repl(m):
+        nonlocal _off
+        eid, char = m.group(1), m.group(2)
+        pos = m.start() + _off
+        _off += 1 - (m.end() - m.start())
+        entities.append({"type": "custom_emoji", "offset": pos,
+                         "length": 1, "custom_emoji_id": eid})
+        return char
+    text = _pat.sub(_pe_repl, text)
+    kwargs.pop("parse_mode", None)
+    kwargs["entities"] = entities
+    return _original_edit(text, chat_id, message_id, **kwargs)
+bot.edit_message_text = _edit_with_premium
+
 BOT_START_TIME = datetime.now()
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
