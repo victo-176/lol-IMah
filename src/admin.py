@@ -10,6 +10,10 @@ from aiogram.types import Message
 
 from . import redis_store
 from .config import settings
+from .emoji import (
+    BREAKING, CHECKMARK, CROSS, DOLLAR, FIRE, INFO, PIN, SPEAKER,
+    STATS, WARNING_YELLOW, EXCLAMATION, SETTINGS, DELETE, BELL, STAR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,32 +55,32 @@ async def cmd_stats(message: Message, command: CommandObject) -> None:
     limiter_stats = getattr(message.bot, "_rate_limiter_stats", {"sent": 0, "dropped": 0})  # type: ignore[union-attr]
 
     await message.answer(
-        "📊 <b>IVASMS Bot — Live Telemetry</b>\n"
+        f"{STATS} <b>IVASMS Bot — Live Telemetry</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔌 <b>WSS Connection</b>\n"
+        f"{EXCLAMATION} <b>WSS Connection</b>\n"
         f"   Connections: {wss_conns}\n"
         f"   Reconnects: {wss_reconn}\n"
         f"   Errors: {wss_errors}\n\n"
-        f"📨 <b>Message Pipeline</b>\n"
+        f"{FIRE} <b>Message Pipeline</b>\n"
         f"   Received: {msgs_received}\n"
         f"   Duplicates: {wss_dupes}\n"
         f"   Malformed: {malformed}\n"
         f"   OTPs parsed: {otps_parsed}\n"
         f"   OTPs delivered: {otps_delivered}\n\n"
-        f"📤 <b>Telegram Dispatch</b>\n"
+        f"{SPEAKER} <b>Telegram Dispatch</b>\n"
         f"   Group: {group_msgs}\n"
         f"   DMs: {dm_msgs}\n"
         f"   Queue sent: {limiter_stats.get('sent', 0)}\n"
         f"   Queue dropped: {limiter_stats.get('dropped', 0)}\n\n"
-        f"📋 <b>Claims</b>\n"
+        f"{STAR} <b>Claims</b>\n"
         f"   Created: {claims_created}\n"
         f"   Released: {claims_released}\n\n"
-        f"🚫 <b>Filters</b>\n"
+        f"{CROSS} <b>Filters</b>\n"
         f"   Blocked services: {', '.join(blocked_services) or 'none'}\n"
         f"   Blocked countries: {', '.join(blocked_countries) or 'none'}\n"
         f"   Service hits: {blocked_svc}\n"
         f"   Country hits: {blocked_ctry}\n\n"
-        f"📮 <b>Dead Letter Queue</b>: {dlq_msgs} pending",
+        f"{INFO} <b>Dead Letter Queue</b>: {dlq_msgs} pending",
         parse_mode="HTML",
     )
 
@@ -97,12 +101,12 @@ async def cmd_broadcast(message: Message, command: CommandObject) -> None:
     try:
         await message.bot.send_message(
             chat_id=settings.telegram_group_id,
-            text=f"📢 <b>System Announcement</b>\n\n{text}",
+            text=f"{SPEAKER} <b>System Announcement</b>\n\n{text}",
             parse_mode="HTML",
         )
-        await message.answer(f"✅ Broadcast sent.")
+        await message.answer(f"{CHECKMARK} Broadcast sent.")
     except Exception as exc:
-        await message.answer(f"❌ Broadcast failed: {exc}")
+        await message.answer(f"{CROSS} Broadcast failed: {exc}")
 
 
 # ── /kick (admin) ──────────────────────────────────────────────
@@ -280,7 +284,7 @@ async def cmd_withdrawals(message: Message, command: CommandObject) -> None:
     if not requests:
         return await message.answer("💸 No pending withdrawal requests.")
 
-    lines = ["💸 <b>Pending Withdrawals</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"]
+    lines = [f"{DOLLAR} <b>Pending Withdrawals</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"]
     for req in requests:
         lines.append(
             f"#{req['id']} — ${req['amount']:.2f} via {req['method']}\n"

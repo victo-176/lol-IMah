@@ -119,6 +119,23 @@ async def start_health_server() -> tuple[web.AppRunner, web.TCPSite]:
 logger = logging.getLogger(__name__)
 
 
+async def _wait_for_redis(max_attempts: int = 30, delay: float = 2.0) -> None:
+    """Retry Redis connection with backoff. Non-fatal if it never connects."""
+    import redis.asyncio as aioredis
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = await redis_store.get_redis()
+            await r.ping()
+            logger.info("Redis connected ✓ (attempt %d)", attempt)
+            return
+        except Exception as exc:
+            logger.warning("Redis attempt %d/%d failed: %s", attempt, max_attempts, exc)
+            if attempt < max_attempts:
+                await asyncio.sleep(delay)
+    logger.error("Redis unavailable after %d attempts — running in degraded mode (no caching)", max_attempts)
+
+
 async def main() -> None:
     global _bot_ref
 
@@ -127,51 +144,48 @@ async def main() -> None:
     logger.info("IVASMS WSS Real-Time Forwarder & Telegram Bot v2")
     logger.info("=" * 60)
 
-    # Validate config
+    # ══ START HEALTH SERVER FIRST ══
+    # Railway needs /health to respond immediately or it kills the container.
+    health_runner, health_site = await start_health_server()
+
+    # Validate config (non-fatal, log and continue)
     if not settings.telegram_bot_token:
-        logger.critical("TELEGRAM_BOT_TOKEN is not set!")
-        sys.exit(1)
+        logger.error("TELEGRAM_BOT_TOKEN is not set — bot commands will not work")
     if not settings.ivasms_wss_url:
-        logger.critical("IVASMS_WSS_URL is not set!")
-        sys.exit(1)
+        logger.error("IVASMS_WSS_URL is not set — WSS stream will not connect")
 
     # Initialize database
     logger.info("Initializing database...")
-    await init_db()
-
-    # Connect Redis
-    logger.info("Connecting to Redis...")
     try:
-        r = await redis_store.get_redis()
-        await r.ping()
-        logger.info("Redis connected ✓")
+        await init_db()
     except Exception as exc:
-        logger.critical("Redis connection failed: %s", exc)
-        sys.exit(1)
+        logger.error("Database init failed: %s", exc)
 
-    # Setup Telegram bot
-    logger.info("Setting up Telegram bot...")
-    bot, dp = setup_bot()
-    _bot_ref = bot
+    # Connect Redis with retry loop
+    logger.info("Connecting to Redis...")
+    await _wait_for_redis()
 
-    # Start rate limiter
-    limiter = get_rate_limiter()
-    if limiter:
-        limiter.start()
+    # Setup Telegram bot (skip if no token)
+    bot = None
+    dp = None
+    if settings.telegram_bot_token:
+        logger.info("Setting up Telegram bot...")
+        bot, dp = setup_bot()
+        _bot_ref = bot
 
-    # Start claim cleanup
-    claim_manager = get_claim_manager()
-    claim_manager.start_cleanup_loop()
+        # Start rate limiter
+        limiter = get_rate_limiter()
+        if limiter:
+            limiter.start()
+
+        # Start claim cleanup
+        claim_manager = get_claim_manager()
+        claim_manager.start_cleanup_loop()
+    else:
+        logger.warning("Skipping bot setup — no TELEGRAM_BOT_TOKEN")
 
     # Setup WSS client
     wss_client = WSSClient(on_message=on_wss_message)
-
-    # Start health check server for Railway
-    health_runner, health_site = await start_health_server()
-
-    # Start aiogram polling
-    async def _start_bot_polling() -> None:
-        await dp.start_polling(bot)
 
     # Graceful shutdown on signals
     loop = asyncio.get_running_loop()
@@ -190,16 +204,30 @@ async def main() -> None:
 
     # Run everything concurrently
     logger.info("Starting all subsystems...")
+    tasks: list[asyncio.Task[None]] = []
+
+    async def _run_wss() -> None:
+        await wss_client.start()
+
+    tasks.append(asyncio.create_task(_run_wss()))
+
+    if dp and bot:
+        async def _start_bot_polling() -> None:
+            await dp.start_polling(bot)
+
+        tasks.append(asyncio.create_task(_start_bot_polling()))
+
     try:
-        await asyncio.gather(
-            _start_bot_polling(),
-            wss_client.start(),
-        )
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         pass
     finally:
         await health_runner.cleanup()
-        await shutdown(wss_client, dp, bot, claim_manager)
+        if bot and dp:
+            await shutdown(wss_client, dp, bot, get_claim_manager())
+        else:
+            await redis_store.close_redis()
+            await close_db()
 
 
 def run() -> None:

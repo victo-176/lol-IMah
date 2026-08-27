@@ -26,6 +26,15 @@ from .config import settings
 from .otp_parser import extract_otp, ParsedOTP
 from .rate_limiter import TelegramRateLimiter
 from .wallet import wallet_service
+from .emoji import (
+    BREAKING, CHECKMARK, CONTACT, COPY, DOLLAR, EXCLAMATION, FIRE,
+    INFO, NEW_BADGE, PHONE, PLUS, REFRESH, SPEAKER, STAR, STATS,
+    TELEGRAM, WHATSAPP, WITHDRAW, EARTH, PIN, LINK, CHAT,
+)
+try:
+    from .emoji import COUNTRY_FLAGS
+except ImportError:
+    COUNTRY_FLAGS: dict[str, str] = {}  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
 
@@ -98,21 +107,21 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     ])
 
     await message.answer(
-        "🌐 <b>IVASMS Real-Time Forwarder</b>\n"
+        f"{EARTH} <b>IVASMS Real-Time Forwarder</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Monitor IVASMS numbers and receive OTPs in\n"
         "real-time — to this group <b>and</b> directly to you.\n\n"
-        f"💰 Balance: <b>${db_user.balance:.2f}</b>\n"
-        f"📊 OTPs received: <b>{db_user.otp_count}</b>\n\n"
-        "📋 <b>Commands:</b>\n"
-        "  /numbers — Browse & claim numbers\n"
-        "  /active — View active claims\n"
-        "  /extend — Extend a claim\n"
-        "  /release — Release a number\n"
-        "  /balance — Check balance\n"
-        "  /withdraw — Request payout\n"
-        "  /history — Transaction history\n"
-        "  /help — Full command list",
+        f"{DOLLAR} Balance: <b>${db_user.balance:.2f}</b>\n"
+        f"{STATS} OTPs received: <b>{db_user.otp_count}</b>\n\n"
+        f"{CHAT} <b>Commands:</b>\n"
+        f"  {TELEGRAM} /numbers — Browse & claim numbers\n"
+        f"  {COPY} /active — View active claims\n"
+        f"{REFRESH} /extend — Extend a claim\n"
+        f"  /release — Release a number\n"
+        f"  {DOLLAR} /balance — Check balance\n"
+        f"  {WITHDRAW} /withdraw — Request payout\n"
+        f"  /history — Transaction history\n"
+        f"  {INFO} /help — Full command list",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -133,11 +142,11 @@ async def cmd_active(message: Message) -> None:
 
     claims = await _claim_manager.get_user_claims(message.from_user.id)
     if not claims:
-        return await message.answer(
-            "📋 <b>Active Claims</b>\n\n"
-            "No active claims. Use /numbers to browse.",
-            parse_mode="HTML",
-        )
+        return    await message.answer(
+        f"{COPY} <b>Active Claims</b>\n\n"
+        "No active claims. Use /numbers to browse.",
+        parse_mode="HTML",
+    )
 
     lines = ["📋 <b>Your Active Claims</b>\n"]
     buttons: list[list[InlineKeyboardButton]] = []
@@ -213,14 +222,14 @@ async def cmd_balance(message: Message) -> None:
     )
 
     await message.answer(
-        "💰 <b>Account Balance</b>\n"
+        f"{DOLLAR} <b>Account Balance</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"   Balance: <b>${user.balance:.2f}</b>\n"
         f"   Total earned: ${user.total_earned:.2f}\n"
         f"   Total spent: ${user.total_spent:.2f}\n"
         f"   OTPs received: {user.otp_count}\n\n"
-        "💳 Top-up: /deposit\n"
-        "💸 Withdraw: /withdraw",
+        f"  {NEW_BADGE} Top-up: /deposit\n"
+        f"  {WITHDRAW} Withdraw: /withdraw",
         parse_mode="HTML",
     )
 
@@ -520,19 +529,19 @@ BOT_LINK = "https://t.me/Anon_MatrixxV3bot"
 
 
 def format_group_message(phone: str, parsed: ParsedOTP, raw_body: str, sender: str | None = None) -> str:
-    otp_line = f"🔑 OTP: <code>{parsed.code}</code>" if parsed.code else (
-        "🔗 Magic Link" if parsed.is_magic_link else "ℹ️ No code detected"
+    otp_line = f"{EXCLAMATION} OTP: <code>{parsed.code}</code>" if parsed.code else (
+        f"{LINK} Magic Link" if parsed.is_magic_link else f"{INFO} No code detected"
     )
-    sender_line = f"👤 Sender: {_escape_html(sender)}" if sender else ""
+    sender_line = f"{CONTACT} Sender: {_escape_html(sender)}" if sender else ""
     return (
-        "📩 <b>[GLOBAL FEED] Inbound SMS</b>\n"
+        f"{BREAKING} <b>[GLOBAL FEED] Inbound SMS</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 Target: <code>+{phone}</code>\n"
-        f"👤 Service: {parsed.service}\n"
+        f"{PHONE} Target: <code>+{phone}</code>\n"
+        f"{WHATSAPP} Service: {parsed.service}\n"
         f"{otp_line}\n"
         f"{sender_line}\n"
-        f"💬 Text: <i>{_escape_html(raw_body[:300])}</i>\n"
-        f"🕒 {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"{CHAT} Text: <i>{_escape_html(raw_body[:300])}</i>\n"
+        f"{PIN} {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"\n<i>— {WATERMARK}</i>"
     )
 
@@ -563,17 +572,17 @@ def format_dm_message(phone: str, parsed: ParsedOTP, raw_body: str, remaining_se
     mins = remaining_seconds // 60
     secs = remaining_seconds % 60
     otp_line = (
-        f"🔑 Code: <code>{parsed.code}</code>  <i>(Tap code to copy)</i>"
+        f"{COPY} Code: <code>{parsed.code}</code>  <i>(Tap code to copy)</i>"
         if parsed.code
-        else ("🔗 Magic Link Detected" if parsed.is_magic_link else "")
+        else (f"{LINK} Magic Link Detected" if parsed.is_magic_link else "")
     )
     return (
-        "🎯 <b>[YOUR OTP RECEIVED]</b>\n"
+        f"{FIRE} <b>[YOUR OTP RECEIVED]</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 Number: <code>+{phone}</code>\n"
+        f"{PHONE} Number: <code>+{phone}</code>\n"
         f"{otp_line}\n"
-        f"💬 Full Content: <i>{_escape_html(raw_body[:300])}</i>\n"
-        f"⏳ Claim Status: Active ({mins}m {secs}s remaining)\n"
+        f"{CHAT} Full Content: <i>{_escape_html(raw_body[:300])}</i>\n"
+        f"{STATS} Claim Status: Active ({mins}m {secs}s remaining)\n"
         f"\n<i>— {WATERMARK}</i>"
     )
 
