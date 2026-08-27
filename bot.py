@@ -120,6 +120,7 @@ UNICODE_FALLBACKS = {
     "phone": "\U0001F4DE", "earth": "\U0001F30D",
     "calendar": "\U0001F4C5", "withdraw": "\U0001F4B8",
     "referral": "\U0001F91D", "default": "\U0001F4F1",
+    "archive": "\U0001F4C2", "hourglass": "\u23F3",
 }
 
 def premium_icon(name):
