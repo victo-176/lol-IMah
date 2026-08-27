@@ -236,10 +236,19 @@ def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, ico
 def rbtn(text, style=None, icon=None, icon_id=None):
     if icon_id is None:
         icon_id = premium_icon(icon)
+    # Embed unicode emoji in text so it shows even if icon_custom_emoji_id isn't supported
+    _btn_emojis = {
+        "phone": "📞", "stats": "📊", "lock": "🔐", "top": "🏆",
+        "chart_up": "📈", "headphones": "🎧", "people": "👥",
+        "card": "💳", "settings": "⚙️", "star": "⭐",
+    }
+    display = text
+    if icon and icon in _btn_emojis:
+        display = f"{_btn_emojis[icon]} {text}"
     try:
-        return types.KeyboardButton(text=text, style=style, icon_custom_emoji_id=icon_id)
+        return types.KeyboardButton(text=display, style=style, icon_custom_emoji_id=icon_id)
     except TypeError:
-        b = types.KeyboardButton(text=text)
+        b = types.KeyboardButton(text=display)
         if style:
             b.style = style
         if icon_id:
@@ -1361,6 +1370,16 @@ else:
             time.sleep(60)
 
 # =========================== USER HANDLERS ===========================
+@bot.message_handler(commands=['cancel'])
+def cancel_handler(message):
+    """Cancel any current operation and show main menu."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    # Clear any pending state
+    user_states.pop(chat_id, None)
+    user_states.pop(user_id, None)
+    show_main_menu(chat_id, user_id, message.from_user.first_name)
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
