@@ -100,8 +100,30 @@ def premium_icon(name):
         return PREMIUM_EMOJI_IDS[n.lower()]
     return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
 
+_PE_MAP = {
+    "star": "⭐", "wave": "👋", "phone": "📱", "stats": "📊",
+    "lock": "🔒", "top": "🏆", "chart_up": "📈", "headphones": "🎧",
+    "people": "👥", "card": "💳", "record": "🎙️", "flash": "⚡",
+    "chat": "💬", "checkmark": "✅", "cross": "❌", "bell": "🔔",
+    "pin": "📍", "dollar": "💲", "fire": "🔥", "bookmark": "🔖",
+    "letter": "✉️", "paperclip": "📎", "settings": "⚙️", "speaker": "📢",
+    "download": "⬇️", "calendar": "📅", "idea": "💡", "free": "🆓",
+    "pencil": "✏️", "trash": "🗑️", "back": "↩️", "plus": "➕",
+    "search": "🔍", "refresh": "🔄", "new_badge": "🆕", "soon": "🔜",
+    "location": "📍", "lock": "🔒", "toggle": "🔀", "admin": "🛡️",
+    "hourglass": "⏳", "support": "🆘", "announce_bw": "📢",
+    "data": "📊", "verified": "✅", "wallet": "💰", "music": "🎵",
+    "envelope": "✉️", "people": "👥", "key": "🔑",
+}
+
 def pe(name, fallback="•", emoji_id=None):
-    """Return a safe fallback emoji (tg-emoji tags break HTML parse mode)."""
+    """Return premium Unicode emoji with fallback."""
+    n = str(name).strip() if name else ""
+    if n.lower() in _PE_MAP:
+        return _PE_MAP[n.lower()]
+    eid = emoji_id or premium_icon(n)
+    if eid:
+        return _PE_MAP.get(n.lower(), fallback)
     return fallback
 
 def flag_icon_id(iso):
@@ -111,12 +133,23 @@ def app_icon_id(app_name):
     return premium_icon(app_name) or premium_icon(app_name.lower()) or premium_icon("DEFAULT")
 
 def flag_emoji_html(iso):
-    eid = flag_icon_id(iso)
-    return pe(eid, "🌍") if eid else "🌍"
+    """Return Unicode flag emoji from ISO code."""
+    if not iso or len(str(iso)) != 2:
+        return "🌍"
+    code = str(iso).upper()
+    return chr(0x1F1E6 + ord(code[0]) - ord('A')) + chr(0x1F1E6 + ord(code[1]) - ord('A'))
 
 def app_emoji_html(app_name):
-    eid = app_icon_id(app_name)
-    return pe(eid, "📱") if eid else "📱"
+    """Return Unicode emoji for app name."""
+    _app_map = {
+        "whatsapp": "💬", "facebook": "🔵", "instagram": "📷",
+        "telegram": "✈️", "twitter": "🐦", "google": "🔍",
+        "tiktok": "🎵", "snapchat": "👻", "paypal": "💳",
+        "discord": "🎮", "line": "🟢", "viber": "💜",
+        "amazon": "📦", "apple": "🍎", "microsoft": "🪟",
+        "netflix": "🎬", "spotify": "🎧", "uber": "🚗",
+    }
+    return _app_map.get(str(app_name).lower(), "📱")
 
 # =========================== CUSTOM BUTTON HELPERS ===========================
 _old_inline_dict = types.InlineKeyboardButton.to_dict
