@@ -1062,24 +1062,79 @@ bot = telebot.TeleBot(BOT_TOKEN)
 _original_send_message = bot.send_message
 
 def _send_with_premium(chat_id, text, **kwargs):
-    """Auto-replace premium emoji tags with real custom emoji entities."""
-    if _PREMIUM_TAG in str(text):
-        import re as _re
-        _pat = _re.compile(_re.escape(_PREMIUM_TAG) + r'(\d{15,})' + _re.escape(_PREMIUM_TAG) + r'(.)' + _re.escape(_PREMIUM_TAG))
-        entities = kwargs.get("entities") or []
-        offset = 0
-        def _repl(m):
-            nonlocal offset
-            eid, char = m.group(1), m.group(2)
-            pos = m.start() + offset
-            offset += 1 - (m.end() - m.start())
-            entities.append({"type": "custom_emoji", "offset": pos, "length": 1, "custom_emoji_id": eid})
-            return char
-        text = _pat.sub(_repl, text)
-        kwargs["entities"] = entities
-    return _original_send_message(chat_id, text, **kwargs)
+    """Auto-replace premium emoji tags with real custom emoji entities.
 
-bot.send_message = _send_with_premium
+    When premium emoji tags are present:
+    1. Strip HTML and convert to entities (bold, text_link, code, italic)
+    2. Replace pe() tags with real emoji + custom_emoji entities
+    3. Send with parse_mode=None so Telegram honours all entities
+    """
+    if _PREMIUM_TAG not in str(text):
+        return _original_send_message(chat_id, text, **kwargs)
+
+    import re as _re
+
+    # === STEP 1: Strip HTML, build formatting entities ===
+    html_pat = _re.compile(
+        r"<b>(.+?)</b>"
+        r"|<a\s+href=['\"]([^'\"]*?)['\"]\s*>(.+?)</a>"
+        r"|<code>(.+?)</code>"
+        r"|<i>(.+?)</i>",
+        _re.DOTALL,
+    )
+
+    entities = []
+    parts = []
+    pos = 0
+    for m in html_pat.finditer(text):
+        parts.append({"text": text[pos:m.start()]})
+        if m.group(1):  # <b>...</b>
+            parts.append({"text": m.group(1), "entity": "bold"})
+        elif m.group(2):  # <a href='...'>...</a>
+            parts.append({"text": m.group(3), "entity": "text_link", "url": m.group(2)})
+        elif m.group(4):  # <code>...</code>
+            parts.append({"text": m.group(4), "entity": "code"})
+        elif m.group(5):  # <i>...</i>
+            parts.append({"text": m.group(5), "entity": "italic"})
+        pos = m.end()
+    parts.append({"text": text[pos:]})
+
+    # Build clean text + formatting entities
+    clean = ""
+    for p in parts:
+        eoff = len(clean)
+        clean += p["text"]
+        if "entity" in p:
+            ent = {"type": p["entity"], "offset": eoff, "length": len(p["text"])}
+            if "url" in p:
+                ent["url"] = p["url"]
+            entities.append(ent)
+    text = clean
+
+    # === STEP 2: Replace premium emoji tags on clean text ===
+    _pat = _re.compile(
+        _re.escape(_TAG) + r'(\d{15,})' +
+        _re.escape(_TAG) + r'(.)' +
+        _re.escape(_PREMIUM_TAG)
+    )
+    _off = 0
+
+    def _pe_repl(m):
+        nonlocal _off
+        eid, char = m.group(1), m.group(2)
+        pos = m.start() + _off
+        _off += 1 - (m.end() - m.start())
+        entities.append({"type": "custom_emoji", "offset": pos,
+                         "length": 1, "custom_emoji_id": eid})
+        return char
+
+    text = _pat.sub(_pe_repl, text)
+
+    # === STEP 3: Send without parse_mode (entities do all formatting) ===
+    kwargs.pop("parse_mode", None)
+    kwargs["entities"] = entities
+
+    return _original_send_message(chat_id, text, **kwargs)
 
 BOT_START_TIME = datetime.now()
 
