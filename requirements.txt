@@ -1,10 +1,10 @@
 # Telegram Bot Framework (async, production-grade)
 aiogram==3.15.0
-aiohttp==3.14.3
+aiohttp>=3.9.0,<4.0.0
 
 # WebSocket / Socket.IO client
-python-socketio[asyncio_client]==5.16.4
-python-engineio[asyncio_client]==4.13.5
+python-socketio[asyncio_client]==5.11.0
+python-engineio[asyncio_client]==4.9.0
 websockets>=12.0,<14.0
 
 # Redis (async state store + caching)

@@ -5,14 +5,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Force pip upgrade first (cache-bust layer)
-RUN pip install --upgrade pip setuptools wheel
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Verify aiohttp has ClientWSTimeout (required by python-engineio)
-RUN python -c "from aiohttp import ClientWSTimeout; print('aiohttp OK:', ClientWSTimeout)"
 
 COPY src/ ./src/
 
