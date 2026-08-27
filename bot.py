@@ -128,28 +128,14 @@ for _k, _v in PREMIUM_FLAGS.items():
 # Hardcoded extras
 _PREMIUM_IDS.update(PREMIUM_EMOJI_IDS)
 
-def pe(name, fallback="•", emoji_id=None):
-    """Return premium custom emoji tag or fallback.
-
-    When the name maps to a premium emoji ID from emoji.txt,
-    returns a marker tag that auto-replaces into a real premium
-    custom emoji when sent via bot.send_message.
-    Falls back to a plain Unicode emoji if no premium ID exists.
-    """
-    n = str(name).strip() if name else ""
-    eid = emoji_id or premium_icon(n) or _PREMIUM_IDS.get(n.lower())
-    if eid:
-        return f"{_PREMIUM_TAG}{eid}{_PREMIUM_TAG}{fallback}{_PREMIUM_TAG}"
-    # Fallback to common Unicode emoji
-    _fb = {"star": "⭐", "wave": "👋", "phone": "📱", "stats": "📊",
-           "lock": "🔒", "top": "🏆", "chart_up": "📈", "headphones": "🎧",
-           "people": "👥", "card": "💳", "record": "🎙️", "flash": "⚡",
-           "chat": "💬", "checkmark": "✅", "cross": "❌", "bell": "🔔",
-           "pin": "📍", "dollar": "💲", "fire": "🔥", "trash": "🗑️",
-           "back": "↩️", "plus": "➕", "search": "🔍", "refresh": "🔄",
-           "admin": "🛡️", "hourglass": "⏳", "support": "🆘",
-           "wallet": "💰", "key": "🔑", "settings": "⚙️"}
-    return _fb.get(n.lower(), fallback)
+def pe(name, fallback=None):
+    """Premium custom emoji as HTML (<tg-emoji>). Falls back to its unicode twin
+    when premium emojis aren't allowed, so messages always look right."""
+    fb = fallback if fallback is not None else UNICODE_FALLBACKS.get(str(name).lower(), "•")
+    eid = premium_icon(name)
+    if eid and PREMIUM_EMOJI_OK:
+        return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+    return fb
 
 def flag_icon_id(iso):
     return premium_icon(iso) or premium_icon("XX")
@@ -1059,149 +1045,115 @@ def load_data():
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # =========================== PREMIUM EMOJI AUTO-REPLACE ===========================
-_original_send_message = bot.send_message
+# pe() returns <tg-emoji emoji-id="ID">FB</tg-emoji> tags.
+# The send wrappers convert these to proper Telegram custom_emoji entities.
+_TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="(\d+)">([^<]*)</tg-emoji>')
 
-def _send_with_premium(chat_id, text, **kwargs):
-    """Auto-replace premium emoji tags with real custom emoji entities.
-
-    When premium emoji tags are present:
-    1. Strip HTML and convert to entities (bold, text_link, code, italic)
-    2. Replace pe() tags with real emoji + custom_emoji entities
-    3. Send with parse_mode=None so Telegram honours all entities
-    """
-    if _PREMIUM_TAG not in str(text):
-        return _original_send_message(chat_id, text, **kwargs)
-
-    import re as _re
-
-    # === STEP 1: Strip HTML, build formatting entities ===
-    html_pat = _re.compile(
-        r"<b>(.+?)</b>"
-        r"|<a\s+href=['\"]([^'\"]*?)['\"]\s*>(.+?)</a>"
-        r"|<code>(.+?)</code>"
-        r"|<i>(.+?)</i>",
-        _re.DOTALL,
-    )
-
+def _convert_premium_entities(text):
+    """Convert <tg-emoji> tags to custom_emoji entities.
+    Returns (clean_text, list_of_entity_dicts)."""
+    if not isinstance(text, str) or '<tg-emoji' not in text:
+        return text, []
     entities = []
     parts = []
     pos = 0
-    for m in html_pat.finditer(text):
-        parts.append({"text": text[pos:m.start()]})
-        if m.group(1):  # <b>...</b>
-            parts.append({"text": m.group(1), "entity": "bold"})
-        elif m.group(2):  # <a href='...'>...</a>
-            parts.append({"text": m.group(3), "entity": "text_link", "url": m.group(2)})
-        elif m.group(4):  # <code>...</code>
-            parts.append({"text": m.group(4), "entity": "code"})
-        elif m.group(5):  # <i>...</i>
-            parts.append({"text": m.group(5), "entity": "italic"})
-        pos = m.end()
-    parts.append({"text": text[pos:]})
-
-    # Build clean text + formatting entities
-    clean = ""
-    for p in parts:
-        eoff = len(clean)
-        clean += p["text"]
-        if "entity" in p:
-            ent = {"type": p["entity"], "offset": eoff, "length": len(p["text"])}
-            if "url" in p:
-                ent["url"] = p["url"]
-            entities.append(ent)
-    text = clean
-
-    # === STEP 2: Replace premium emoji tags on clean text ===
-    _pat = _re.compile(
-        _re.escape(_TAG) + r'(\d{15,})' +
-        _re.escape(_TAG) + r'(.)' +
-        _re.escape(_PREMIUM_TAG)
-    )
-    _off = 0
-
-    def _pe_repl(m):
-        nonlocal _off
+    for m in _TG_EMOJI_RE.finditer(text):
+        parts.append(text[pos:m.start()])
         eid, char = m.group(1), m.group(2)
-        pos = m.start() + _off
-        _off += 1 - (m.end() - m.start())
-        entities.append({"type": "custom_emoji", "offset": pos,
-                         "length": 1, "custom_emoji_id": eid})
-        return char
-
-    text = _pat.sub(_pe_repl, text)
-
-    # === STEP 3: Send without parse_mode (entities do all formatting) ===
-    kwargs.pop("parse_mode", None)
-    kwargs["entities"] = entities
-
-    return _original_send_message(chat_id, text, **kwargs)
-
-# Also wrap reply_to and edit_message_text for premium emoji
-_original_reply_to = bot.reply_to
-def _reply_with_premium(message, text, **kwargs):
-    if _PREMIUM_TAG in str(text):
-        return _send_with_premium(message.chat.id, text, reply_to_message_id=message.message_id, **kwargs)
-    return _original_reply_to(message, text, **kwargs)
-bot.reply_to = _reply_with_premium
-
-_original_edit = bot.edit_message_text
-def _edit_with_premium(text, chat_id, message_id, **kwargs):
-    if _PREMIUM_TAG not in str(text):
-        return _original_edit(text, chat_id, message_id, **kwargs)
-    import re as _re
-    html_pat = _re.compile(
-        r"<b>(.+?)</b>"
-        r"|<a\s+href=['\"]([^'\"]*?)['\"]\s*>(.+?)</a>"
-        r"|<code>(.+?)</code>"
-        r"|<i>(.+?)</i>",
-        _re.DOTALL,
-    )
-    entities = []
-    parts = []
-    pos = 0
-    for m in html_pat.finditer(text):
-        parts.append({"text": text[pos:m.start()]})
-        if m.group(1):
-            parts.append({"text": m.group(1), "entity": "bold"})
-        elif m.group(2):
-            parts.append({"text": m.group(3), "entity": "text_link", "url": m.group(2)})
-        elif m.group(4):
-            parts.append({"text": m.group(4), "entity": "code"})
-        elif m.group(5):
-            parts.append({"text": m.group(5), "entity": "italic"})
+        eoff = sum(len(p) for p in parts)
+        parts.append(char)
+        entities.append({"type": "custom_emoji", "offset": eoff,
+                         "length": len(char), "custom_emoji_id": eid})
         pos = m.end()
-    parts.append({"text": text[pos:]})
-    clean = ""
-    for p in parts:
-        eoff = len(clean)
-        clean += p["text"]
-        if "entity" in p:
-            ent = {"type": p["entity"], "offset": eoff, "length": len(p["text"])}
-            if "url" in p:
-                ent["url"] = p["url"]
-            entities.append(ent)
-    text = clean
-    _pat = _re.compile(
-        _re.escape(_PREMIUM_TAG) + r'(\d{15,})' +
-        _re.escape(_PREMIUM_TAG) + r'(.)' +
-        _re.escape(_PREMIUM_TAG)
-    )
-    _off = 0
-    def _pe_repl(m):
-        nonlocal _off
-        eid, char = m.group(1), m.group(2)
-        pos = m.start() + _off
-        _off += 1 - (m.end() - m.start())
-        entities.append({"type": "custom_emoji", "offset": pos,
-                         "length": 1, "custom_emoji_id": eid})
-        return char
-    text = _pat.sub(_pe_repl, text)
-    kwargs.pop("parse_mode", None)
-    kwargs["entities"] = entities
-    return _original_edit(text, chat_id, message_id, **kwargs)
-bot.edit_message_text = _edit_with_premium
+    parts.append(text[pos:])
+    return "".join(parts), entities
 
-BOT_START_TIME = datetime.now()
+def _strip_premium_text(text):
+    """Strip <tg-emoji> tags to plain fallback text."""
+    return _TG_EMOJI_RE.sub(r'\1', text) if isinstance(text, str) else text
+
+def _strip_markup_icons(markup):
+    """Remove premium emoji icons from keyboard buttons."""
+    try:
+        for row in getattr(markup, "keyboard", []):
+            for btn in row:
+                if getattr(btn, "icon_custom_emoji_id", None):
+                    btn.icon_custom_emoji_id = None
+    except Exception:
+        pass
+    return markup
+
+def _premium_rejected(err):
+    msg = str(err).lower()
+    return "custom emoji" in msg or "custom_emoji" in msg
+
+# --- Wrap send_message ---
+_orig_send_message = bot.send_message
+def _safe_send_message(chat_id, text, *args, **kwargs):
+    global PREMIUM_EMOJI_OK
+    if PREMIUM_EMOJI_OK:
+        try:
+            clean_text, pe_ents = _convert_premium_entities(text)
+            if pe_ents:
+                existing = kwargs.get("entities") or []
+                existing.extend(pe_ents)
+                kwargs["entities"] = existing
+                kwargs.pop("parse_mode", None)
+            return _orig_send_message(chat_id, clean_text, *args, **kwargs)
+        except Exception as e:
+            if not _premium_rejected(e):
+                raise
+            PREMIUM_EMOJI_OK = False
+            logger.warning("Premium emojis rejected — switching to unicode fallbacks.")
+    if kwargs.get("reply_markup") is not None:
+        kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
+    return _orig_send_message(chat_id, _strip_premium_text(text), *args, **kwargs)
+bot.send_message = _safe_send_message
+
+# --- Wrap reply_to ---
+_orig_reply_to = bot.reply_to
+def _safe_reply_to(message, text, *args, **kwargs):
+    global PREMIUM_EMOJI_OK
+    if PREMIUM_EMOJI_OK:
+        try:
+            clean_text, pe_ents = _convert_premium_entities(text)
+            if pe_ents:
+                existing = kwargs.get("entities") or []
+                existing.extend(pe_ents)
+                kwargs["entities"] = existing
+                kwargs.pop("parse_mode", None)
+            return _orig_reply_to(message, clean_text, *args, **kwargs)
+        except Exception as e:
+            if not _premium_rejected(e):
+                raise
+            PREMIUM_EMOJI_OK = False
+    if kwargs.get("reply_markup") is not None:
+        kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
+    return _orig_reply_to(message, _strip_premium_text(text), *args, **kwargs)
+bot.reply_to = _safe_reply_to
+
+# --- Wrap edit_message_text ---
+_orig_edit_message_text = bot.edit_message_text
+def _safe_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
+    global PREMIUM_EMOJI_OK
+    if PREMIUM_EMOJI_OK:
+        try:
+            clean_text, pe_ents = _convert_premium_entities(text)
+            if pe_ents:
+                existing = kwargs.get("entities") or []
+                existing.extend(pe_ents)
+                kwargs["entities"] = existing
+                kwargs.pop("parse_mode", None)
+            return _orig_edit_message_text(clean_text, chat_id=chat_id, message_id=message_id, *args, **kwargs)
+        except Exception as e:
+            if not _premium_rejected(e):
+                raise
+            PREMIUM_EMOJI_OK = False
+    if kwargs.get("reply_markup") is not None:
+        kwargs["reply_markup"] = _strip_markup_icons(kwargs["reply_markup"])
+    return _orig_edit_message_text(_strip_premium_text(text), chat_id=chat_id, message_id=message_id, *args, **kwargs)
+bot.edit_message_text = _safe_edit_message_text
+
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
 def broadcast_stock_update(country_code, app_name, number_count):
@@ -1322,8 +1274,21 @@ def send_to_telegram_group(text, otp_code, number):
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     for chat_id in chat_ids:
         try:
-            payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}
+            # Convert <tg-emoji> tags to entities for the raw API call
+            clean_text, pe_ents = _convert_premium_entities(text)
+            payload = {"chat_id": chat_id, "text": clean_text, "reply_markup": json.dumps(keyboard)}
+            if pe_ents:
+                payload["entities"] = json.dumps(pe_ents)
+            else:
+                payload["parse_mode"] = "HTML"
             resp = requests.post(url, data=payload, timeout=10)
+            if resp.status_code == 400 and "custom emoji" in resp.text.lower():
+                global PREMIUM_EMOJI_OK
+                PREMIUM_EMOJI_OK = False
+                logger.warning("Premium emojis rejected — switching to unicode fallbacks.")
+                clean_text = _TG_EMOJI_RE.sub(r'\1', text)
+                payload = {"chat_id": chat_id, "text": clean_text, "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}
+                resp = requests.post(url, data=payload, timeout=10)
             if resp.status_code == 200:
                 logger.info(f"Sent to group {chat_id}")
                 msg_id = resp.json()["result"]["message_id"]
