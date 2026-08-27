@@ -1711,6 +1711,9 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
         return
 
     if is_admin(user_id):
+        if data.startswith("combo_app|"):
+            combo_app_selection(call)
+            return
         handle_admin_callback(call, data, chat_id, msg_id)
     else:
         if data.startswith("copy_"):
