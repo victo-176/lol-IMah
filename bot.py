@@ -254,29 +254,6 @@ def raw_btn(text, url=None, callback_data=None, style=None, icon=None):
         b["icon_custom_emoji_id"] = icon_id
     return b
 
-# =========================== PREMIUM EMOJI AUTO-REPLACE ===========================
-_original_send_message = bot.send_message
-
-def _send_with_premium(chat_id, text, **kwargs):
-    """Auto-replace premium emoji tags with real custom emoji entities."""
-    if _PREMIUM_TAG in str(text):
-        import re as _re
-        _pat = _re.compile(_re.escape(_PREMIUM_TAG) + r'(\d{15,})' + _re.escape(_PREMIUM_TAG) + r'(.)' + _re.escape(_PREMIUM_TAG))
-        entities = kwargs.get("entities") or []
-        offset = 0
-        def _repl(m):
-            nonlocal offset
-            eid, char = m.group(1), m.group(2)
-            pos = m.start() + offset
-            offset += 1 - (m.end() - m.start())
-            entities.append({"type": "custom_emoji", "offset": pos, "length": 1, "custom_emoji_id": eid})
-            return char
-        text = _pat.sub(_repl, text)
-        kwargs["entities"] = entities
-    return _original_send_message(chat_id, text, **kwargs)
-
-bot.send_message = _send_with_premium
-
 # =========================== DB SETUP ===========================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -1080,6 +1057,30 @@ def load_data():
 
 # =========================== BOT INIT ===========================
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# =========================== PREMIUM EMOJI AUTO-REPLACE ===========================
+_original_send_message = bot.send_message
+
+def _send_with_premium(chat_id, text, **kwargs):
+    """Auto-replace premium emoji tags with real custom emoji entities."""
+    if _PREMIUM_TAG in str(text):
+        import re as _re
+        _pat = _re.compile(_re.escape(_PREMIUM_TAG) + r'(\d{15,})' + _re.escape(_PREMIUM_TAG) + r'(.)' + _re.escape(_PREMIUM_TAG))
+        entities = kwargs.get("entities") or []
+        offset = 0
+        def _repl(m):
+            nonlocal offset
+            eid, char = m.group(1), m.group(2)
+            pos = m.start() + offset
+            offset += 1 - (m.end() - m.start())
+            entities.append({"type": "custom_emoji", "offset": pos, "length": 1, "custom_emoji_id": eid})
+            return char
+        text = _pat.sub(_repl, text)
+        kwargs["entities"] = entities
+    return _original_send_message(chat_id, text, **kwargs)
+
+bot.send_message = _send_with_premium
+
 BOT_START_TIME = datetime.now()
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
