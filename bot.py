@@ -117,7 +117,7 @@ def premium_icon(name):
     return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
 
 # Premium custom emoji marker — will be auto-replaced when sending messages
-_PREMIUM_TAG = "\U000e0001"  # Private Use Area codepoint, invisible in text
+_PREMIUM_TAG = chr(0xe0001)  # Private Use Area codepoint, invisible in text
 
 # All premium emoji IDs from emoji.txt, indexed by icon name
 _PREMIUM_IDS = {}
