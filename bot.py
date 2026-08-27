@@ -94,6 +94,34 @@ PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
 # Toggle for premium emoji – set to False if Telegram keeps rejecting custom emoji
 PREMIUM_EMOJI_OK = os.getenv("PREMIUM_EMOJI", "1") == "1"
 
+# Explicit Unicode fallbacks for when premium emoji IDs aren't available.
+# Only mapped where a specific visual symbol is needed — no blanket replacements.
+UNICODE_FALLBACKS = {
+    "stars": "\U0001F451", "star": "\u2B50", "wave": "\U0001F44B",
+    "stats": "\U0001F4CA", "lock": "\U0001F510", "top": "\U0001F3C6",
+    "chart_up": "\U0001F4C8", "chart_down": "\U0001F4C9",
+    "wrench": "\U0001F6E0\uFE0F", "people": "\U0001F465", "users": "\U0001F465",
+    "card": "\U0001F4B3", "record": "\U0001F534", "live": "\U0001F7E2",
+    "ban": "\U0001F6AB", "cancel": "\u274C", "cross": "\u274C",
+    "checkmark": "\u2705", "verified": "\u2705",
+    "exclamation": "\u2757", "double_excl": "\u203C\uFE0F",
+    "question": "\u2753", "warning_yellow": "\u26A0\uFE0F",
+    "warning_red": "\U0001F6A8", "urgent": "\U0001F6A8",
+    "breaking": "\U0001F4F0", "announcement": "\U0001F4E2",
+    "bell": "\U0001F514", "pin": "\U0001F4CC",
+    "dollar": "\U0001F4B5", "euro": "\U0001F4B6",
+    "fire": "\U0001F525", "explosion": "\U0001F4A5",
+    "secret": "\U0001F512", "flash": "\u26A1",
+    "chat": "\U0001F4AC", "support": "\U0001F3A7",
+    "headphones": "\U0001F3A7", "admin": "\U0001F6E1\uFE0F",
+    "settings": "\u2699\uFE0F", "refresh": "\U0001F504",
+    "back": "\u2B05\uFE0F", "link": "\U0001F517",
+    "new_badge": "\U0001F195", "strelka_right": "\u27A1\uFE0F",
+    "phone": "\U0001F4DE", "earth": "\U0001F30D",
+    "calendar": "\U0001F4C5", "withdraw": "\U0001F4B8",
+    "referral": "\U0001F91D", "default": "\U0001F4F1",
+}
+
 def premium_icon(name):
     if not name:
         return None
@@ -103,25 +131,28 @@ def premium_icon(name):
         return PREMIUM_EMOJI_IDS[n.lower()]
     return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
 
-def pe(name, fallback="•", emoji_id=None):
+def pe(name, fallback=None, emoji_id=None):
     """Return a safe <tg-emoji> tag with given ID or fallback.
 
     If *name* is already a numeric emoji-id string it is used directly.
     Otherwise it is resolved via premium_icon().
+    Falls back to UNICODE_FALLBACKS for the matching icon name,
+    never strips or re-encodes the text.
     """
     if not PREMIUM_EMOJI_OK:
-        return fallback
+        return fallback or UNICODE_FALLBACKS.get(str(name).lower(), "•") if name else (fallback or "•")
     eid = emoji_id
     if not eid:
-        # name might be an ID string like "5224321781321442532"
         n_str = str(name).strip() if name else ""
         if n_str and n_str.isdigit():
             eid = n_str
         else:
             eid = premium_icon(name)
+    # Resolve the Unicode fallback from the dictionary
+    fb = fallback or UNICODE_FALLBACKS.get(str(name).lower(), "•") if name else (fallback or "•")
     if eid:
-        return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>'
-    return fallback
+        return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+    return fb
 
 def flag_icon_id(iso):
     return premium_icon(iso) or premium_icon("XX")
