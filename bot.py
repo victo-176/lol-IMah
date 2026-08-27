@@ -162,7 +162,10 @@ def app_icon_id(app_name):
     return premium_icon(app_name) or premium_icon(app_name.lower()) or premium_icon("DEFAULT")
 
 def flag_emoji_html(iso):
-    """Return default globe emoji for all countries."""
+    """Return unicode flag emoji for the country ISO code."""
+    if iso and len(str(iso)) == 2:
+        code = str(iso).upper()
+        return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in code)
     return "🌍"
 
 def app_emoji_html(app_name):
