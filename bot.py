@@ -1571,7 +1571,8 @@ def show_support(chat_id):
             f"{pe('strelka_right', '➤')} <b>𝗧𝗢 𝗖𝗢𝗡𝗧𝗔𝗖𝗧 𝗔𝗗𝗠𝗜𝗡</b>\n"
             f"┗━━━━━━━ {pe('flash', '⚡')} ━━━━━━━┛")
     markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("SUPPORT", url=support_link, style="success", icon="headphones"))
+    markup.add(ibtn("SUPPORT", url=support_link, style="success"))
+    markup.add(ibtn("💬 Live Chat", callback_data="live_chat", style="primary", icon="chat"))
     markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -1606,7 +1607,7 @@ def start_withdrawal(chat_id):
     markup.add(ibtn("India (UPI)", callback_data="withdraw_method|upi", style="success", icon_id=flag_icon_id("IN")))
     markup.add(ibtn("Others (Any Country)", callback_data="withdraw_method|others", style="primary", icon="earth"))
     markup.add(ibtn("Cancel", callback_data="close_menu", style="danger", icon="cross"))
-    bot.send_message(chat_id, f"━━━━━━━━━━━━━━━\n《 {pe('card', '💳')} WITHDRAWAL METHOD 》\n━━━━━━━━━━━━━━━\n<b>Choose your preferred method:</b>", parse_mode="HTML", reply_markup=markup)
+    bot.send_message(chat_id, "━━━━━━━━━━━━━━━\n《 💳 WITHDRAWAL METHOD 》\n━━━━━━━━━━━━━━━\n<b>Choose your preferred method:</b>", parse_mode="HTML", reply_markup=markup)
 
 # ---- Callbacks ----
 user_states = {}
@@ -1650,6 +1651,22 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.answer_callback_query(call.id, "Bot is under maintenance.", show_alert=True)
             return
 
+    if data == "live_chat":
+        admin_id = get_all_admins()[0] if get_all_admins() else None
+        if admin_id:
+            try:
+                user = get_user(user_id)
+                uname = ""
+                if user and user[2]:
+                    uname = user[2]
+                bot.send_message(admin_id, f"💬 <b>Live Chat Request</b>\nUser: <a href='tg://user?id={user_id}'>{uname or user_id}</a>\nID: <code>{user_id}</code>\n\n✏️ Reply to this message to respond.", parse_mode="HTML")
+                bot.answer_callback_query(call.id, "✅ Support notified! Wait for reply.", show_alert=True)
+            except Exception as e:
+                bot.answer_callback_query(call.id, "❌ Could not reach admin.", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, "❌ No admin configured.", show_alert=True)
+        return
+
     if data == "close_menu":
         try:
             bot.delete_message(chat_id, msg_id)
@@ -1670,7 +1687,7 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
     if data == "2fa_generate":
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("Cancel", callback_data="close_menu", style="danger", icon="back"))
-        bot.edit_message_text(f"━━━━━━━━━━━━━━━\n《 {pe('star', '🔑')} ENTER 2FA KEY 》\n━━━━━━━━━━━━━━━\n📝 SEND YOUR SECRET KEY\n\nEXAMPLE: <code>JBSWY3DPEHPK3PXP</code>",
+        bot.edit_message_text("━━━━━━━━━━━━━━━\n《 🔑 ENTER 2FA KEY 》\n━━━━━━━━━━━━━━━\n📝 SEND YOUR SECRET KEY\n\nEXAMPLE: <code>JBSWY3DPEHPK3PXP</code>",
                               chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         bot.register_next_step_handler_by_chat_id(chat_id, process_2fa_code)
         return
@@ -1678,19 +1695,19 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
     if data.startswith("withdraw_method|"):
         method = data.split("|")[1]
         if method == "opay":
-            bot.edit_message_text(f"━━━━━━━━━━━━━━━\n《 {pe('card', '💳')} OPAY WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your 10-digit Opay phone number:</b>",
+            bot.edit_message_text("━━━━━━━━━━━━━━━\n《 💳 OPAY WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your 10-digit Opay phone number:</b>",
                                   chat_id, msg_id, parse_mode="HTML")
             bot.register_next_step_handler_by_chat_id(chat_id, process_opay_phone)
         elif method == "usdt":
-            bot.edit_message_text(f"━━━━━━━━━━━━━━━\n《 {pe('flash', '💎')} USDT BEP20 WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your USDT BEP20 address (0x...):</b>",
+            bot.edit_message_text("━━━━━━━━━━━━━━━\n《 💎 USDT BEP20 WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your USDT BEP20 address (0x...):</b>",
                                   chat_id, msg_id, parse_mode="HTML")
             bot.register_next_step_handler_by_chat_id(chat_id, process_usdt_address)
         elif method == "upi":
-            bot.edit_message_text(f"━━━━━━━━━━━━━━━\n《 {pe('phone', '🇮🇳')} UPI WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your UPI ID (e.g., user@upi):</b>",
+            bot.edit_message_text("━━━━━━━━━━━━━━━\n《 🇮🇳 UPI WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your UPI ID (e.g., user@upi):</b>",
                                   chat_id, msg_id, parse_mode="HTML")
             bot.register_next_step_handler_by_chat_id(chat_id, process_upi_id)
         elif method == "others":
-            bot.edit_message_text(f"━━━━━━━━━━━━━━━\n《 {pe('earth', '🌍')} OTHER COUNTRY WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your country name or currency code (e.g., India, EUR):</b>",
+            bot.edit_message_text("━━━━━━━━━━━━━━━\n《 🌍 OTHER COUNTRY WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your country name or currency code (e.g., India, EUR):</b>",
                                   chat_id, msg_id, parse_mode="HTML")
             bot.register_next_step_handler_by_chat_id(chat_id, process_others_country)
         return
@@ -1813,9 +1830,9 @@ def process_2fa_code(message):
         totp = pyotp.TOTP(secret_key)
         code = totp.now()
         remaining = 30 - (int(time.time()) % 30)
-        text = (f"━━━━━━━━━━━━━━━\n《 {pe('lock', '🔐')} <b>2FA CODE</b> 》\n━━━━━━━━━━━━━━━\n"
-                f"{pe('lock', '🔐')} <b>CODE:</b> <code>{code}</code>\n━━━━━━━━━━━━━━━\n"
-                f"{pe('hourglass', '⏰')} EXPIRES IN: <b>{remaining}s</b>")
+        text = (f"━━━━━━━━━━━━━━━\n《 🔐 <b>2FA CODE</b> 》\n━━━━━━━━━━━━━━━\n"
+                f"🔐 <b>CODE:</b> <code>{code}</code>\n━━━━━━━━━━━━━━━\n"
+                f"⏰ EXPIRES IN: <b>{remaining}s</b>")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn(f"COPY: {code}", copy_text_str=code, style="success", icon="copy"))
         markup.add(ibtn("REFRESH", callback_data="2fa_generate", style="primary", icon="refresh"))
@@ -1833,7 +1850,7 @@ def process_opay_phone(message):
         bot.register_next_step_handler_by_chat_id(message.chat.id, process_opay_phone)
         return
     set_state(message.chat.id, {"withdraw_phone": phone})
-    bot.reply_to(message, f"{pe('pencil', '📝')} Send your full name as registered on Opay:", parse_mode="HTML")
+    bot.reply_to(message, "📝 Send your full name as registered on Opay:", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_opay_name)
 
 def process_opay_name(message):
@@ -1847,7 +1864,7 @@ def process_opay_name(message):
     state = user_states.get(message.chat.id, {})
     state["withdraw_name"] = name
     user_states[message.chat.id] = state
-    bot.reply_to(message, f"{pe('dollar', '💰')} Send the amount in USD (e.g., 10.00):", parse_mode="HTML")
+    bot.reply_to(message, "💰 Send the amount in USD (e.g., 10.00):", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_opay_amount)
 
 def check_withdrawal_amount(user_id, amount):
@@ -1899,7 +1916,7 @@ def process_usdt_address(message):
         bot.register_next_step_handler_by_chat_id(message.chat.id, process_usdt_address)
         return
     set_state(message.chat.id, {"withdraw_address": address})
-    bot.reply_to(message, f"{pe('dollar', '💰')} Send the amount in USD:", parse_mode="HTML")
+    bot.reply_to(message, "💰 Send the amount in USD:", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_usdt_amount)
 
 def process_usdt_amount(message):
@@ -1937,7 +1954,7 @@ def process_upi_id(message):
         bot.register_next_step_handler_by_chat_id(message.chat.id, process_upi_id)
         return
     set_state(message.chat.id, {"withdraw_upi": upi})
-    bot.reply_to(message, f"{pe('pencil', '📝')} Send your full name:", parse_mode="HTML")
+    bot.reply_to(message, "📝 Send your full name:", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_upi_name)
 
 def process_upi_name(message):
@@ -1992,7 +2009,7 @@ def process_others_country(message):
         country_map = {"india": "INR", "united states": "USD", "united kingdom": "GBP", "nigeria": "NGN", "europe": "EUR"}
         currency = country_map.get(raw.lower(), "USD")
     set_state(message.chat.id, {"others_currency": currency})
-    bot.reply_to(message, f"{pe('earth', '🌍')} Currency: {currency}\n\n{pe('pencil', '📝')} Send the account holder's full name:", parse_mode="HTML")
+    bot.reply_to(message, "🌍 Currency: {currency}\n\n📝 Send the account holder's full name:", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_holder)
 
 def process_others_holder(message):
@@ -2006,7 +2023,7 @@ def process_others_holder(message):
     state = user_states.get(message.chat.id, {})
     state["others_holder"] = name
     user_states[message.chat.id] = state
-    bot.reply_to(message, f"{pe('phone', '🔢')} Send the account number:", parse_mode="HTML")
+    bot.reply_to(message, "🔢 Send the account number:", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_account)
 
 def process_others_account(message):
@@ -2020,7 +2037,7 @@ def process_others_account(message):
     state = user_states.get(message.chat.id, {})
     state["others_account"] = acc
     user_states[message.chat.id] = state
-    bot.reply_to(message, f"{pe('card', '🏦')} Send the bank name (or /skip):", parse_mode="HTML")
+    bot.reply_to(message, "🏦 Send the bank name (or /skip):", parse_mode="HTML")
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_bank)
 
 def process_others_bank(message):
@@ -2108,13 +2125,13 @@ def get_admin_menu():
 def handle_admin_callback(call, data, chat_id, msg_id):
     if data == "admin_dashboard":
         stats = get_dashboard_stats()
-        text = (f"{pe('stats', '📊')} <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{pe('people', '👥')} Active (24h): <b>{stats['active_users_24h']}</b>\n"
-                f"{pe('people', '👥')} Total Users: <b>{stats['total_users']}</b>\n"
-                f"{pe('phone', '📱')} OTPs Today: <b>{stats['otps_today']}</b>\n"
-                f"{pe('phone', '📱')} Total OTPs: <b>{stats['total_otps']}</b>\n"
-                f"{pe('archive', '📦')} Combos: <b>{stats['total_combos']}</b>\n"
-                f"{pe('hourglass', '⏱️')} Uptime: {get_uptime()}")
+        text = ("📊 <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                "👥 Active (24h): <b>{stats['active_users_24h']}</b>\n"
+                "👥 Total Users: <b>{stats['total_users']}</b>\n"
+                "📱 OTPs Today: <b>{stats['otps_today']}</b>\n"
+                "📱 Total OTPs: <b>{stats['total_otps']}</b>\n"
+                "📦 Combos: <b>{stats['total_combos']}</b>\n"
+                "⏱️ Uptime: {get_uptime()}")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("Refresh", callback_data="admin_dashboard", style="success", icon="refresh"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
@@ -2405,7 +2422,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup.add(ibtn("Force Subscribe", callback_data="admin_force_sub", style="primary", icon="lock"))
         markup.add(ibtn("Maintenance", callback_data="admin_toggle_maintenance", style="danger", icon="wrench"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
-        bot.edit_message_text(f"{pe('settings', '⚙️')} <b>Settings</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text("⚙️ <b>Settings</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
     if data == "admin_set_cooldown":
@@ -2440,7 +2457,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         enabled = get_setting('force_sub_enabled') == '1'
         channels = get_force_sub_channels(enabled_only=False)
         status_icon = f"{pe('checkmark', '✅')} Enabled" if enabled else f"{pe('cross', '❌')} Disabled"
-        text = f"{pe('link', '🔗')} <b>Force Subscribe</b>\n"
+        text = "🔗 <b>Force Subscribe</b>\n"
         text += f"Status: {status_icon}\n\n"
         if channels:
             for cid, url, desc in channels:
@@ -2741,6 +2758,25 @@ def add_force_channel_handler(message):
     else:
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
+
+# ---- Admin reply to live chat ----
+@bot.message_handler(func=lambda msg: is_admin(msg.from_user.id) and msg.reply_to_message and not msg.text.startswith('/'))
+def admin_reply_handler(message):
+    """When admin replies to a live-chat notification, forward the reply to the user."""
+    replied = message.reply_to_message
+    if not replied or not replied.text:
+        return
+    # Extract user ID from the notification message
+    import re
+    m = re.search(r'ID: <code>(\d+)</code>', replied.text)
+    if not m:
+        return
+    target_user = int(m.group(1))
+    try:
+        bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{message.text}", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Sent to user {target_user}.")
+    except:
+        bot.reply_to(message, "❌ Could not send to user.")
 
 # =========================== MAIN ===========================
 def main():
