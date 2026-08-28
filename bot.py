@@ -1315,12 +1315,12 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
-            msg = (f"\U0001f3c6 <b>MATRIXX SMS V3</b> \U0001f3c6\n"
-                   f"{flag_html} <b>Country:</b> {country_name}\n"
+            msg = (f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
+                   f"{flag_emoji_html(iso)} <b>Country:</b> {country_name}\n"
                    f"{app_emoji} <b>Service:</b> {service}\n"
-                   f"\U0001f4f1 <b>Number:</b> {number}\n"
-                   f"\U0001f511 <b>Code:</b> <code>{otp}</code>\n"
-                   f"\u23f0 <b>Time:</b> {date_str}")
+                   f"{pe('phone', '📱')} <b>Number:</b> {number}\n"
+                   f"{pe('key', '🔑')} <b>Code:</b> <code>{otp}</code>\n"
+                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1748,12 +1748,12 @@ class ChoiceSMSForwarder:
                             if matched_user:
                                 try:
                                     dm_msg = (
-                                        f"🏆 <b>MATRIXX SMS V3</b> 🏆\n"
+                                        f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
                                         f"{cflag} <b>Country:</b> {sms['country']}\n"
-                                        f"⚙ <b>Service:</b> {sms['service']}\n"
-                                        f"📱 <b>Number:</b> {sms['phone']}\n"
-                                        f"🔑 <b>Code:</b> <code>{otp_display}</code>\n"
-                                        f"⏰ <b>Time:</b> {sms['timestamp']}"
+                                        f"{pe('settings_bw', '⚙')} <b>Service:</b> {sms['service']}\n"
+                                        f"{pe('phone', '📱')} <b>Number:</b> {sms['phone']}\n"
+                                        f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
+                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
@@ -1778,7 +1778,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized, skipping {len(self._sent_this_session)} existing OTPs")
                     first_run = False
-                time.sleep(2)
+                time.sleep(1.5)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
