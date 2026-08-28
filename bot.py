@@ -278,7 +278,8 @@ def init_db():
         private_combo_country TEXT,
         join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        balance REAL DEFAULT 0.0
+        balance REAL DEFAULT 0.0,
+        remove_cc INTEGER DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS combos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -415,6 +416,11 @@ def init_db():
     if "app_name" not in cols:
         c.execute("ALTER TABLE combos ADD COLUMN app_name TEXT DEFAULT 'WhatsApp'")
 
+    # Add remove_cc column to users if missing
+    user_cols = [r[1] for r in c.execute("PRAGMA table_info(users)")]
+    if "remove_cc" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN remove_cc INTEGER DEFAULT 0")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -506,6 +512,24 @@ def save_user(user_id, username="", first_name="", last_name="", country_code=No
     conn.commit()
     conn.close()
     log_user_activity(user_id, "user_update", "Profile updated")
+
+def get_remove_cc(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT remove_cc FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] is not None else 0
+
+def toggle_remove_cc(user_id):
+    current = get_remove_cc(user_id)
+    new_val = 0 if current else 1
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET remove_cc=? WHERE user_id=?", (new_val, user_id))
+    conn.commit()
+    conn.close()
+    return new_val
 
 def is_banned(user_id):
     user = get_user(user_id)
@@ -1030,7 +1054,7 @@ def clean_number(number):
 def mask_number(number):
     number = str(number).strip()
     if len(number) > 8:
-        return number[:4] + "••••" + number[-3:]
+        return number[:4] + "••••" + number[-5:]
     return number
 
 def extract_otp(message):
@@ -1263,6 +1287,9 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     otp = extract_otp(sms)
     service_name = detect_service(sms).upper()
     msg_text = sms[:200] if sms else ""
+    # Strip disclaimer text from SMS
+    for _strip_pattern in [r"(?i)\n?\s*Don'?t share this code with others\.?", r"(?i)\n?\s*please do not disclose it to anyone\.?", r"(?i)\n?\s*disclose it to anyone\.?"]:
+        msg_text = re.sub(_strip_pattern, '', msg_text).strip()
     # Format OTP with hyphen if 6 digits
     otp_display = otp
     if len(otp) == 6:
@@ -1274,7 +1301,6 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
         f"📱 <code>{masked}</code>\n"
         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
         f"📩 <b>Message:</b> <code>{msg_text[:200]}</code>\n"
-        f"Don't share this code with others\n"
         f"⏰ {date_str}\n"
         f"━━━━━━━━━━━━━━━"
     )
@@ -1540,13 +1566,17 @@ class ChoiceSMSForwarder:
         text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
         text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
+        # Strip disclaimer text
+        text = re.sub(r"(?i)\n?\s*Don'?t share this code with others\.?", '', text).strip()
+        text = re.sub(r"(?i)\n?\s*please do not disclose it to anyone\.?", '', text).strip()
+        text = re.sub(r"(?i)\n?\s*disclose it to anyone\.?", '', text).strip()
         return text
 
     def _mask_number(self, phone):
-        """Mask phone: show first 5 and last 3"""
-        if not phone or phone == "N/A" or len(phone) < 8:
+        """Mask phone: show first 5 and last 5"""
+        if not phone or phone == "N/A" or len(phone) < 10:
             return phone
-        return phone[:5] + '*' * (len(phone) - 8) + phone[-3:]
+        return phone[:5] + '*' * (len(phone) - 10) + phone[-5:]
 
     def _get_groups(self):
         """Get OTP group IDs - admin configured OR default."""
@@ -1597,7 +1627,6 @@ class ChoiceSMSForwarder:
                             f"📱 <code>{masked}</code>\n"
                             f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
                             f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
-                            f"Don't share this code with others\n"
                             f"⏰ {sms['timestamp']}\n"
                             f"━━━━━━━━━━━━━━━"
                         )
@@ -1618,12 +1647,12 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
                     first_run = False
-                time.sleep(5)
+                time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(5)
+                time.sleep(2)
 
 CHOICE_SMS_FORWARDER = None
 
@@ -2120,6 +2149,17 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
         fetch_number_logic(chat_id, app, country_key, msg_id)
         return
 
+    if data.startswith("toggle_cc|"):
+        parts = data.split("|")
+        _, app, country_key, number = parts
+        new_state = toggle_remove_cc(user_id)
+        if new_state:
+            bot.answer_callback_query(call.id, "CC ON — prefix removed", show_alert=False)
+        else:
+            bot.answer_callback_query(call.id, "CC OFF — prefix restored", show_alert=False)
+        _show_number_display(chat_id, msg_id, number, country_key, app)
+        return
+
     if data.startswith("chg_local|"):
         _, app, country_key = data.split("|")
         fetch_number_logic(chat_id, app, country_key, msg_id)
@@ -2164,6 +2204,44 @@ def show_user_countries(chat_id, app_name, message_id):
     bot.edit_message_text(f"{app_emoji} <b>{app_name}</b>\n\n📍 <b>SELECT COUNTRY:</b>",
                           chat_id, message_id, parse_mode="HTML", reply_markup=markup)
 
+def _strip_cc(number, country_key):
+    """Strip the country code prefix from a number when CC mode is active."""
+    cc_len = len(str(country_key))
+    if len(str(number)) > cc_len:
+        return str(number)[cc_len:]
+    return str(number)
+
+def _show_number_display(chat_id, message_id, number, country_key, app_name):
+    """Display the assigned number with CC toggle and other buttons."""
+    country_name = COUNTRY_CODES.get(country_key, (country_key, "Unknown"))[0]
+    iso = COUNTRY_CODES.get(country_key, (country_key, "UN"))[1]
+    flag = flag_emoji_html(iso)
+    svc = app_emoji_html(app_name)
+
+    remove_cc = get_remove_cc(chat_id)
+    if remove_cc:
+        display_number = _strip_cc(number, country_key)
+        cc_btn_text = "🌍 CC ON"
+    else:
+        display_number = f"+{number}"
+        cc_btn_text = "🌍 CC"
+
+    msg_text = (
+        f"📞 <b>Number:</b> <code>{display_number}</code>\n"
+        f"{flag} <b>Country:</b> {country_name}\n"
+        f"{svc} <b>Service:</b> {app_name}\n"
+        f"⏳ <b>Status:</b> Waiting for SMS"
+    )
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("View OTP", url="https://t.me/animatrixx_otp", style="primary", icon="eye"))
+    markup.row(
+        ibtn(cc_btn_text, callback_data=f"toggle_cc|{app_name}|{country_key}|{number}", style="success", icon="earth"),
+        ibtn("Change Number", callback_data=f"chg_local|{app_name}|{country_key}", style="danger", icon="refresh"),
+    )
+    markup.row(ibtn("Back", callback_data="close_menu", style="primary", icon="back"))
+    bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+
 def fetch_number_logic(chat_id, app_name, country_key, message_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -2188,23 +2266,7 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     assign_number_to_user(chat_id, assigned)
     save_user(chat_id, country_code=country_key, assigned_number=assigned)
 
-    country_name = COUNTRY_CODES.get(country_key, (country_key, "Unknown"))[0]
-    iso = COUNTRY_CODES.get(country_key, (country_key, "UN"))[1]
-    flag = flag_emoji_html(iso)
-    svc = app_emoji_html(app_name)
-
-    msg_text = (
-        f"📞 <b>Number:</b> <code>+{assigned}</code>\n"
-        f"{flag} <b>Country:</b> {country_name}\n"
-        f"{svc} <b>Service:</b> {app_name}\n"
-        f"⏳ <b>Status:</b> Waiting for SMS"
-    )
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("View OTP", url="https://t.me/animatrixx_otp", style="primary", icon="eye"))
-    markup.row(ibtn("Change Number", callback_data=f"chg_local|{app_name}|{country_key}", style="danger", icon="refresh"),
-               ibtn("Back", callback_data="close_menu", style="primary", icon="back"))
-    bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+    _show_number_display(chat_id, message_id, assigned, country_key, app_name)
 
 # ---- 2FA and withdrawal step handlers ----
 def process_2fa_code(message):
