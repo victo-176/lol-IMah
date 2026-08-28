@@ -569,6 +569,13 @@ def get_user_by_number(number):
     clean = re.sub(r'\D', '', str(number))  # digits only
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Debug: log all assigned numbers
+    c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+    all_nums = c.fetchall()
+    if all_nums:
+        logger.debug(f"get_user_by_number: searching '{clean}' in {[(u,n) for u,n in all_nums]}")
+    else:
+        logger.warning(f"get_user_by_number: NO users have assigned numbers! Cannot match '{clean}'")
     # Try exact match first
     c.execute("SELECT user_id FROM users WHERE assigned_number=?", (clean,))
     row = c.fetchone()
@@ -1296,6 +1303,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         return
 
     user_id = get_user_by_number(number)
+    logger.info(f"IVASMS: get_user_by_number('{number}') => {user_id}")
     try:
         log_otp(number, otp, sms, user_id)
     except Exception as e:
@@ -1746,6 +1754,7 @@ class ChoiceSMSForwarder:
                     # === Match number to user and DM them ===
                     try:
                         phone_digits = re.sub(r'\D', '', sms.get('phone', ''))
+                        logger.info(f"Choice SMS: Extracted phone '{phone_digits}' from record (raw: '{sms.get('phone', '')}')")
                         if phone_digits and phone_digits != 'N/A':
                             matched_user = get_user_by_number(phone_digits)
                             if matched_user:
