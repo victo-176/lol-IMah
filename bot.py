@@ -1307,13 +1307,13 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
             _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-            _e1, _e2, _e3 = _ep(), _ep(), _ep()
-            msg = (f"{_e1} <b>MATRIXX SMS V3</b> {_e1}\n"
-                   f"\U0001f30d <b>Country:</b> {flag_html} {country_name}\n"
-                   f"\u2699 <b>Service:</b> {app_emoji} {service}\n"
-                   f"\u260e <b>Number:</b> {number}\n"
-                   f"\u23f0 <b>Time:</b> {date_str}\n\n"
-                   f"{_e2} <b>Code:</b> <code>{otp}</code> {_e3}")
+            _e1, _e2, _e3, _e4, _e5, _e6, _e7 = [_ep() for _ in range(7)]
+            msg = (f"{_e1} <b>MATRIXX SMS V3</b> {_e2}\n"
+                   f"{pe('info2', '🌍')} <b>Country:</b> {flag_html} {country_name}\n"
+                   f"{pe('settings_bw', '⚙')} <b>Service:</b> {app_emoji} {service}\n"
+                   f"{pe('phone', '☎')} <b>Number:</b> {number}\n"
+                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n\n"
+                   f"{_e3} <b>Code:</b> <code>{otp}</code> {_e4}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1692,16 +1692,17 @@ class ChoiceSMSForwarder:
                     if len(sms['otp']) == 6:
                         otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
                     _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-                    _e1, _e2 = _ep(), _ep()
+                    _e1, _e2, _e3, _e4, _e5, _e6, _e7, _e8 = [_ep() for _ in range(8)]
                     msg = (
-                        f"{_e1} <b>MATRIXX SMS V3</b> {_e1}\n"
-                        f"\U0001f30d <b>Country:</b> {cflag} {sms['country']}\n"
-                        f"⚙ <b>Service:</b> {sms['service'].upper()}\n"
-                        f"\U0001f4f1 <b>Number:</b> <code>{masked}</code>\n"
-                        f"\U0001f511 <b>OTP:</b> <code>{otp_display}</code>\n"
-                        f"\U0001f4e9 <b>Message:</b> <code>{full_clean}</code>\n"
+                        f"{_e1} <b>MATRIXX SMS V3</b> {_e2}\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{_e3} <b>Country:</b> {cflag} {sms['country']}\n"
+                        f"{_e4} <b>Service:</b> {sms['service'].upper()}\n"
+                        f"{_e5} <b>Number:</b> <code>{masked}</code>\n"
+                        f"{_e6} <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"{_e7} <b>Message:</b> <code>{full_clean}</code>\n"
                         f"\u23f0 <b>Time:</b> {sms['timestamp']}\n"
-                        f"{_e2} <b>━━━━━━━━━━━━━━━</b> {_e2}"
+                        f"{_e8} <b>━━━━━━━━━━━━━━━</b> {_e1}"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
@@ -1743,14 +1744,14 @@ class ChoiceSMSForwarder:
                             if matched_user:
                                 try:
                                     _ep2 = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-                                    _e1d, _e2d, _e3d = _ep2(), _ep2(), _ep2()
+                                    _e1d, _e2d, _e3d, _e4d, _e5d, _e6d, _e7d = [_ep2() for _ in range(7)]
                                     dm_msg = (
-                                        f"{_e1d} <b>MATRIXX SMS V3</b> {_e1d}\n"
-                                        f"🌍 <b>Country:</b> {cflag} {sms['country']}\n"
-                                        f"⚙ <b>Service:</b> {sms['service']}\n"
-                                        f"☎ <b>Number:</b> {sms['phone']}\n"
-                                        f"⏰ <b>Time:</b> {sms['timestamp']}\n\n"
-                                        f"{_e2d} <b>Code:</b> <code>{otp_display}</code> {_e3d}"
+                                        f"{_e1d} <b>MATRIXX SMS V3</b> {_e2d}\n"
+                                        f"{pe('info2', '🌍')} <b>Country:</b> {cflag} {sms['country']}\n"
+                                        f"{pe('settings_bw', '⚙')} <b>Service:</b> {sms['service']}\n"
+                                        f"{pe('phone', '☎')} <b>Number:</b> {sms['phone']}\n"
+                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n\n"
+                                        f"{_e3d} <b>Code:</b> <code>{otp_display}</code> {_e4d}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
