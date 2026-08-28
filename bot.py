@@ -1263,34 +1263,32 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     otp = extract_otp(sms)
     service_name = detect_service(sms).upper()
     msg_text = sms[:200] if sms else ""
-    # Premium emoji decorations
-    _pe = lambda: random.choice([
-        pe('fire', '🔥'), pe('explosion', '⚡'), pe('diamond', '💎'),
-        pe('rocket', '🚀'), pe('sparkles', '✨'), pe('star', '🌟'),
-        pe('checkmark', '✅'), pe('bell', '🔔'), pe('bookmark', '📌'),
-        pe('verified', '✅')
-    ])
-    e1, e2, e3 = _pe(), _pe(), _pe()
+    # Format OTP with hyphen if 6 digits
+    otp_display = otp
+    if len(otp) == 6:
+        otp_display = f"{otp[:3]}-{otp[3:]}"
     return (
-        f"{e1} Anonmatrixx {e1}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{flag_html} <b>{service_name}</b> 🟢\n"
+        f"Anonmatrixx\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{flag_html} {service_name} 🟢\n"
         f"📱 {masked}\n"
-        f"🔑 <b>OTP:</b> <code>{otp}</code> {e2}\n"
-        f"📨 <b>Message:</b> {msg_text[:150]}\n"
-        f"\n{e3} Don't share this code with others\n"
+        f"🔑 OTP: {otp_display}\n"
+        f"📩 Message: {msg_text[:200]}\n"
+        f"Don't share this code with others\n"
         f"⏰ {date_str}\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━"
     )
 
 def send_to_telegram_group(text, otp_code, number):
     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
     kb = {"inline_keyboard": [[
-        {"text": "📋 Copy Message", "callback_data": f"copy_{otp_code}"},
+        {"text": "📋 Copy OTP", "callback_data": f"copy_{otp_code}"},
         {"text": "🤖 BOT LINK", "url": bot_link}
     ]]}
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
+    if not chat_ids:
+        chat_ids = ['-1003904867859']
     for chat_id in chat_ids:
         try:
             payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(kb)}
@@ -1582,31 +1580,29 @@ class ChoiceSMSForwarder:
                             continue
                         # Forward to OTP groups
                         bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
-                        full_clean = self._clean_text(sms['full_text'])[:150]
+                        full_clean = self._clean_text(sms['full_text'])[:200]
                         masked = self._mask_number(sms['phone'])
-                        _pe = lambda: random.choice([
-                            pe('fire', '🔥'), pe('explosion', '⚡'), pe('diamond', '💎'),
-                            pe('rocket', '🚀'), pe('sparkles', '✨'), pe('star', '🌟'),
-                            pe('checkmark', '✅'), pe('bell', '🔔'), pe('bookmark', '📌'),
-                            pe('verified', '✅')
-                        ])
-                        e1, e2, e3 = _pe(), _pe(), _pe()
                         # Country flag lookup
                         country_upper = sms['country'].upper()
                         cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
+                        # Format OTP with hyphen if 6 digits
+                        otp_display = sms['otp']
+                        if len(sms['otp']) == 6:
+                            otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+                        # Message format matching the image
                         msg = (
-                            f"{e1} Anonmatrixx {e1}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
-                            f"📱 <b>{masked}</b>\n"
-                            f"🔑 <b>OTP:</b> <code>{sms['otp']}</code> {e2}\n"
-                            f"📨 <b>Message:</b> {full_clean}\n"
-                            f"\n{e3} Don't share this code with others\n"
+                            f"Anonmatrixx\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"{cflag} {sms['service'].upper()} 🟢\n"
+                            f"📱 {masked}\n"
+                            f"🔑 OTP: {otp_display}\n"
+                            f"📩 Message: {full_clean}\n"
+                            f"Don't share this code with others\n"
                             f"⏰ {sms['timestamp']}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            f"━━━━━━━━━━━━━━━"
                         )
                         kb = {"inline_keyboard": [[
-                            {"text": "📋 Copy Message", "callback_data": f"copy_{sms['otp']}"},
+                            {"text": "📋 Copy OTP", "callback_data": f"copy_{sms['otp']}"},
                             {"text": "🤖 BOT LINK", "url": bot_link}
                         ]]}
                         groups = self._get_groups()
