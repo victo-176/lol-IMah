@@ -537,6 +537,27 @@ def get_user_by_number(number):
     conn.close()
     return row[0] if row else None
 
+def get_app_for_number(number):
+    """Look up which app a phone number is assigned to from combos."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT app_name FROM combos")
+        for row in c.fetchall():
+            app_name = row[0] if row[0] else "WhatsApp"
+            # Check if this number exists in this combo
+            c2 = conn.cursor()
+            c2.execute("SELECT numbers FROM combos WHERE app_name=?", (app_name,))
+            for r in c2.fetchall():
+                nums = json.loads(r[0])
+                if number in [clean_number(n) for n in nums]:
+                    conn.close()
+                    return app_name
+        conn.close()
+    except Exception as e:
+        logger.debug(f"get_app_for_number error: {e}")
+    return "WhatsApp"
+
 def assign_number_to_user(user_id, number):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1174,11 +1195,11 @@ def force_sub_markup():
     return markup
 
 # =========================== SENDING FUNCTIONS ===========================
-def send_otp_to_user_and_group(date_str, number, sms):
+def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     otp = extract_otp(sms)
     country_name, iso, _ = get_country_info(number)
     flag_html = flag_emoji_html(iso)
-    service = detect_service(sms)
+    service = app_name if app_name else detect_service(sms)
     app_emoji = app_emoji_html(service)
 
     if ALLOWED_SERVICES and service.lower() not in ALLOWED_SERVICES:
@@ -1193,12 +1214,14 @@ def send_otp_to_user_and_group(date_str, number, sms):
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
-            msg = (f"✨ <b>MATRIXX SMS V3</b>\n"
+            _rnd = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
+            _r1, _r2, _r3 = _rnd(), _rnd(), _rnd()
+            msg = (f"{_r1} <b>MATRIXX SMS V3</b> {_r1}\n"
                    f"🌍 <b>Country:</b> {flag_html} {country_name}\n"
                    f"⚙ <b>Service:</b> {app_emoji} {service}\n"
                    f"☎ <b>Number:</b> {number}\n"
                    f"🕒 <b>Time:</b> {date_str}\n\n"
-                   f"🔐 <b>Code:</b> {otp}")
+                   f"{_r2} <b>Code:</b> <code>{otp}</code> {_r3}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1209,10 +1232,12 @@ def send_otp_to_user_and_group(date_str, number, sms):
 
 def format_message(date_str, number, sms, flag_html, app_emoji):
     masked = mask_number(number)
-    return (f"╭───────────────╮\n"
+    _rnd = lambda: random.choice(["\U0001f525","\u26a1","\U0001f48e","\U0001f680","\u2728","\U0001f4ab","\U0001f31f","\U0001f3af","\U0001f4b0","\U0001f3c6"])
+    _r1, _r2 = _rnd(), _rnd()
+    return (f"{_r1} ╭───────────────╮ {_r1}\n"
             f"│ {flag_html} {app_emoji} {masked}\n"
             f"│ {date_str}\n"
-            f"╰───────────────╯")
+            f"{_r2} ╰───────────────╯ {_r2}")
 
 def send_to_telegram_group(text, otp_code, number):
     keyboard = {
@@ -1281,30 +1306,32 @@ if SOCKETIO_AVAILABLE:
                     if isinstance(arg, (dict, list)):
                         self.handle_message(arg)
 
-        def handle_message(self, data):
-            try:
-                number = None
-                sms = None
-                if isinstance(data, dict):
-                    number = data.get("number") or data.get("phone") or data.get("recipient")
-                    sms = data.get("message") or data.get("text") or data.get("sms")
-                elif isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
-                    payload = data[1]
-                    number = payload.get("number") or payload.get("phone")
-                    sms = payload.get("message") or payload.get("text") or payload.get("sms")
-                if number and sms:
-                    number_clean = clean_number(str(number))
-                    if number_clean and len(number_clean) >= 5:
-                        uid = f"{number_clean}-{sms[:80]}"
-                        if uid not in seen_messages:
-                            seen_messages.add(uid)
-                            save_seen()
-                            logger.info(f"SMS from {number_clean}")
-                            send_otp_to_user_and_group(
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                number_clean, sms
-                            )
-            except Exception as e:
+    def handle_message(self, data):
+        try:
+            number = None
+            sms = None
+            if isinstance(data, dict):
+                number = data.get("number") or data.get("phone") or data.get("recipient")
+                sms = data.get("message") or data.get("text") or data.get("sms")
+            elif isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
+                payload = data[1]
+                number = payload.get("number") or payload.get("phone")
+                sms = payload.get("message") or payload.get("text") or payload.get("sms")
+            if number and sms:
+                number_clean = clean_number(str(number))
+                if number_clean and len(number_clean) >= 5:
+                    uid = f"{number_clean}-{sms[:80]}"
+                    if uid not in seen_messages:
+                        seen_messages.add(uid)
+                        save_seen()
+                        logger.info(f"SMS received: {number_clean}")
+                        # Determine which service is assigned to this number
+                        assigned_app = get_app_for_number(number_clean)
+                        send_otp_to_user_and_group(
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            number_clean, sms, app_name=assigned_app
+                        )
+        except Exception as e:
                 logger.error(f"handle_message error: {e}")
 
         def connect(self):
@@ -1730,6 +1757,20 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.register_next_step_handler_by_chat_id(chat_id, process_others_country)
         return
 
+    if data.startswith("reply_user|"):
+        if is_admin(user_id):
+            target_user = int(data.split("|")[1])
+            user_states[user_id] = {"mode": "admin_reply", "target_user": target_user}
+            try:
+                uname = ""
+                user = get_user(target_user)
+                if user and user[2]:
+                    uname = user[2]
+                bot.send_message(user_id, f"✏️ <b>Replying to {uname or target_user}</b>\nType your message:", parse_mode="HTML")
+            except:
+                bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+        return
+
     if data.startswith("usr_app|"):
         app = data.split("|")[1]
         show_user_countries(chat_id, app, msg_id)
@@ -1819,7 +1860,7 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     msg_text = (
         f"{phone_icon} <b>Number:</b> <code>+{assigned}</code>\n"
         f"{pe('', '🌍', emoji_id=togo_id)} <b>Country:</b> {country_name}\n"
-        f"{pe('', '📱', emoji_id=whatsapp_id)} <b>Service:</b> WhatsApp\n"
+        f"{pe('', '📱', emoji_id=whatsapp_id)} <b>Service:</b> {app_name}\n"
         f"{status_icon} <b>Status:</b> Waiting for SMS"
     )
 
