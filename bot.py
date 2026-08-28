@@ -1293,9 +1293,11 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     otp = extract_otp(sms)
     service_name = detect_service(sms).upper()
     msg_text = sms[:200] if sms else ""
-    # Strip disclaimer text from SMS
-    for _strip_pattern in [r"(?i)\n?\s*Don'?t share this code with others\.?", r"(?i)\n?\s*please do not disclose it to anyone\.?", r"(?i)\n?\s*disclose it to anyone\.?"]:
-        msg_text = re.sub(_strip_pattern, '', msg_text).strip()
+    # Strip disclaimer text from SMS - be aggressive, remove any occurrence
+    msg_text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', msg_text).strip()
+    msg_text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', msg_text).strip()
+    msg_text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', msg_text).strip()
+    msg_text = re.sub(r"\s+", ' ', msg_text).strip()  # collapse multiple spaces
     # Format OTP with hyphen if 6 digits
     otp_display = otp
     if len(otp) == 6:
@@ -1376,6 +1378,25 @@ class ChoiceSMSForwarder:
         except:
             pass
 
+    def _save_sesskey(self):
+        """Persist sesskey to disk."""
+        try:
+            with open("choice_sesskey.txt", "w") as f:
+                f.write(self._cached_sesskey or "")
+        except:
+            pass
+
+    def _load_sesskey_from_disk(self):
+        """Load sesskey from disk."""
+        try:
+            if os.path.exists("choice_sesskey.txt"):
+                with open("choice_sesskey.txt") as f:
+                    sk = f.read().strip()
+                    if sk and len(sk) == 32:
+                        self._cached_sesskey = sk
+        except:
+            pass
+
     def _get_panel_url(self):
         return get_setting('choice_panel_url') or self.DEFAULT_PANEL_URL
 
@@ -1426,6 +1447,14 @@ class ChoiceSMSForwarder:
 
     def get_sesskey(self):
         """Extract session key from report page."""
+        # Use cached sesskey if available
+        if hasattr(self, '_cached_sesskey') and self._cached_sesskey:
+            return self._cached_sesskey
+        # Try to load from disk
+        if hasattr(self, '_load_sesskey_from_disk'):
+            self._load_sesskey_from_disk()
+            if self._cached_sesskey:
+                return self._cached_sesskey
         panel_url = self._get_panel_url()
         urls_to_try = [
             f"{panel_url}/client/SMSCDRStats",
@@ -1542,13 +1571,15 @@ class ChoiceSMSForwarder:
         panel_url = self._get_panel_url()
         sesskey = self.get_sesskey()
         if not sesskey:
-            logger.warning("Choice SMS: No sesskey, re-logging in...")
+            # No sesskey available - try login once
+            logger.warning("Choice SMS: No sesskey, logging in...")
             if self.login():
-                time.sleep(1)  # Let session settle
+                time.sleep(1)
+                self._cached_sesskey = None
                 sesskey = self.get_sesskey()
-            if not sesskey:
-                logger.error("Choice SMS: Still no sesskey after re-login")
-                return []
+        if not sesskey:
+            logger.warning("Choice SMS: No sesskey, will retry next cycle")
+            return []
         today = datetime.now().strftime("%Y-%m-%d")
         params = {
             "draw": "1", "start": "0", "length": "100",
@@ -1575,10 +1606,16 @@ class ChoiceSMSForwarder:
                     results.append(parsed)
             logger.info(f"Choice SMS: API returned {len(records)} records, {len(results)} with OTP")
             # Cache the sesskey since it worked
-            self._cached_sesskey = self.get_sesskey()
+            self._cached_sesskey = sesskey
+            self._save_sesskey()
             return results
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
+            err_str = str(e).lower()
+            # Only invalidate sesskey on auth errors, not connection errors
+            if "401" in err_str or "unauthorized" in err_str or "login" in err_str:
+                self._cached_sesskey = None
+                self._save_sesskey()
             return []
 
     def _clean_text(self, text):
@@ -1587,10 +1624,10 @@ class ChoiceSMSForwarder:
         text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
         text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
-        # Strip disclaimer text
-        text = re.sub(r"(?i)\n?\s*Don'?t share this code with others\.?", '', text).strip()
-        text = re.sub(r"(?i)\n?\s*please do not disclose it to anyone\.?", '', text).strip()
-        text = re.sub(r"(?i)\n?\s*disclose it to anyone\.?", '', text).strip()
+        # Strip disclaimer text - be aggressive, remove any occurrence
+        text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', text).strip()
+        text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', text).strip()
+        text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', text).strip()
         return text
 
     def _mask_number(self, phone):
@@ -1615,12 +1652,17 @@ class ChoiceSMSForwarder:
         while self.running:
             try:
                 if not logged_in:
-                    logged_in = self.login()
-                    if not logged_in:
-                        logger.warning("Choice SMS: Login failed, retrying in 60s")
-                        time.sleep(10)
-                        continue
-                    time.sleep(1)  # Let session settle after login
+                    self._load_sesskey_from_disk()
+                    if not self._cached_sesskey:
+                        logged_in = self.login()
+                        if not logged_in:
+                            logger.warning("Choice SMS: Login failed, retrying in 30s")
+                            time.sleep(30)
+                            continue
+                        time.sleep(1)  # Let session settle after login
+                    else:
+                        logged_in = True
+                        logger.info("Choice SMS: Using cached sesskey, skipping login")
                 otps = self.fetch_otps()
                 for sms in otps:
                     h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
@@ -1668,7 +1710,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
                     first_run = False
-                time.sleep(5)
+                time.sleep(2)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
