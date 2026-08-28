@@ -1567,7 +1567,7 @@ class ChoiceSMSForwarder:
                     logged_in = self.login()
                     if not logged_in:
                         logger.warning("Choice SMS: Login failed, retrying in 60s")
-                        time.sleep(60)
+                        time.sleep(10)
                         continue
                     time.sleep(2)  # Let session settle after login
                 otps = self.fetch_otps()
@@ -1618,7 +1618,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
                     first_run = False
-                time.sleep(15)
+                time.sleep(5)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
@@ -1755,7 +1755,7 @@ else:
     def monitor_loop():
         logger.warning("Socket.IO not available – OTP monitoring disabled.")
         while True:
-            time.sleep(60)
+            time.sleep(10)
 
 # =========================== USER HANDLERS ===========================
 @bot.message_handler(commands=['cancel'])
