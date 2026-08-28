@@ -1300,20 +1300,27 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         log_otp(number, otp, sms, user_id)
     except Exception as e:
         logger.error(f"log_otp failed: {e}")
+    # Credit user $0.06 per OTP received
+    if user_id:
+        try:
+            u = get_user(user_id)
+            if u:
+                cur_bal = u[10] if len(u) > 10 else 0.0
+                save_user(user_id, balance=cur_bal + 0.06)
+        except Exception as bal_err:
+            logger.error(f"Balance credit failed for {user_id}: {bal_err}")
 
     if user_id:
         try:
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
-            _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-            _e1, _e2, _e3, _e4, _e5, _e6, _e7 = [_ep() for _ in range(7)]
-            msg = (f"{_e1} <b>MATRIXX SMS V3</b> {_e2}\n"
-                   f"{pe('info2', '🌍')} <b>Country:</b> {flag_html} {country_name}\n"
-                   f"{pe('settings_bw', '⚙')} <b>Service:</b> {app_emoji} {service}\n"
-                   f"{pe('phone', '☎')} <b>Number:</b> {number}\n"
-                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n\n"
-                   f"{_e3} <b>Code:</b> <code>{otp}</code> {_e4}")
+            msg = (f"\U0001f3c6 <b>MATRIXX SMS V3</b> \U0001f3c6\n"
+                   f"{flag_html} <b>Country:</b> {country_name}\n"
+                   f"{app_emoji} <b>Service:</b> {service}\n"
+                   f"\U0001f4f1 <b>Number:</b> {number}\n"
+                   f"\U0001f511 <b>Code:</b> <code>{otp}</code>\n"
+                   f"\u23f0 <b>Time:</b> {date_str}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1691,18 +1698,15 @@ class ChoiceSMSForwarder:
                     otp_display = sms['otp']
                     if len(sms['otp']) == 6:
                         otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
-                    _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-                    _e1, _e2, _e3, _e4, _e5, _e6, _e7, _e8 = [_ep() for _ in range(8)]
                     msg = (
-                        f"{_e1} <b>MATRIXX SMS V3</b> {_e2}\n"
+                        f"<b>Anonmatrixx</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
-                        f"{_e3} <b>Country:</b> {cflag} {sms['country']}\n"
-                        f"{_e4} <b>Service:</b> {sms['service'].upper()}\n"
-                        f"{_e5} <b>Number:</b> <code>{masked}</code>\n"
-                        f"{_e6} <b>OTP:</b> <code>{otp_display}</code>\n"
-                        f"{_e7} <b>Message:</b> <code>{full_clean}</code>\n"
-                        f"\u23f0 <b>Time:</b> {sms['timestamp']}\n"
-                        f"{_e8} <b>━━━━━━━━━━━━━━━</b> {_e1}"
+                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
+                        f"📱 <code>{masked}</code>\n"
+                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
+                        f"⏰ {sms['timestamp']}\n"
+                        f"━━━━━━━━━━━━━━━"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
@@ -1743,18 +1747,24 @@ class ChoiceSMSForwarder:
                             matched_user = get_user_by_number(phone_digits)
                             if matched_user:
                                 try:
-                                    _ep2 = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
-                                    _e1d, _e2d, _e3d, _e4d, _e5d, _e6d, _e7d = [_ep2() for _ in range(7)]
                                     dm_msg = (
-                                        f"{_e1d} <b>MATRIXX SMS V3</b> {_e2d}\n"
-                                        f"{pe('info2', '🌍')} <b>Country:</b> {cflag} {sms['country']}\n"
-                                        f"{pe('settings_bw', '⚙')} <b>Service:</b> {sms['service']}\n"
-                                        f"{pe('phone', '☎')} <b>Number:</b> {sms['phone']}\n"
-                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n\n"
-                                        f"{_e3d} <b>Code:</b> <code>{otp_display}</code> {_e4d}"
+                                        f"🏆 <b>MATRIXX SMS V3</b> 🏆\n"
+                                        f"{cflag} <b>Country:</b> {sms['country']}\n"
+                                        f"⚙ <b>Service:</b> {sms['service']}\n"
+                                        f"📱 <b>Number:</b> {sms['phone']}\n"
+                                        f"🔑 <b>Code:</b> <code>{otp_display}</code>\n"
+                                        f"⏰ <b>Time:</b> {sms['timestamp']}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
+                                    # Credit user $0.06 per OTP received
+                                    try:
+                                        u = get_user(matched_user)
+                                        if u:
+                                            cur_bal = u[10] if len(u) > 10 else 0.0
+                                            save_user(matched_user, balance=cur_bal + 0.06)
+                                    except Exception as bal_err:
+                                        logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                 except Exception as dm_err:
                                     logger.error(f"Choice SMS: DM to {matched_user} failed: {dm_err}")
                             else:
