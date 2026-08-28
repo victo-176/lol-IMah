@@ -562,12 +562,48 @@ def get_all_users():
     return [r[0] for r in rows]
 
 def get_user_by_number(number):
+    """Find user by assigned number - try multiple formats for matching."""
+    if not number:
+        return None
+    clean = re.sub(r'\D', '', str(number))  # digits only
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE assigned_number=?", (number,))
+    # Try exact match first
+    c.execute("SELECT user_id FROM users WHERE assigned_number=?", (clean,))
     row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    # Try without leading zeros
+    c.execute("SELECT user_id FROM users WHERE assigned_number=?", (clean.lstrip('0'),))
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    # Try with + prefix
+    c.execute("SELECT user_id FROM users WHERE assigned_number=?", ('+' + clean,))
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    # Try fuzzy: get all assigned numbers and check if any is a suffix/prefix match
+    c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+    for uid, anum in c.fetchall():
+        clean_anum = re.sub(r'\D', '', str(anum))
+        if not clean_anum:
+            continue
+        # Check if one contains the other (for country code differences)
+        if clean.endswith(clean_anum) or clean_anum.endswith(clean):
+            conn.close()
+            return uid
+        if clean.startswith(clean_anum) or clean_anum.startswith(clean):
+            # Only match if the remaining part is at least 5 digits
+            diff = abs(len(clean) - len(clean_anum))
+            if diff >= 0 and min(len(clean), len(clean_anum)) >= 5:
+                conn.close()
+                return uid
     conn.close()
-    return row[0] if row else None
+    return None
 
 def get_app_for_number(number):
     """Look up which app a phone number is assigned to from combos."""
@@ -1478,12 +1514,28 @@ class ChoiceSMSForwarder:
                 # Check if we got redirected to login
                 if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                     logger.warning(f"Choice SMS: Redirected to login from {url}")
+                    # Try re-login right here
+                    logger.info("Choice SMS: Session expired, re-logging in...")
+                    if self.login():
+                        time.sleep(0.5)
+                        # Retry this URL after login
+                        try:
+                            resp2 = self.session.get(url, timeout=30)
+                            for pattern2 in [r'sesskey=([a-f0-9]{32})', r'"sesskey"\s*:\s*"([a-f0-9]{32})"']:
+                                m2 = re.search(pattern2, resp2.text)
+                                if m2:
+                                    self._cached_sesskey = m2.group(1)
+                                    self._save_sesskey()
+                                    logger.info("Choice SMS: Got sesskey after re-login")
+                                    return m2.group(1)
+                        except:
+                            pass
                     self._cached_sesskey = None
                     return None
             except Exception as e:
                 logger.error(f"Choice SMS sesskey error for {url}: {e}")
         logger.warning("Choice SMS: No sesskey found in any URL")
-        self._cached_sesskey = None
+        # Don't clear cached sesskey on connection errors - only on auth redirects
         return None
 
     def _extract_from_record(self, rec):
@@ -1571,14 +1623,13 @@ class ChoiceSMSForwarder:
         panel_url = self._get_panel_url()
         sesskey = self.get_sesskey()
         if not sesskey:
-            # No sesskey available - try login once
-            logger.warning("Choice SMS: No sesskey, logging in...")
+            # No sesskey at all - try one login attempt
+            logger.info("Choice SMS: No sesskey available, attempting login...")
             if self.login():
                 time.sleep(1)
-                self._cached_sesskey = None
                 sesskey = self.get_sesskey()
         if not sesskey:
-            logger.warning("Choice SMS: No sesskey, will retry next cycle")
+            logger.warning("Choice SMS: Still no sesskey after login, will retry next cycle")
             return []
         today = datetime.now().strftime("%Y-%m-%d")
         params = {
@@ -1612,10 +1663,30 @@ class ChoiceSMSForwarder:
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
             err_str = str(e).lower()
-            # Only invalidate sesskey on auth errors, not connection errors
-            if "401" in err_str or "unauthorized" in err_str or "login" in err_str:
+            # On 401/auth errors, try one re-login
+            if "401" in err_str or "unauthorized" in err_str:
+                logger.info("Choice SMS: Auth error, re-logging in once...")
                 self._cached_sesskey = None
                 self._save_sesskey()
+                if self.login():
+                    time.sleep(1)
+                    # Try once more with new sesskey
+                    try:
+                        new_sesskey = self.get_sesskey()
+                        if new_sesskey:
+                            resp2 = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
+                            if resp2.status_code == 200:
+                                data2 = resp2.json()
+                                records2 = data2.get('data') or data2.get('aaData') or []
+                                results = []
+                                for rec in records2:
+                                    parsed = self._extract_from_record(rec)
+                                    if parsed:
+                                        results.append(parsed)
+                                logger.info(f"Choice SMS: Retry returned {len(results)} OTPs")
+                                return results
+                    except:
+                        pass
             return []
 
     def _clean_text(self, text):
@@ -1647,22 +1718,18 @@ class ChoiceSMSForwarder:
         """Main polling loop."""
         self.running = True
         first_run = True
-        logged_in = False
         logger.info("Choice SMS forwarder thread started")
+        # Login once at startup
+        self._load_sesskey_from_disk()
+        if not self._cached_sesskey:
+            if not self.login():
+                logger.warning("Choice SMS: Initial login failed, will keep trying...")
+            else:
+                time.sleep(1)  # Let session settle
+        else:
+            logger.info("Choice SMS: Using cached sesskey from disk")
         while self.running:
             try:
-                if not logged_in:
-                    self._load_sesskey_from_disk()
-                    if not self._cached_sesskey:
-                        logged_in = self.login()
-                        if not logged_in:
-                            logger.warning("Choice SMS: Login failed, retrying in 30s")
-                            time.sleep(30)
-                            continue
-                        time.sleep(1)  # Let session settle after login
-                    else:
-                        logged_in = True
-                        logger.info("Choice SMS: Using cached sesskey, skipping login")
                 otps = self.fetch_otps()
                 for sms in otps:
                     h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
