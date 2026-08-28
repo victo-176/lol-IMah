@@ -1263,8 +1263,14 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     otp = extract_otp(sms)
     service_name = detect_service(sms).upper()
     msg_text = sms[:200] if sms else ""
-    _e = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
-    e1, e2, e3 = _e(), _e(), _e()
+    # Premium emoji decorations
+    _pe = lambda: random.choice([
+        pe('fire', '🔥'), pe('explosion', '⚡'), pe('diamond', '💎'),
+        pe('rocket', '🚀'), pe('sparkles', '✨'), pe('star', '🌟'),
+        pe('checkmark', '✅'), pe('bell', '🔔'), pe('bookmark', '📌'),
+        pe('verified', '✅')
+    ])
+    e1, e2, e3 = _pe(), _pe(), _pe()
     return (
         f"{e1} Anonmatrixx {e1}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -1307,7 +1313,7 @@ class ChoiceSMSForwarder:
     """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
 
     DEFAULT_PANEL_URL = 'http://51.77.52.79/ints'
-    DEFAULT_USERNAME = 'Anonyouz'
+    DEFAULT_USERNAME = 'Anonymouz'
     DEFAULT_PASSWORD = 'Anon123##'
     DEFAULT_GROUP_ID = '-1003904867859'
 
@@ -1545,8 +1551,13 @@ class ChoiceSMSForwarder:
                         bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                         full_clean = self._clean_text(sms['full_text'])[:150]
                         masked = self._mask_number(sms['phone'])
-                        _e = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
-                        e1, e2, e3 = _e(), _e(), _e()
+                        _pe = lambda: random.choice([
+                            pe('fire', '🔥'), pe('explosion', '⚡'), pe('diamond', '💎'),
+                            pe('rocket', '🚀'), pe('sparkles', '✨'), pe('star', '🌟'),
+                            pe('checkmark', '✅'), pe('bell', '🔔'), pe('bookmark', '📌'),
+                            pe('verified', '✅')
+                        ])
+                        e1, e2, e3 = _pe(), _pe(), _pe()
                         # Country flag lookup
                         country_upper = sms['country'].upper()
                         cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
