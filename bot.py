@@ -1259,7 +1259,10 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         return
 
     user_id = get_user_by_number(number)
-    log_otp(number, otp, sms, user_id)
+    try:
+        log_otp(number, otp, sms, user_id)
+    except Exception as e:
+        logger.error(f"log_otp failed: {e}")
 
     if user_id:
         try:
@@ -1279,8 +1282,11 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         except Exception as e:
             logger.error(f"DM failed: {e}")
 
-    text = format_message(date_str, number, sms, flag_html, app_emoji)
-    send_to_telegram_group(text, otp, number)
+    try:
+        text = format_message(date_str, number, sms, flag_html, app_emoji)
+        send_to_telegram_group(text, otp, number)
+    except Exception as e:
+        logger.error(f"send_to_telegram_group failed: {e}")
 
 def format_message(date_str, number, sms, flag_html, app_emoji):
     masked = mask_number(number)
@@ -1322,7 +1328,7 @@ def send_to_telegram_group(text, otp_code, number):
             if resp.status_code == 200:
                 logger.info(f"Sent to group {chat_id}")
                 msg_id = resp.json()["result"]["message_id"]
-                threading.Thread(target=lambda: time.sleep(150) or requests.post(
+                threading.Thread(target=lambda: time.sleep(300) or requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
                     data={"chat_id": chat_id, "message_id": msg_id}, timeout=10
                 ), daemon=True).start()
