@@ -505,10 +505,11 @@ def save_user(user_id, username="", first_name="", last_name="", country_code=No
         if private_combo_country is None: private_combo_country = ""
         if balance is None: balance = 0.0
     c.execute("""REPLACE INTO users
-        (user_id, username, first_name, last_name, country_code, assigned_number, is_banned, private_combo_country, join_date, last_active, balance)
+        (user_id, username, first_name, last_name, country_code, assigned_number, is_banned, private_combo_country, join_date, last_active, balance, remove_cc)
         VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT is_banned FROM users WHERE user_id=?), 0), ?,
-                COALESCE((SELECT join_date FROM users WHERE user_id=?), CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, ?)""",
-        (user_id, username, first_name, last_name, country_code, assigned_number, user_id, private_combo_country, user_id, balance))
+                COALESCE((SELECT join_date FROM users WHERE user_id=?), CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, ?,
+                COALESCE((SELECT remove_cc FROM users WHERE user_id=?), 0))""",
+        (user_id, username, first_name, last_name, country_code, assigned_number, user_id, private_combo_country, user_id, balance, user_id))
     conn.commit()
     conn.close()
     log_user_activity(user_id, "user_update", "Profile updated")
