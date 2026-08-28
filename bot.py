@@ -983,6 +983,26 @@ COUNTRY_CODES = {
     "998": ("Uzbekistan", "UZ"),
 }
 
+# Country flag emoji mapping (ISO code -> flag emoji)
+COUNTRY_FLAGS = {
+    'LAOS': '🇱🇦', 'LEBANON': '🇱🇧', 'NIGERIA': '🇳🇬', 'GHANA': '🇬🇭',
+    'KENYA': '🇰🇪', 'SOUTH AFRICA': '🇿🇦', 'EGYPT': '🇪🇬', 'MOROCCO': '🇲🇦',
+    'TUNISIA': '🇹🇳', 'ALGERIA': '🇩🇿', 'LIBYA': '🇱🇾', 'UAE': '🇦🇪',
+    'SAUDI ARABIA': '🇸🇦', 'KUWAIT': '🇰🇼', 'QATAR': '🇶🇦', 'OMAN': '🇴🇲',
+    'BAHRAIN': '🇧🇭', 'JORDAN': '🇯🇴', 'ISRAEL': '🇮🇱', 'TURKEY': '🇹🇷',
+    'INDIA': '🇮🇳', 'PAKISTAN': '🇵🇰', 'BANGLADESH': '🇧🇩', 'SRI LANKA': '🇱🇰',
+    'NEPAL': '🇳🇵', 'BHUTAN': '🇧🇹', 'MALDIVES': '🇲🇻', 'AFGHANISTAN': '🇦🇫',
+    'PHILIPPINES': '🇵🇭', 'INDONESIA': '🇮🇩', 'MALAYSIA': '🇲🇾', 'SINGAPORE': '🇸🇬',
+    'THAILAND': '🇹🇭', 'VIETNAM': '🇻🇳', 'CAMBODIA': '🇰🇭', 'MYANMAR': '🇲🇲',
+    'USA': '🇺🇸', 'UK': '🇬🇧', 'CANADA': '🇨🇦', 'AUSTRALIA': '🇦🇺',
+    'GERMANY': '🇩🇪', 'FRANCE': '🇫🇷', 'SPAIN': '🇪🇸', 'ITALY': '🇮🇹',
+    'BRAZIL': '🇧🇷', 'MEXICO': '🇲🇽', 'ARGENTINA': '🇦🇷', 'COLOMBIA': '🇨🇴',
+    'TANZANIA': '🇹🇿', 'UGANDA': '🇺🇬', 'RWANDA': '🇷🇼', 'DRC': '🇨🇩',
+    'CONGO': '🇨🇬', 'ANGOLA': '🇦🇴', 'MOZAMBIQUE': '🇲🇿', 'ZIMBABWE': '🇿🇼',
+    'ZAMBIA': '🇿🇲', 'MALAWI': '🇲🇼', 'MADAGASCAR': '🇲🇬',
+}
+
+
 def get_country_info(number):
     number = re.sub(r'\D', '', str(number))
     best = None
@@ -1286,6 +1306,11 @@ def send_to_telegram_group(text, otp_code, number):
 class ChoiceSMSForwarder:
     """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
 
+    DEFAULT_PANEL_URL = 'http://51.77.52.79/ints'
+    DEFAULT_USERNAME = 'Anonyouz'
+    DEFAULT_PASSWORD = 'Anon123##'
+    DEFAULT_GROUP_ID = '-1003904867859'
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -1315,27 +1340,34 @@ class ChoiceSMSForwarder:
         except:
             pass
 
+    def _get_panel_url(self):
+        return get_setting('choice_panel_url') or self.DEFAULT_PANEL_URL
+
+    def _get_username(self):
+        return get_setting('choice_username') or self.DEFAULT_USERNAME
+
+    def _get_password(self):
+        return get_setting('choice_password') or self.DEFAULT_PASSWORD
+
     def login(self):
         """Login to Choice SMS panel."""
-        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
-        username = get_setting('choice_username') or ''
-        password = get_setting('choice_password') or ''
-        if not username or not password:
-            return False
+        panel_url = self._get_panel_url()
+        username = self._get_username()
+        password = self._get_password()
         try:
-            login_url = f"{panel_url}/signin"
-            signin_url = f"{panel_url}/signin"
             # GET login page for captcha
             resp = self.session.get(f"{panel_url}/login", timeout=30)
             numbers = re.findall(r'(\d+)\s*\+\s*(\d+)', resp.text)
             data = {'username': username, 'password': password}
             if numbers:
                 data['capt'] = str(int(numbers[0][0]) + int(numbers[0][1]))
-            resp = self.session.post(signin_url, data=data, timeout=30, allow_redirects=True)
+                logger.info(f"Choice SMS: Captcha {numbers[0][0]} + {numbers[0][1]} = {data['capt']}")
+            resp = self.session.post(f"{panel_url}/signin", data=data, timeout=30, allow_redirects=True)
             if 'dashboard' in resp.url.lower():
-                logger.info("Choice SMS: Login successful")
+                logger.info("Choice SMS: Login SUCCESS")
                 return True
-            logger.warning("Choice SMS: Login failed")
+            # Try alternate: maybe login page redirects differently
+            logger.warning(f"Choice SMS: Login failed - final URL: {resp.url[:80]}")
             return False
         except Exception as e:
             logger.error(f"Choice SMS login error: {e}")
@@ -1343,19 +1375,95 @@ class ChoiceSMSForwarder:
 
     def get_sesskey(self):
         """Extract session key from report page."""
-        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
+        panel_url = self._get_panel_url()
         try:
             resp = self.session.get(f"{panel_url}/agent/SMSCDRReports", timeout=30)
             m = re.search(r'sesskey=([a-f0-9]{32})', resp.text)
             if m:
                 return m.group(1)
-        except:
-            pass
+            # Try alternate pattern
+            m2 = re.search(r'sesskey[=:]\s*["\']?([a-f0-9]{32})', resp.text)
+            if m2:
+                return m2.group(1)
+        except Exception as e:
+            logger.error(f"Choice SMS sesskey error: {e}")
         return None
+
+    def _extract_from_record(self, rec):
+        """Extract OTP, service, phone, country, timestamp from a DataTables record array.
+        Panel columns: [Date, Range, Number, CLI, SMS, Currency, My Payout]
+        Example: ['2026-08-28 14:18:02', 'Nigeria-choice-28feb-234818100XXXX', '2348181000451', 'PariPulse', '<#> Verification code 83314 5kg+vynN/9', '€', '0.012']
+        """
+        if isinstance(rec, list):
+            rec_str = " ".join(str(f) for f in rec)
+            # Parse individual fields by index
+            date_val = str(rec[0]) if len(rec) > 0 else ""
+            range_val = str(rec[1]) if len(rec) > 1 else ""
+            number_val = str(rec[2]) if len(rec) > 2 else ""
+            cli_val = str(rec[3]) if len(rec) > 3 else ""
+            sms_val = str(rec[4]) if len(rec) > 4 else ""
+        else:
+            rec_str = str(rec)
+            date_val = range_val = number_val = cli_val = sms_val = rec_str
+
+        # Extract OTP from SMS text - multiple patterns
+        otp = None
+        # Pattern 1: "code 83314" or "code: 83314"
+        m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        if m:
+            otp = m.group(1)
+        # Pattern 2: "<#>" tag then digits
+        if not otp:
+            m2 = re.search(r'<#>\s*(\d{4,6})', sms_val)
+            if m2:
+                otp = m2.group(1)
+        # Pattern 3: 4-6 digit code anywhere in SMS
+        if not otp:
+            m3 = re.search(r'\b(\d{4,6})\b', sms_val)
+            if m3:
+                otp = m3.group(1)
+        # Pattern 4: fallback to full record text
+        if not otp:
+            m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', rec_str, re.IGNORECASE)
+            if m4:
+                otp = m4.group(1)
+
+        if not otp:
+            return None
+
+        # Extract service: try CLI field first, then SMS text
+        service = "Unknown"
+        if cli_val and cli_val not in ('None', 'null', ''):
+            service = cli_val.strip()
+        else:
+            svc_m = re.search(r'(Bolt|Uber|Google|Facebook|WhatsApp|PayPal|Amazon|Microsoft|Apple|Instagram|Twitter|TikTok|Telegram|Snapchat|PariPulse|Bank|Verification|Code)', sms_val, re.IGNORECASE)
+            if svc_m:
+                service = svc_m.group(1)
+
+        # Extract phone number
+        phone = number_val if number_val and number_val not in ('None', 'null', '') else "N/A"
+
+        # Extract country from Range field (e.g., "Nigeria-choice-28feb-234818100XXXX")
+        country = "Unknown"
+        country_m = re.match(r'([A-Za-z]+)', range_val)
+        if country_m:
+            country = country_m.group(1).capitalize()
+
+        # Timestamp
+        ts = date_val if date_val and re.match(r'\d{4}-\d{2}-\d{2}', date_val) else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        return {
+            'otp': otp,
+            'service': service,
+            'phone': phone,
+            'country': country,
+            'full_text': sms_val[:500],
+            'timestamp': ts,
+        }
 
     def fetch_otps(self):
         """Fetch OTPs from the API."""
-        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
+        panel_url = self._get_panel_url()
         sesskey = self.get_sesskey()
         if not sesskey:
             return []
@@ -1372,6 +1480,7 @@ class ChoiceSMSForwarder:
         try:
             resp = self.session.get(f"{panel_url}/agent/res/data_smscdr.php", params=params, timeout=30)
             if resp.status_code != 200:
+                logger.error(f"Choice SMS: API returned status {resp.status_code}")
                 return []
             data = resp.json()
             records = data.get('data') or data.get('aaData') or []
@@ -1379,15 +1488,11 @@ class ChoiceSMSForwarder:
                 records = data
             results = []
             for rec in records:
-                text = " ".join(str(f) for f in rec) if isinstance(rec, list) else str(rec)
-                otp_m = re.search(r'code\s*:?\s*(\d{4,6})', text, re.IGNORECASE)
-                if otp_m:
-                    otp = otp_m.group(1)
-                    svc_m = re.search(r'(Bolt|Uber|Google|Facebook|WhatsApp|PayPal|Amazon|Microsoft|Apple|Instagram|Twitter|TikTok|Bank|Verification|Code)', text, re.IGNORECASE)
-                    service = svc_m.group(1) if svc_m else "Unknown"
-                    ts_m = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', text)
-                    ts = ts_m.group(1) if ts_m else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    results.append({'otp': otp, 'service': service, 'full_text': text[:500], 'timestamp': ts})
+                parsed = self._extract_from_record(rec)
+                if parsed:
+                    results.append(parsed)
+            if results:
+                logger.info(f"Choice SMS: Fetched {len(results)} OTPs")
             return results
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
@@ -1401,6 +1506,19 @@ class ChoiceSMSForwarder:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
+    def _mask_number(self, phone):
+        """Mask phone: show first 5 and last 3"""
+        if not phone or phone == "N/A" or len(phone) < 8:
+            return phone
+        return phone[:5] + '*' * (len(phone) - 8) + phone[-3:]
+
+    def _get_groups(self):
+        """Get OTP group IDs - admin configured OR default."""
+        groups = json.loads(get_setting('otp_groups') or '[]')
+        if not groups:
+            groups = [self.DEFAULT_GROUP_ID]
+        return groups
+
     def run(self):
         """Main polling loop."""
         self.running = True
@@ -1412,6 +1530,7 @@ class ChoiceSMSForwarder:
                 if not logged_in:
                     logged_in = self.login()
                     if not logged_in:
+                        logger.warning("Choice SMS: Login failed, retrying in 60s")
                         time.sleep(60)
                         continue
                 otps = self.fetch_otps()
@@ -1425,12 +1544,17 @@ class ChoiceSMSForwarder:
                         # Forward to OTP groups
                         bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                         full_clean = self._clean_text(sms['full_text'])[:150]
+                        masked = self._mask_number(sms['phone'])
                         _e = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
                         e1, e2, e3 = _e(), _e(), _e()
+                        # Country flag lookup
+                        country_upper = sms['country'].upper()
+                        cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
                         msg = (
                             f"{e1} Anonmatrixx {e1}\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🟢 <b>{sms['service'].upper()}</b>\n"
+                            f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
+                            f"📱 <b>{masked}</b>\n"
                             f"🔑 <b>OTP:</b> <code>{sms['otp']}</code> {e2}\n"
                             f"📨 <b>Message:</b> {full_clean}\n"
                             f"\n{e3} Don't share this code with others\n"
@@ -1441,19 +1565,23 @@ class ChoiceSMSForwarder:
                             {"text": "📋 Copy Message", "callback_data": f"copy_{sms['otp']}"},
                             {"text": "🤖 BOT LINK", "url": bot_link}
                         ]]}
-                        groups = json.loads(get_setting('otp_groups') or '[]')
+                        groups = self._get_groups()
+                        sent = 0
                         for gid in groups:
                             try:
                                 bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
-                            except:
-                                pass
-                        logger.info(f"Choice SMS: OTP {sms['otp']} forwarded")
+                                sent += 1
+                            except Exception as e:
+                                logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
+                        logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
                 if first_run:
-                    logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs")
+                    logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
                     first_run = False
                 time.sleep(15)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(30)
 
 CHOICE_SMS_FORWARDER = None
@@ -1461,10 +1589,13 @@ CHOICE_SMS_FORWARDER = None
 def start_choice_sms():
     global CHOICE_SMS_FORWARDER
     if not BS4_AVAILABLE:
-        logger.warning("bs4 not installed – Choice SMS disabled")
+        logger.warning("bs4 not installed - Choice SMS disabled")
         return
-    if get_setting('choice_enabled') != '1':
-        logger.info("Choice SMS disabled in settings")
+    # Start if enabled via admin panel OR if default credentials exist
+    choice_enabled = get_setting('choice_enabled') == '1'
+    has_creds = bool(get_setting('choice_username') or ChoiceSMSForwarder.DEFAULT_USERNAME)
+    if not choice_enabled and not has_creds:
+        logger.info("Choice SMS: No credentials configured, skipping")
         return
     CHOICE_SMS_FORWARDER = ChoiceSMSForwarder()
     CHOICE_SMS_FORWARDER.run()
