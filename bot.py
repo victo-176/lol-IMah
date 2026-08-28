@@ -186,6 +186,55 @@ def app_emoji_html(app_name):
             "google": "🔍", "instagram": "📸", "twitter": "🐦", "discord": "🎮",
             "default": "📱"}.get(str(app_name).lower() if app_name else "", "📱")
 
+# =========================== LIVE CHAT STEP HANDLERS ===========================
+# These MUST be module-level (not closures) to work with register_next_step_handler_by_chat_id.
+# They override any pending withdrawal/2FA handlers when user enters live chat.
+
+def _lc_user_step(msg):
+    """Handle each user message in live chat. Re-registers itself for next message."""
+    if msg.text and msg.text.startswith("/cancel"):
+        user_states.pop(msg.chat.id, None)
+        bot.send_message(msg.chat.id, "💬 Live chat ended.", parse_mode="HTML")
+        return
+    st = user_states.get(msg.chat.id, {})
+    if not isinstance(st, dict) or st.get("mode") != "live_chat":
+        return  # Not in live chat, let @bot.message_handler handle it
+    admin_id = st.get("target_admin")
+    if not admin_id:
+        bot.send_message(msg.chat.id, "❌ Live chat expired.", parse_mode="HTML")
+        user_states.pop(msg.chat.id, None)
+        return
+    uid = msg.from_user.id
+    uname = msg.from_user.first_name or str(uid)
+    try:
+        kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{uid}"}]]})
+        bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{uid}</code>):\n\n{msg.text}", parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logger.error(f"Live chat forward failed: {e}")
+    # Re-register for next message from this user
+    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_user_step)
+
+def _lc_admin_step(msg):
+    """Handle each admin reply in live chat. Re-registers itself for next message."""
+    if msg.text and msg.text.startswith("/cancel"):
+        user_states.pop(msg.chat.id, None)
+        bot.send_message(msg.chat.id, "💬 Reply mode ended.", parse_mode="HTML")
+        return
+    st = user_states.get(msg.chat.id, {})
+    if not isinstance(st, dict) or st.get("mode") != "admin_reply":
+        return
+    target_user = st.get("target_user")
+    if not target_user:
+        bot.send_message(msg.chat.id, "❌ No user selected.", parse_mode="HTML")
+        return
+    try:
+        bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{msg.text}", parse_mode="HTML")
+        bot.reply_to(msg, f"✅ Sent to {target_user}.")
+    except:
+        bot.reply_to(msg, "❌ Could not send to user.")
+    # Re-register for next admin message
+    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_admin_step)
+
 # =========================== CUSTOM BUTTON HELPERS ===========================
 _old_inline_dict = types.InlineKeyboardButton.to_dict
 def _new_inline_dict(self):
@@ -1892,6 +1941,7 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
                 bot.send_message(admin_id, f"💬 <b>Live Chat Request</b>\nUser: <a href='tg://user?id={user_id}'>{uname or user_id}</a>\nID: <code>{user_id}</code>", parse_mode="HTML", reply_markup=kb)
                 bot.answer_callback_query(call.id, "✅ Live chat started! Send your message.", show_alert=True)
                 bot.send_message(chat_id, "💬 <b>Live Chat Mode</b>\n\nType your message and it will be sent to admin.\nType /cancel to exit.", parse_mode="HTML")
+                bot.register_next_step_handler_by_chat_id(chat_id, _lc_user_step)
                 # Guard: override any pending next_step handler
             except Exception as e:
                 bot.answer_callback_query(call.id, "❌ Could not reach admin.", show_alert=True)
