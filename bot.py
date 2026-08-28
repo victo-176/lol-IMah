@@ -1731,6 +1731,33 @@ class ChoiceSMSForwarder:
                                 except Exception as e2:
                                     logger.error(f"Choice SMS: Retry failed for {gid}: {e2}")
                     logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
+
+                    # === Match number to user and DM them ===
+                    try:
+                        phone_digits = re.sub(r'\D', '', sms.get('phone', ''))
+                        if phone_digits and phone_digits != 'N/A':
+                            matched_user = get_user_by_number(phone_digits)
+                            if matched_user:
+                                try:
+                                    _rnd = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
+                                    _r1, _r2, _r3 = _rnd(), _rnd(), _rnd()
+                                    dm_msg = (
+                                        f"{_r1} <b>MATRIXX SMS V3</b> {_r1}\n"
+                                        f"🌍 <b>Country:</b> {cflag} {sms['country']}\n"
+                                        f"⚙ <b>Service:</b> {sms['service']}\n"
+                                        f"☎ <b>Number:</b> {sms['phone']}\n"
+                                        f"⏰ <b>Time:</b> {sms['timestamp']}\n\n"
+                                        f"{_r2} <b>Code:</b> <code>{otp_display}</code> {_r3}"
+                                    )
+                                    bot.send_message(matched_user, dm_msg, parse_mode="HTML")
+                                    logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
+                                except Exception as dm_err:
+                                    logger.error(f"Choice SMS: DM to {matched_user} failed: {dm_err}")
+                            else:
+                                logger.debug(f"Choice SMS: No user found for number {phone_digits}")
+                    except Exception as match_err:
+                        logger.error(f"Choice SMS: User match error: {match_err}")
+
                     # Rate limit: small delay between messages to avoid 429
                     if sent > 0:
                         time.sleep(1)
