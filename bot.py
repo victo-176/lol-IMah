@@ -1316,7 +1316,15 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             if u:
                 cur_bal = u[10] if len(u) > 10 else 0.0
                 new_balance = cur_bal + 0.006
-                save_user(user_id, balance=new_balance)
+            else:
+                new_balance = 0.006
+            # Use direct UPDATE to avoid overwriting other fields
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
+            conn.commit()
+            conn.close()
+            logger.info(f"Balance updated for {user_id}: ${new_balance:.2f}")
         except Exception as bal_err:
             logger.error(f"Balance credit failed for {user_id}: {bal_err}")
 
@@ -1766,7 +1774,14 @@ class ChoiceSMSForwarder:
                                         if u:
                                             cur_bal = u[10] if len(u) > 10 else 0.0
                                             new_balance = cur_bal + 0.006
-                                            save_user(matched_user, balance=new_balance)
+                                        else:
+                                            new_balance = 0.006
+                                        _conn = sqlite3.connect(DB_PATH)
+                                        _c = _conn.cursor()
+                                        _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
+                                        _conn.commit()
+                                        _conn.close()
+                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance:.2f}")
                                     except Exception as bal_err:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
@@ -1968,7 +1983,7 @@ def send_welcome(message):
 
 def add_user(user_id):
     if not get_user(user_id):
-        save_user(user_id)
+        save_user(user_id, balance=0.0)
         for admin in get_all_admins():
             try:
                 bot.send_message(admin, f"{pe('new_badge', '🆕')} New user: <code>{user_id}</code>", parse_mode="HTML")
