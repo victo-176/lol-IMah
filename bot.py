@@ -2484,7 +2484,11 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup.add(ibtn("Add Group", callback_data="admin_add_otp_group", style="success", icon="plus"))
         markup.add(ibtn("Remove Group", callback_data="admin_remove_otp_group", style="danger", icon="minus"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            if "message is not modified" not in str(e).lower():
+                logger.error(f"OTP groups edit error: {e}")
         return
 
     if data == "admin_add_otp_group":
