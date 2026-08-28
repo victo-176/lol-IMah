@@ -1758,7 +1758,6 @@ class ChoiceSMSForwarder:
     def run(self):
         """Main polling loop."""
         self.running = True
-        first_run = True
         logger.info("Choice SMS forwarder thread started")
         # Login once at startup
         self._load_sesskey_from_disk()
@@ -1773,51 +1772,42 @@ class ChoiceSMSForwarder:
             try:
                 otps = self.fetch_otps()
                 for sms in otps:
-                    h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
-                    if h not in self.seen_hashes:
-                        self.seen_hashes.add(h)
-                        self._save_seen()
-                        if first_run:
-                            continue
-                        # Forward to OTP groups
-                        bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
-                        full_clean = self._clean_text(sms['full_text'])[:200]
-                        masked = self._mask_number(sms['phone'])
-                        # Country flag lookup
-                        country_upper = sms['country'].upper()
-                        cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
-                        # Format OTP with hyphen if 6 digits
-                        otp_display = sms['otp']
-                        if len(sms['otp']) == 6:
-                            otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
-                        # Message format matching the image
-                        msg = (
-                            f"<b>Anonmatrixx</b>\n"
-                            f"━━━━━━━━━━━━━━━\n"
-                            f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
-                            f"📱 <code>{masked}</code>\n"
-                            f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                            f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
-                            f"⏰ {sms['timestamp']}\n"
-                            f"━━━━━━━━━━━━━━━"
-                        )
-                        kb = types.InlineKeyboardMarkup(row_width=2)
-                        kb.add(
-                            types.InlineKeyboardButton("📋 Copy Message", callback_data=f"copy_{sms['otp']}"),
-                            types.InlineKeyboardButton("🤖 BOT LINK", url=bot_link)
-                        )
-                        groups = self._get_groups()
-                        sent = 0
-                        for gid in groups:
-                            try:
-                                bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
-                                sent += 1
-                            except Exception as e:
-                                logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
-                        logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
-                if first_run:
-                    logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
-                    first_run = False
+                    # Forward ALL OTPs including duplicates
+                    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
+                    full_clean = self._clean_text(sms['full_text'])[:200]
+                    masked = self._mask_number(sms['phone'])
+                    # Country flag lookup
+                    country_upper = sms['country'].upper()
+                    cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
+                    # Format OTP with hyphen if 6 digits
+                    otp_display = sms['otp']
+                    if len(sms['otp']) == 6:
+                        otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+                    # Message format matching the image
+                    msg = (
+                        f"<b>Anonmatrixx</b>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
+                        f"📱 <code>{masked}</code>\n"
+                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
+                        f"⏰ {sms['timestamp']}\n"
+                        f"━━━━━━━━━━━━━━━"
+                    )
+                    kb = types.InlineKeyboardMarkup(row_width=2)
+                    kb.add(
+                        types.InlineKeyboardButton("📋 Copy Message", callback_data=f"copy_{sms['otp']}"),
+                        types.InlineKeyboardButton("🤖 BOT LINK", url=bot_link)
+                    )
+                    groups = self._get_groups()
+                    sent = 0
+                    for gid in groups:
+                        try:
+                            bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                            sent += 1
+                        except Exception as e:
+                            logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
+                    logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
                 time.sleep(2)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
@@ -1893,16 +1883,12 @@ if SOCKETIO_AVAILABLE:
                 if number and sms:
                     number_clean = clean_number(str(number))
                     if number_clean and len(number_clean) >= 5:
-                        uid = f"{number_clean}-{sms[:80]}"
-                        if uid not in seen_messages:
-                            seen_messages.add(uid)
-                            save_seen()
-                            logger.info(f"SMS received: {number_clean}")
-                            assigned_app = get_app_for_number(number_clean)
-                            send_otp_to_user_and_group(
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                number_clean, sms, app_name=assigned_app
-                            )
+                        logger.info(f"SMS received: {number_clean}")
+                        assigned_app = get_app_for_number(number_clean)
+                        send_otp_to_user_and_group(
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            number_clean, sms, app_name=assigned_app
+                        )
             except Exception as e:
                 logger.error(f"handle_message error: {e}")
 
