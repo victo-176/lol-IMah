@@ -1242,16 +1242,17 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     masked = mask_number(number)
     otp = extract_otp(sms)
     service_name = detect_service(sms).upper()
-    # Find the service name in the SMS text for the Message line
     msg_text = sms[:200] if sms else ""
+    _e = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
+    e1, e2, e3 = _e(), _e(), _e()
     return (
-        f"Anonmatrixx\n"
+        f"{e1} Anonmatrixx {e1}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{flag_html} <b>{service_name}</b> 🟢\n"
         f"📱 {masked}\n"
-        f"🔑 <b>OTP:</b> <code>{otp}</code>\n"
+        f"🔑 <b>OTP:</b> <code>{otp}</code> {e2}\n"
         f"📨 <b>Message:</b> {msg_text[:150]}\n"
-        f"\nDon't share this code with others\n"
+        f"\n{e3} Don't share this code with others\n"
         f"⏰ {date_str}\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
@@ -1424,13 +1425,15 @@ class ChoiceSMSForwarder:
                         # Forward to OTP groups
                         bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                         full_clean = self._clean_text(sms['full_text'])[:150]
+                        _e = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
+                        e1, e2, e3 = _e(), _e(), _e()
                         msg = (
-                            f"Anonmatrixx\n"
+                            f"{e1} Anonmatrixx {e1}\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
                             f"🟢 <b>{sms['service'].upper()}</b>\n"
-                            f"🔑 <b>OTP:</b> <code>{sms['otp']}</code>\n"
+                            f"🔑 <b>OTP:</b> <code>{sms['otp']}</code> {e2}\n"
                             f"📨 <b>Message:</b> {full_clean}\n"
-                            f"\nDon't share this code with others\n"
+                            f"\n{e3} Don't share this code with others\n"
                             f"⏰ {sms['timestamp']}\n"
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
