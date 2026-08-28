@@ -1442,6 +1442,23 @@ class ChoiceSMSForwarder:
     def _get_password(self):
         return get_setting('choice_password') or self.DEFAULT_PASSWORD
 
+    def _extract_sesskey_from_page(self, url):
+        """Try to extract sesskey from a page URL. Returns sesskey or None."""
+        try:
+            resp = self.session.get(url, timeout=30)
+            for pattern in [
+                r'sesskey=([a-f0-9]{32})',
+                r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                r"sesskey['\":=]\s*['\"]?([a-f0-9]{32})",
+                r'data-sesskey="([a-f0-9]{32})"',
+            ]:
+                m = re.search(pattern, resp.text)
+                if m:
+                    return m.group(1)
+        except:
+            pass
+        return None
+
     def login(self):
         """Login to Choice SMS panel."""
         panel_url = self._get_panel_url()
@@ -1458,31 +1475,45 @@ class ChoiceSMSForwarder:
             resp = self.session.post(f"{panel_url}/signin", data=data, timeout=30, allow_redirects=True)
             # Accept any redirect away from login page as success
             final_url = resp.url.lower()
+            login_ok = False
             if 'signin' not in final_url and 'login' not in final_url:
                 logger.info(f"Choice SMS: Login SUCCESS (redirected to {resp.url[:60]})")
-                return True
-            # Also check if we got cookies that look like session cookies
-            if len(self.session.cookies) > 0:
+                login_ok = True
+            elif len(self.session.cookies) > 0:
                 logger.info(f"Choice SMS: Login SUCCESS (got {len(self.session.cookies)} cookies)")
-                # Try to extract and cache sesskey from the login response
-                try:
-                    dash_resp = self.session.get(f"{self._get_panel_url()}/client/SMSDashboard", timeout=30)
-                    for pattern in [r'sesskey=([a-f0-9]{32})', r'"sesskey"\s*:\s*"([a-f0-9]{32})"']:
-                        m = re.search(pattern, dash_resp.text)
-                        if m:
-                            self._cached_sesskey = m.group(1)
-                            break
-                except:
-                    pass
-                return True
-            logger.warning(f"Choice SMS: Login failed - final URL: {resp.url[:80]}")
-            return False
+                login_ok = True
+            if not login_ok:
+                logger.warning(f"Choice SMS: Login failed - final URL: {resp.url[:80]}")
+                return False
+            # After successful login, extract and cache sesskey from Dashboard
+            try:
+                sk = self._extract_sesskey_from_page(f"{panel_url}/client/SMSDashboard")
+                if sk:
+                    self._cached_sesskey = sk
+                    self._save_sesskey()
+                    logger.info("Choice SMS: Sesskey cached after login")
+                    return True
+            except:
+                pass
+            # Fallback: try SMSCDRStats
+            try:
+                sk = self._extract_sesskey_from_page(f"{panel_url}/client/SMSCDRStats")
+                if sk:
+                    self._cached_sesskey = sk
+                    self._save_sesskey()
+                    logger.info("Choice SMS: Sesskey cached from SMSCDRStats after login")
+                    return True
+            except:
+                pass
+            logger.info("Choice SMS: Login OK but no sesskey extracted yet")
+            return True
         except Exception as e:
             logger.error(f"Choice SMS login error: {e}")
             return False
 
+
     def get_sesskey(self):
-        """Extract session key from report page."""
+        """Extract session key - use cached first, then try pages."""
         # Use cached sesskey if available
         if hasattr(self, '_cached_sesskey') and self._cached_sesskey:
             return self._cached_sesskey
@@ -1492,51 +1523,45 @@ class ChoiceSMSForwarder:
             if self._cached_sesskey:
                 return self._cached_sesskey
         panel_url = self._get_panel_url()
+        # Try Dashboard first (more reliable), then SMSCDRStats
         urls_to_try = [
+            f"{panel_url}/client/SMSDashboard",
             f"{panel_url}/client/SMSCDRStats",
             f"{panel_url}/client/SMSCDRStats/",
-            f"{panel_url}/client/smscdrstats",
         ]
         for url in urls_to_try:
             try:
                 resp = self.session.get(url, timeout=30)
-                # Try multiple patterns
+                # Check if redirected to login
+                if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                    logger.warning("Choice SMS: Redirected to login, re-logging in...")
+                    if self.login():
+                        time.sleep(0.5)
+                        # After login, sesskey should be cached
+                        if self._cached_sesskey:
+                            self._save_sesskey()
+                            logger.info("Choice SMS: Got sesskey after re-login")
+                            return self._cached_sesskey
+                    self._cached_sesskey = None
+                    return None
+                # Try to extract sesskey from page
                 for pattern in [
                     r'sesskey=([a-f0-9]{32})',
-                    r'sesskey["\':=]\s*["\']?([a-f0-9]{32})',
                     r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                    r"sesskey['\":=]\s*['\"]?([a-f0-9]{32})",
                     r'data-sesskey="([a-f0-9]{32})"',
                 ]:
                     m = re.search(pattern, resp.text)
                     if m:
                         self._cached_sesskey = m.group(1)
+                        self._save_sesskey()
                         return m.group(1)
-                # Check if we got redirected to login
-                if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                    logger.warning(f"Choice SMS: Redirected to login from {url}")
-                    # Try re-login right here
-                    logger.info("Choice SMS: Session expired, re-logging in...")
-                    if self.login():
-                        time.sleep(0.5)
-                        # Retry this URL after login
-                        try:
-                            resp2 = self.session.get(url, timeout=30)
-                            for pattern2 in [r'sesskey=([a-f0-9]{32})', r'"sesskey"\s*:\s*"([a-f0-9]{32})"']:
-                                m2 = re.search(pattern2, resp2.text)
-                                if m2:
-                                    self._cached_sesskey = m2.group(1)
-                                    self._save_sesskey()
-                                    logger.info("Choice SMS: Got sesskey after re-login")
-                                    return m2.group(1)
-                        except:
-                            pass
-                    self._cached_sesskey = None
-                    return None
             except Exception as e:
-                logger.error(f"Choice SMS sesskey error for {url}: {e}")
+                # Connection errors - don't invalidate, just try next URL
+                logger.debug(f"Choice SMS: Connection error for {url}: {e}")
         logger.warning("Choice SMS: No sesskey found in any URL")
-        # Don't clear cached sesskey on connection errors - only on auth redirects
         return None
+
 
     def _extract_from_record(self, rec):
         """Extract OTP, service, phone, country, timestamp from a DataTables record array.
@@ -1623,8 +1648,8 @@ class ChoiceSMSForwarder:
         panel_url = self._get_panel_url()
         sesskey = self.get_sesskey()
         if not sesskey:
-            # No sesskey at all - try one login attempt
-            logger.info("Choice SMS: No sesskey available, attempting login...")
+            # No sesskey - try login
+            logger.info("Choice SMS: No sesskey, attempting login...")
             if self.login():
                 time.sleep(1)
                 sesskey = self.get_sesskey()
@@ -1643,6 +1668,20 @@ class ChoiceSMSForwarder:
         }
         try:
             resp = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
+            # Check if redirected to login (session expired)
+            if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                logger.warning("Choice SMS: API redirected to login - session expired")
+                self._cached_sesskey = None
+                # Re-login and retry once
+                if self.login():
+                    time.sleep(1)
+                    new_sk = self.get_sesskey()
+                    if new_sk:
+                        params["sesskey"] = new_sk
+                        resp = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
+                if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                    logger.error("Choice SMS: Still redirected after re-login")
+                    return []
             if resp.status_code != 200:
                 logger.error(f"Choice SMS: API returned status {resp.status_code}")
                 return []
@@ -1663,19 +1702,19 @@ class ChoiceSMSForwarder:
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
             err_str = str(e).lower()
-            # On 401/auth errors, try one re-login
+            # On auth errors, clear sesskey and re-login
             if "401" in err_str or "unauthorized" in err_str:
-                logger.info("Choice SMS: Auth error, re-logging in once...")
+                logger.info("Choice SMS: Auth error, re-logging in...")
                 self._cached_sesskey = None
                 self._save_sesskey()
                 if self.login():
                     time.sleep(1)
-                    # Try once more with new sesskey
                     try:
-                        new_sesskey = self.get_sesskey()
-                        if new_sesskey:
+                        new_sk = self.get_sesskey()
+                        if new_sk:
+                            params["sesskey"] = new_sk
                             resp2 = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
-                            if resp2.status_code == 200:
+                            if resp2.status_code == 200 and 'login' not in resp2.url.lower():
                                 data2 = resp2.json()
                                 records2 = data2.get('data') or data2.get('aaData') or []
                                 results = []
@@ -1687,7 +1726,9 @@ class ChoiceSMSForwarder:
                                 return results
                     except:
                         pass
+            # Connection errors - don't invalidate sesskey, just retry next cycle
             return []
+
 
     def _clean_text(self, text):
         text = re.sub(r'€\s*[\d.]+\s*[\d.]*', '', text)
