@@ -1442,25 +1442,8 @@ class ChoiceSMSForwarder:
     def _get_password(self):
         return get_setting('choice_password') or self.DEFAULT_PASSWORD
 
-    def _extract_sesskey_from_page(self, url):
-        """Try to extract sesskey from a page URL. Returns sesskey or None."""
-        try:
-            resp = self.session.get(url, timeout=30)
-            for pattern in [
-                r'sesskey=([a-f0-9]{32})',
-                r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
-                r"sesskey['\":=]\s*['\"]?([a-f0-9]{32})",
-                r'data-sesskey="([a-f0-9]{32})"',
-            ]:
-                m = re.search(pattern, resp.text)
-                if m:
-                    return m.group(1)
-        except:
-            pass
-        return None
-
-    def login(self):
-        """Login to Choice SMS panel."""
+    def _do_login(self):
+        """Login to Choice SMS panel. Returns True if login succeeded."""
         panel_url = self._get_panel_url()
         username = self._get_username()
         password = self._get_password()
@@ -1473,188 +1456,65 @@ class ChoiceSMSForwarder:
                 data['capt'] = str(int(numbers[0][0]) + int(numbers[0][1]))
                 logger.info(f"Choice SMS: Captcha {numbers[0][0]} + {numbers[0][1]} = {data['capt']}")
             resp = self.session.post(f"{panel_url}/signin", data=data, timeout=30, allow_redirects=True)
-            # Accept any redirect away from login page as success
             final_url = resp.url.lower()
-            login_ok = False
             if 'signin' not in final_url and 'login' not in final_url:
-                logger.info(f"Choice SMS: Login SUCCESS (redirected to {resp.url[:60]})")
-                login_ok = True
-            elif len(self.session.cookies) > 0:
-                logger.info(f"Choice SMS: Login SUCCESS (got {len(self.session.cookies)} cookies)")
-                login_ok = True
-            if not login_ok:
-                logger.warning(f"Choice SMS: Login failed - final URL: {resp.url[:80]}")
-                return False
-            # After successful login, extract and cache sesskey from Dashboard
-            try:
-                sk = self._extract_sesskey_from_page(f"{panel_url}/client/SMSDashboard")
-                if sk:
-                    self._cached_sesskey = sk
-                    self._save_sesskey()
-                    logger.info("Choice SMS: Sesskey cached after login")
-                    return True
-            except:
-                pass
-            # Fallback: try SMSCDRStats
-            try:
-                sk = self._extract_sesskey_from_page(f"{panel_url}/client/SMSCDRStats")
-                if sk:
-                    self._cached_sesskey = sk
-                    self._save_sesskey()
-                    logger.info("Choice SMS: Sesskey cached from SMSCDRStats after login")
-                    return True
-            except:
-                pass
-            logger.info("Choice SMS: Login OK but no sesskey extracted yet")
-            return True
+                logger.info(f"Choice SMS: Login OK (redirected to {resp.url[:60]})")
+                return True
+            if len(self.session.cookies) > 0:
+                logger.info(f"Choice SMS: Login OK (got cookies)")
+                return True
+            logger.warning(f"Choice SMS: Login FAILED - final URL: {resp.url[:80]}")
+            return False
         except Exception as e:
             logger.error(f"Choice SMS login error: {e}")
             return False
 
-
-    def get_sesskey(self):
-        """Extract session key - use cached first, then try pages."""
-        # Use cached sesskey if available
-        if hasattr(self, '_cached_sesskey') and self._cached_sesskey:
-            return self._cached_sesskey
-        # Try to load from disk
-        if hasattr(self, '_load_sesskey_from_disk'):
-            self._load_sesskey_from_disk()
-            if self._cached_sesskey:
-                return self._cached_sesskey
+    def _get_sesskey(self):
+        """Get sesskey from SMSCDRStats page (the ONLY page that has it)."""
         panel_url = self._get_panel_url()
-        # Try Dashboard first (more reliable), then SMSCDRStats
-        urls_to_try = [
-            f"{panel_url}/client/SMSDashboard",
-            f"{panel_url}/client/SMSCDRStats",
-            f"{panel_url}/client/SMSCDRStats/",
-        ]
-        for url in urls_to_try:
-            try:
-                resp = self.session.get(url, timeout=30)
-                # Check if redirected to login
-                if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                    logger.warning("Choice SMS: Redirected to login, re-logging in...")
-                    if self.login():
-                        time.sleep(0.5)
-                        # After login, sesskey should be cached
-                        if self._cached_sesskey:
-                            self._save_sesskey()
-                            logger.info("Choice SMS: Got sesskey after re-login")
-                            return self._cached_sesskey
-                    self._cached_sesskey = None
-                    return None
-                # Try to extract sesskey from page
-                for pattern in [
-                    r'sesskey=([a-f0-9]{32})',
-                    r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
-                    r"sesskey['\":=]\s*['\"]?([a-f0-9]{32})",
-                    r'data-sesskey="([a-f0-9]{32})"',
-                ]:
-                    m = re.search(pattern, resp.text)
-                    if m:
-                        self._cached_sesskey = m.group(1)
-                        self._save_sesskey()
-                        return m.group(1)
-            except Exception as e:
-                # Connection errors - don't invalidate, just try next URL
-                logger.debug(f"Choice SMS: Connection error for {url}: {e}")
-        logger.warning("Choice SMS: No sesskey found in any URL")
+        try:
+            resp = self.session.get(f"{panel_url}/client/SMSCDRStats", timeout=30)
+            # Check for redirect to login
+            if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                return None
+            for pattern in [
+                r'sesskey=([a-f0-9]{32})',
+                r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+            ]:
+                m = re.search(pattern, resp.text)
+                if m:
+                    return m.group(1)
+        except Exception as e:
+            logger.debug(f"Choice SMS: get_sesskey error: {e}")
         return None
 
-
-    def _extract_from_record(self, rec):
-        """Extract OTP, service, phone, country, timestamp from a DataTables record array.
-        Panel columns: [Date, Range, Number, CLI, SMS, Currency, My Payout]
-        Example: ['2026-08-28 14:18:02', 'Nigeria-choice-28feb-234818100XXXX', '2348181000451', 'PariPulse', '<#> Verification code 83314 5kg+vynN/9', '€', '0.012']
-        """
-        if isinstance(rec, dict):
-            # Dict format: {"Date": "...", "Range": "...", "Number": "...", "CLI": "...", "SMS": "...", ...}
-            rec_str = json.dumps(rec)
-            date_val = str(rec.get('Date', rec.get('date', '')))
-            range_val = str(rec.get('Range', rec.get('range', '')))
-            number_val = str(rec.get('Number', rec.get('number', '')))
-            cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
-            sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
-        elif isinstance(rec, list):
-            rec_str = " ".join(str(f) for f in rec)
-            # Parse individual fields by index
-            date_val = str(rec[0]) if len(rec) > 0 else ""
-            range_val = str(rec[1]) if len(rec) > 1 else ""
-            number_val = str(rec[2]) if len(rec) > 2 else ""
-            cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[4]) if len(rec) > 4 else ""
-        else:
-            rec_str = str(rec)
-            date_val = range_val = number_val = cli_val = sms_val = rec_str
-
-        # Extract OTP from SMS text - multiple patterns
-        otp = None
-        # Pattern 1: "code 83314" or "code: 83314"
-        m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
-        if m:
-            otp = m.group(1)
-        # Pattern 2: "<#>" tag then digits
-        if not otp:
-            m2 = re.search(r'<#>\s*(\d{4,6})', sms_val)
-            if m2:
-                otp = m2.group(1)
-        # Pattern 3: 4-6 digit code anywhere in SMS
-        if not otp:
-            m3 = re.search(r'\b(\d{4,6})\b', sms_val)
-            if m3:
-                otp = m3.group(1)
-        # Pattern 4: fallback to full record text
-        if not otp:
-            m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', rec_str, re.IGNORECASE)
-            if m4:
-                otp = m4.group(1)
-
-        if not otp:
-            return None
-
-        # Extract service: try CLI field first, then SMS text
-        service = "Unknown"
-        if cli_val and cli_val not in ('None', 'null', ''):
-            service = cli_val.strip()
-        else:
-            svc_m = re.search(r'(Bolt|Uber|Google|Facebook|WhatsApp|PayPal|Amazon|Microsoft|Apple|Instagram|Twitter|TikTok|Telegram|Snapchat|PariPulse|Bank|Verification|Code)', sms_val, re.IGNORECASE)
-            if svc_m:
-                service = svc_m.group(1)
-
-        # Extract phone number
-        phone = number_val if number_val and number_val not in ('None', 'null', '') else "N/A"
-
-        # Extract country from Range field (e.g., "Nigeria-choice-28feb-234818100XXXX")
-        country = "Unknown"
-        country_m = re.match(r'([A-Za-z]+)', range_val)
-        if country_m:
-            country = country_m.group(1).capitalize()
-
-        # Timestamp
-        ts = date_val if date_val and re.match(r'\d{4}-\d{2}-\d{2}', date_val) else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        return {
-            'otp': otp,
-            'service': service,
-            'phone': phone,
-            'country': country,
-            'full_text': sms_val[:500],
-            'timestamp': ts,
-        }
+    def _ensure_session(self):
+        """Make sure we have a valid session + sesskey. Returns sesskey or None."""
+        # Try cached sesskey first
+        if self._cached_sesskey:
+            return self._cached_sesskey
+        # Try loading from disk
+        self._load_sesskey_from_disk()
+        if self._cached_sesskey:
+            return self._cached_sesskey
+        # Login fresh and get sesskey
+        if self._do_login():
+            time.sleep(0.5)
+            sk = self._get_sesskey()
+            if sk:
+                self._cached_sesskey = sk
+                self._save_sesskey()
+                logger.info("Choice SMS: Session established with sesskey")
+                return sk
+            logger.warning("Choice SMS: Login OK but no sesskey from SMSCDRStats")
+        return None
 
     def fetch_otps(self):
         """Fetch OTPs from the API."""
         panel_url = self._get_panel_url()
-        sesskey = self.get_sesskey()
+        sesskey = self._ensure_session()
         if not sesskey:
-            # No sesskey - try login
-            logger.info("Choice SMS: No sesskey, attempting login...")
-            if self.login():
-                time.sleep(1)
-                sesskey = self.get_sesskey()
-        if not sesskey:
-            logger.warning("Choice SMS: Still no sesskey after login, will retry next cycle")
+            logger.warning("Choice SMS: No session, will retry next cycle")
             return []
         today = datetime.now().strftime("%Y-%m-%d")
         params = {
@@ -1668,23 +1528,33 @@ class ChoiceSMSForwarder:
         }
         try:
             resp = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
-            # Check if redirected to login (session expired)
+            # If redirected to login, session expired - re-login and retry once
             if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                logger.warning("Choice SMS: API redirected to login - session expired")
+                logger.warning("Choice SMS: Session expired, re-logging in...")
                 self._cached_sesskey = None
-                # Re-login and retry once
-                if self.login():
-                    time.sleep(1)
-                    new_sk = self.get_sesskey()
+                self._save_sesskey()
+                new_sk = self._ensure_session()
+                if new_sk:
+                    params["sesskey"] = new_sk
+                    resp = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
+                    if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                        logger.error("Choice SMS: Still redirected after re-login")
+                        return []
+            if resp.status_code != 200:
+                logger.error(f"Choice SMS: API status {resp.status_code} (body: {resp.text[:200]})")
+                # 503 means sesskey invalid - clear and re-login
+                if resp.status_code == 503:
+                    logger.warning("Choice SMS: 503 - sesskey may be invalid, re-logging in...")
+                    self._cached_sesskey = None
+                    self._save_sesskey()
+                    new_sk = self._ensure_session()
                     if new_sk:
                         params["sesskey"] = new_sk
                         resp = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
-                if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                    logger.error("Choice SMS: Still redirected after re-login")
+                        if resp.status_code != 200 or 'login' in resp.url.lower():
+                            return []
+                else:
                     return []
-            if resp.status_code != 200:
-                logger.error(f"Choice SMS: API returned status {resp.status_code}")
-                return []
             data = resp.json()
             records = data.get('data') or data.get('aaData') or []
             if isinstance(data, list):
@@ -1695,79 +1565,18 @@ class ChoiceSMSForwarder:
                 if parsed:
                     results.append(parsed)
             logger.info(f"Choice SMS: API returned {len(records)} records, {len(results)} with OTP")
-            # Cache the sesskey since it worked
-            self._cached_sesskey = sesskey
-            self._save_sesskey()
             return results
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
-            err_str = str(e).lower()
-            # On auth errors, clear sesskey and re-login
-            if "401" in err_str or "unauthorized" in err_str:
-                logger.info("Choice SMS: Auth error, re-logging in...")
-                self._cached_sesskey = None
-                self._save_sesskey()
-                if self.login():
-                    time.sleep(1)
-                    try:
-                        new_sk = self.get_sesskey()
-                        if new_sk:
-                            params["sesskey"] = new_sk
-                            resp2 = self.session.get(f"{panel_url}/client/res/data_smscdr.php", params=params, timeout=30)
-                            if resp2.status_code == 200 and 'login' not in resp2.url.lower():
-                                data2 = resp2.json()
-                                records2 = data2.get('data') or data2.get('aaData') or []
-                                results = []
-                                for rec in records2:
-                                    parsed = self._extract_from_record(rec)
-                                    if parsed:
-                                        results.append(parsed)
-                                logger.info(f"Choice SMS: Retry returned {len(results)} OTPs")
-                                return results
-                    except:
-                        pass
-            # Connection errors - don't invalidate sesskey, just retry next cycle
+            # On ANY error, clear sesskey so we re-login next cycle
+            self._cached_sesskey = None
+            self._save_sesskey()
             return []
-
-
-    def _clean_text(self, text):
-        text = re.sub(r'€\s*[\d.]+\s*[\d.]*', '', text)
-        text = re.sub(r'USD\s*[\d.]+\s*[\d.]*', '', text)
-        text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
-        text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        # Strip disclaimer text - be aggressive, remove any occurrence
-        text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', text).strip()
-        text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', text).strip()
-        text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', text).strip()
-        return text
-
-    def _mask_number(self, phone):
-        """Mask phone: show first 5 and last 5"""
-        if not phone or phone == "N/A" or len(phone) < 10:
-            return phone
-        return phone[:5] + '*' * (len(phone) - 10) + phone[-5:]
-
-    def _get_groups(self):
-        """Get OTP group IDs - admin configured OR default."""
-        groups = json.loads(get_setting('otp_groups') or '[]')
-        if not groups:
-            groups = [self.DEFAULT_GROUP_ID]
-        return groups
 
     def run(self):
         """Main polling loop."""
         self.running = True
-        logger.info("Choice SMS forwarder thread started")
-        # Login once at startup
-        self._load_sesskey_from_disk()
-        if not self._cached_sesskey:
-            if not self.login():
-                logger.warning("Choice SMS: Initial login failed, will keep trying...")
-            else:
-                time.sleep(1)  # Let session settle
-        else:
-            logger.info("Choice SMS: Using cached sesskey from disk")
+        logger.info("Choice SMS forwarder started")
         while self.running:
             try:
                 otps = self.fetch_otps()
@@ -1776,28 +1585,25 @@ class ChoiceSMSForwarder:
                     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                     full_clean = self._clean_text(sms['full_text'])[:200]
                     masked = self._mask_number(sms['phone'])
-                    # Country flag lookup
                     country_upper = sms['country'].upper()
-                    cflag = COUNTRY_FLAGS.get(country_upper, '🌍')
-                    # Format OTP with hyphen if 6 digits
+                    cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
                     otp_display = sms['otp']
                     if len(sms['otp']) == 6:
                         otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
-                    # Message format matching the image
                     msg = (
                         f"<b>Anonmatrixx</b>\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
-                        f"📱 <code>{masked}</code>\n"
-                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
-                        f"⏰ {sms['timestamp']}\n"
-                        f"━━━━━━━━━━━━━━━"
+                        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                        f"{cflag} <b>{sms['service'].upper()}</b> \U0001f7e2\n"
+                        f"\U0001f4f1 <code>{masked}</code>\n"
+                        f"\U0001f511 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"\U0001f4e9 <b>Message:</b> <code>{full_clean}</code>\n"
+                        f"\u23f0 {sms['timestamp']}\n"
+                        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
-                        types.InlineKeyboardButton("📋 Copy Message", callback_data=f"copy_{sms['otp']}"),
-                        types.InlineKeyboardButton("🤖 BOT LINK", url=bot_link)
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{sms['otp']}"),
+                        types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
                     )
                     groups = self._get_groups()
                     sent = 0
@@ -1813,7 +1619,10 @@ class ChoiceSMSForwarder:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(10)
+                self._cached_sesskey = None
+                self._save_sesskey()
+                time.sleep(5)
+
 
 CHOICE_SMS_FORWARDER = None
 
