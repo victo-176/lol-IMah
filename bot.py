@@ -1300,13 +1300,15 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         log_otp(number, otp, sms, user_id)
     except Exception as e:
         logger.error(f"log_otp failed: {e}")
-    # Credit user $0.06 per OTP received
+    # Credit user $0.006 per OTP received
+    new_balance = 0.0
     if user_id:
         try:
             u = get_user(user_id)
             if u:
                 cur_bal = u[10] if len(u) > 10 else 0.0
-                save_user(user_id, balance=cur_bal + 0.06)
+                new_balance = cur_bal + 0.006
+                save_user(user_id, balance=new_balance)
         except Exception as bal_err:
             logger.error(f"Balance credit failed for {user_id}: {bal_err}")
 
@@ -1320,7 +1322,8 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
                    f"{app_emoji} <b>Service:</b> {service}\n"
                    f"{pe('phone', '📱')} <b>Number:</b> {number}\n"
                    f"{pe('key', '🔑')} <b>Code:</b> <code>{otp}</code>\n"
-                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}")
+                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n"
+                   f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.2f}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1747,24 +1750,27 @@ class ChoiceSMSForwarder:
                             matched_user = get_user_by_number(phone_digits)
                             if matched_user:
                                 try:
+                                    # Credit first so balance shows in DM
+                                    new_balance = 0.0
+                                    try:
+                                        u = get_user(matched_user)
+                                        if u:
+                                            cur_bal = u[10] if len(u) > 10 else 0.0
+                                            new_balance = cur_bal + 0.006
+                                            save_user(matched_user, balance=new_balance)
+                                    except Exception as bal_err:
+                                        logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
                                         f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
                                         f"{cflag} <b>Country:</b> {sms['country']}\n"
                                         f"{pe('settings_bw', '⚙')} <b>Service:</b> {sms['service']}\n"
                                         f"{pe('phone', '📱')} <b>Number:</b> {sms['phone']}\n"
                                         f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
-                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}"
+                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n"
+                                        f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.2f}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
-                                    # Credit user $0.06 per OTP received
-                                    try:
-                                        u = get_user(matched_user)
-                                        if u:
-                                            cur_bal = u[10] if len(u) > 10 else 0.0
-                                            save_user(matched_user, balance=cur_bal + 0.06)
-                                    except Exception as bal_err:
-                                        logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                 except Exception as dm_err:
                                     logger.error(f"Choice SMS: DM to {matched_user} failed: {dm_err}")
                             else:
