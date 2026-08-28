@@ -400,6 +400,19 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown', '60')")
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('num_per_request', '5')")
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('maintenance', '0')")
+    # Ensure no duplicate numbers across users (migration for existing DBs)
+    try:
+        c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+        rows = c.fetchall()
+        seen = {}
+        for uid, num in rows:
+            if num in seen:
+                c.execute("UPDATE users SET assigned_number=NULL WHERE user_id=?", (uid,))
+                logger.info(f"Cleared duplicate number {num} from user {uid} (already assigned to {seen[num]})")
+            else:
+                seen[num] = uid
+    except Exception:
+        pass
 
     # Migrations for existing tables
     for table, col_def in (
@@ -637,10 +650,18 @@ def get_app_for_number(number):
 def assign_number_to_user(user_id, number):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Check if number is already taken by another user
+    c.execute("SELECT user_id FROM users WHERE assigned_number=? AND user_id!=?", (number, user_id))
+    existing = c.fetchone()
+    if existing:
+        logger.warning(f"Number {number} already taken by user {existing[0]}, rejecting assignment to {user_id}")
+        conn.close()
+        return False
     c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (number, user_id))
     conn.commit()
     conn.close()
     log_user_activity(user_id, "number_assigned", f"Number {number} assigned")
+    return True
 
 def release_number(number):
     if not number:
@@ -2430,6 +2451,10 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
         bot.edit_message_text("❌ All numbers currently in use.", chat_id, message_id, parse_mode="HTML")
         return
     assigned = random.choice(available)
+    # Release old number before assigning new one
+    old_user = get_user(chat_id)
+    if old_user and len(old_user) > 5 and old_user[5]:
+        release_number(old_user[5])
     assign_number_to_user(chat_id, assigned)
     save_user(chat_id, country_code=country_key, assigned_number=assigned)
 
