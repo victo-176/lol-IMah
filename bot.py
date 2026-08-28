@@ -1893,7 +1893,6 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
                 bot.answer_callback_query(call.id, "✅ Live chat started! Send your message.", show_alert=True)
                 bot.send_message(chat_id, "💬 <b>Live Chat Mode</b>\n\nType your message and it will be sent to admin.\nType /cancel to exit.", parse_mode="HTML")
                 # Guard: override any pending next_step handler
-                bot.register_next_step_handler_by_chat_id(chat_id, _lc_forward_user)
             except Exception as e:
                 bot.answer_callback_query(call.id, "❌ Could not reach admin.", show_alert=True)
         else:
@@ -3078,47 +3077,7 @@ def add_force_channel_handler(message):
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
 
-# ---- Live chat: module-level functions (no closures) ----
-_LC_ADMIN_ID = {}  # populated at runtime
-
-def _lc_forward_user(msg):
-    """Forward user message to admin, then re-register for next message."""
-    st = user_states.get(msg.chat.id, {})
-    admin_id = st.get("target_admin")
-    if not admin_id:
-        bot.send_message(msg.chat.id, "❌ Live chat expired. Click Support again.", parse_mode="HTML")
-        user_states.pop(msg.chat.id, None)
-        return
-    uid = msg.from_user.id
-    uname = msg.from_user.first_name or str(uid)
-    try:
-        kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{uid}"}]]})
-        bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{uid}</code>):\n\n{msg.text}", parse_mode="HTML", reply_markup=kb)
-    except Exception as e:
-        logger.error(f"Live chat forward failed: {e}")
-    # Re-register for next message from this user
-    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_forward_user)
-
-def _lc_forward_admin(msg):
-    """Forward admin reply to user, then re-register for next message."""
-    st = user_states.get(msg.chat.id, {})
-    target_user = st.get("target_user")
-    if not target_user:
-        bot.send_message(msg.chat.id, "❌ No user selected.", parse_mode="HTML")
-        return
-    try:
-        bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{msg.text}", parse_mode="HTML")
-        bot.reply_to(msg, f"✅ Sent to {target_user}.")
-    except:
-        bot.reply_to(msg, "❌ Could not send to user.")
-    # Re-register for next admin message
-    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_forward_admin)
-
-@bot.message_handler(func=lambda msg: isinstance(user_states.get(msg.chat.id, {}), dict) and user_states.get(msg.chat.id, {}).get("mode") == "live_chat" and not is_admin(msg.from_user.id))
-def live_chat_user_message(message):
-    """Fallback @bot.message_handler for live chat (in case next_step is cleared)."""
-    _lc_forward_user(message)
-
+# ---- Live chat admin reply callback ----
 @bot.callback_query_handler(func=lambda call: call.data.startswith("reply_user|"))
 def admin_reply_callback(call):
     """Admin clicks Reply → enters reply mode."""
@@ -3132,14 +3091,51 @@ def admin_reply_callback(call):
         bot.answer_callback_query(call.id)
         bot.send_message(call.from_user.id, f"✏️ <b>Replying to {uname or target_user}</b>\nType your message:", parse_mode="HTML")
         # Register next-step so admin reply is caught
-        bot.register_next_step_handler_by_chat_id(call.from_user.id, _lc_forward_admin)
     except:
         bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
 
-@bot.message_handler(func=lambda msg: isinstance(user_states.get(msg.chat.id, {}), dict) and user_states.get(msg.chat.id, {}).get("mode") == "admin_reply" and is_admin(msg.from_user.id))
-def admin_send_reply(message):
-    """Fallback @bot.message_handler for admin reply."""
-    _lc_forward_admin(message)
+# admin_send_reply handled by _global_message_router
+
+
+# =========================== GLOBAL MESSAGE ROUTER ===========================
+# Catches ALL text messages and routes based on state.
+# This runs AFTER all @bot.message_handler decorators, so it only fires
+# for messages that no other handler matched.
+@bot.message_handler(func=lambda msg: True, content_types=['text'])
+def _global_message_router(message):
+    """Route messages based on user state. Fires only if no other handler matched."""
+    uid = message.from_user.id
+    chat_id = message.chat.id
+    st = user_states.get(chat_id, {})
+    mode = st.get("mode") if isinstance(st, dict) else None
+
+    # --- User in live chat mode ---
+    if mode == "live_chat" and not is_admin(uid):
+        admin_id = st.get("target_admin")
+        if not admin_id:
+            bot.send_message(chat_id, "❌ Live chat expired. Click Support again.", parse_mode="HTML")
+            user_states.pop(chat_id, None)
+            return
+        uname = message.from_user.first_name or str(uid)
+        try:
+            kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{uid}"}]]})
+            bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{uid}</code>):\n\n{message.text}", parse_mode="HTML", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"Live chat forward failed: {e}")
+        return
+
+    # --- Admin in reply mode ---
+    if mode == "admin_reply" and is_admin(uid):
+        target_user = st.get("target_user")
+        if not target_user:
+            bot.send_message(chat_id, "❌ No user selected.", parse_mode="HTML")
+            return
+        try:
+            bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{message.text}", parse_mode="HTML")
+            bot.reply_to(message, f"✅ Sent to {target_user}.")
+        except:
+            bot.reply_to(message, "❌ Could not send to user.")
+        return
 
 # =========================== MAIN ===========================
 def main():
