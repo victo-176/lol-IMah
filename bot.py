@@ -1601,10 +1601,11 @@ class ChoiceSMSForwarder:
                             f"⏰ {sms['timestamp']}\n"
                             f"━━━━━━━━━━━━━━━"
                         )
-                        kb = {"inline_keyboard": [[
-                            {"text": "📋 Copy OTP", "callback_data": f"copy_{sms['otp']}"},
-                            {"text": "🤖 BOT LINK", "url": bot_link}
-                        ]]}
+                        kb = types.InlineKeyboardMarkup(row_width=2)
+                        kb.add(
+                            types.InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_{sms['otp']}"),
+                            types.InlineKeyboardButton("🤖 BOT LINK", url=bot_link)
+                        )
                         groups = self._get_groups()
                         sent = 0
                         for gid in groups:
