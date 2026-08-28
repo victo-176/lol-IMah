@@ -1268,12 +1268,12 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     if len(otp) == 6:
         otp_display = f"{otp[:3]}-{otp[3:]}"
     return (
-        f"Anonmatrixx\n"
+        f"<b>Anonmatrixx</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"{flag_html} {service_name} 🟢\n"
-        f"📱 {masked}\n"
-        f"🔑 OTP: {otp_display}\n"
-        f"📩 Message: {msg_text[:200]}\n"
+        f"{flag_html} <b>{service_name}</b> 🟢\n"
+        f"📱 <code>{masked}</code>\n"
+        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+        f"📩 <b>Message:</b> <code>{msg_text[:200]}</code>\n"
         f"Don't share this code with others\n"
         f"⏰ {date_str}\n"
         f"━━━━━━━━━━━━━━━"
@@ -1591,19 +1591,19 @@ class ChoiceSMSForwarder:
                             otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
                         # Message format matching the image
                         msg = (
-                            f"Anonmatrixx\n"
+                            f"<b>Anonmatrixx</b>\n"
                             f"━━━━━━━━━━━━━━━\n"
-                            f"{cflag} {sms['service'].upper()} 🟢\n"
-                            f"📱 {masked}\n"
-                            f"🔑 OTP: {otp_display}\n"
-                            f"📩 Message: {full_clean}\n"
+                            f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
+                            f"📱 <code>{masked}</code>\n"
+                            f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                            f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                             f"Don't share this code with others\n"
                             f"⏰ {sms['timestamp']}\n"
                             f"━━━━━━━━━━━━━━━"
                         )
                         kb = types.InlineKeyboardMarkup(row_width=2)
                         kb.add(
-                            types.InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_{sms['otp']}"),
+                            types.InlineKeyboardButton("📋 Copy Message", callback_data=f"copy_{sms['otp']}"),
                             types.InlineKeyboardButton("🤖 BOT LINK", url=bot_link)
                         )
                         groups = self._get_groups()
@@ -2957,6 +2957,16 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 
     if data == "admin_panel":
         show_admin_panel(chat_id, msg_id)
+        return
+
+    # Handle copy OTP buttons from OTP groups
+    if data.startswith("copy_"):
+        otp_text = data[5:]  # remove "copy_" prefix
+        try:
+            bot.answer_callback_query(call.id, f"Copied: {otp_text}", show_alert=True)
+            bot.send_message(call.from_user.id, f"<code>{otp_text}</code>", parse_mode="HTML")
+        except:
+            bot.answer_callback_query(call.id, f"OTP: {otp_text}", show_alert=True)
         return
 
     bot.answer_callback_query(call.id, "Unknown action.", show_alert=True)
