@@ -2105,7 +2105,30 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
 
 # ---- 2FA and withdrawal step handlers ----
+# =========================== STEP HANDLER GUARD ===========================
+# When a user is in live_chat mode, ALL step handlers must yield immediately
+# so the live chat can receive the message. Without this, withdrawal/2FA/
+# admin panel step handlers intercept every message the user sends.
+
+def _step_guard(handler_fn):
+    """Wrap a step handler: if user switched to live_chat, skip and re-register live chat."""
+    def wrapper(message):
+        st = user_states.get(message.chat.id, {})
+        if isinstance(st, dict) and st.get("mode") == "live_chat":
+            # User is in live chat - don't intercept, re-register live chat handler
+            bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step)
+            return
+        if isinstance(st, dict) and st.get("mode") == "admin_reply":
+            bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_admin_step)
+            return
+        return handler_fn(message)
+    return wrapper
+
 def process_2fa_code(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         show_2fa_menu(message.chat.id)
         return
@@ -2135,6 +2158,10 @@ def process_2fa_code(message):
         bot.send_message(message.chat.id, f"❌ Error: {e}", parse_mode="HTML")
 
 def process_opay_phone(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     phone = message.text.strip()
@@ -2147,6 +2174,10 @@ def process_opay_phone(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_opay_name)
 
 def process_opay_name(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     name = message.text.strip()
@@ -2172,6 +2203,10 @@ def check_withdrawal_amount(user_id, amount):
     return None
 
 def process_opay_amount(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     try:
@@ -2201,6 +2236,10 @@ def process_opay_amount(message):
     user_states.pop(user_id, None)
 
 def process_usdt_address(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     address = message.text.strip()
@@ -2213,6 +2252,10 @@ def process_usdt_address(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_usdt_amount)
 
 def process_usdt_amount(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     try:
@@ -2239,6 +2282,10 @@ def process_usdt_amount(message):
     user_states.pop(user_id, None)
 
 def process_upi_id(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     upi = message.text.strip()
@@ -2251,6 +2298,10 @@ def process_upi_id(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_upi_name)
 
 def process_upi_name(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     name = message.text.strip()
@@ -2265,6 +2316,10 @@ def process_upi_name(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_upi_amount)
 
 def process_upi_amount(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     try:
@@ -2294,6 +2349,10 @@ def process_upi_amount(message):
     user_states.pop(user_id, None)
 
 def process_others_country(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     raw = message.text.strip()
@@ -2306,6 +2365,10 @@ def process_others_country(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_holder)
 
 def process_others_holder(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     name = message.text.strip()
@@ -2320,6 +2383,10 @@ def process_others_holder(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_account)
 
 def process_others_account(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     acc = message.text.strip()
@@ -2334,6 +2401,10 @@ def process_others_account(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_bank)
 
 def process_others_bank(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     bank = "Not provided" if message.text.lower() == '/skip' else message.text.strip()
@@ -2344,6 +2415,10 @@ def process_others_bank(message):
     bot.register_next_step_handler_by_chat_id(message.chat.id, process_others_amount)
 
 def process_others_amount(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     if message.text == '/cancel':
         return
     try:
@@ -2922,6 +2997,10 @@ def combo_app_selection(call):
     handle_admin_callback(call, "admin_combos", call.message.chat.id, call.message.message_id)
 
 def admin_reject_reason_step(message):
+    st = user_states.get(message.chat.id, {})
+    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
+        bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step if st.get("mode") == "live_chat" else _lc_admin_step)
+        return
     req_id = user_states.get(message.chat.id, {}).get("reject_reason")
     if not req_id:
         return
