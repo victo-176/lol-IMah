@@ -1499,7 +1499,7 @@ class ChoiceSMSForwarder:
         if not sesskey:
             logger.warning("Choice SMS: No sesskey, re-logging in...")
             if self.login():
-                time.sleep(2)  # Let session settle
+                time.sleep(1)  # Let session settle
                 sesskey = self.get_sesskey()
             if not sesskey:
                 logger.error("Choice SMS: Still no sesskey after re-login")
@@ -1569,7 +1569,7 @@ class ChoiceSMSForwarder:
                         logger.warning("Choice SMS: Login failed, retrying in 60s")
                         time.sleep(10)
                         continue
-                    time.sleep(2)  # Let session settle after login
+                    time.sleep(1)  # Let session settle after login
                 otps = self.fetch_otps()
                 for sms in otps:
                     h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
@@ -1623,7 +1623,7 @@ class ChoiceSMSForwarder:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(30)
+                time.sleep(5)
 
 CHOICE_SMS_FORWARDER = None
 
