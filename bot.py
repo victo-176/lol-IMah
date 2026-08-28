@@ -1401,6 +1401,16 @@ class ChoiceSMSForwarder:
             # Also check if we got cookies that look like session cookies
             if len(self.session.cookies) > 0:
                 logger.info(f"Choice SMS: Login SUCCESS (got {len(self.session.cookies)} cookies)")
+                # Try to extract and cache sesskey from the login response
+                try:
+                    dash_resp = self.session.get(f"{self._get_panel_url()}/client/SMSDashboard", timeout=30)
+                    for pattern in [r'sesskey=([a-f0-9]{32})', r'"sesskey"\s*:\s*"([a-f0-9]{32})"']:
+                        m = re.search(pattern, dash_resp.text)
+                        if m:
+                            self._cached_sesskey = m.group(1)
+                            break
+                except:
+                    pass
                 return True
             logger.warning(f"Choice SMS: Login failed - final URL: {resp.url[:80]}")
             return False
@@ -1428,14 +1438,17 @@ class ChoiceSMSForwarder:
                 ]:
                     m = re.search(pattern, resp.text)
                     if m:
+                        self._cached_sesskey = m.group(1)
                         return m.group(1)
                 # Check if we got redirected to login
                 if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                     logger.warning(f"Choice SMS: Redirected to login from {url}")
+                    self._cached_sesskey = None
                     return None
             except Exception as e:
                 logger.error(f"Choice SMS sesskey error for {url}: {e}")
         logger.warning("Choice SMS: No sesskey found in any URL")
+        self._cached_sesskey = None
         return None
 
     def _extract_from_record(self, rec):
@@ -1555,6 +1568,8 @@ class ChoiceSMSForwarder:
                 if parsed:
                     results.append(parsed)
             logger.info(f"Choice SMS: API returned {len(records)} records, {len(results)} with OTP")
+            # Cache the sesskey since it worked
+            self._cached_sesskey = self.get_sesskey()
             return results
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
@@ -1647,12 +1662,12 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs, groups={self._get_groups()}")
                     first_run = False
-                time.sleep(0.5)
+                time.sleep(5)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(2)
+                time.sleep(10)
 
 CHOICE_SMS_FORWARDER = None
 
