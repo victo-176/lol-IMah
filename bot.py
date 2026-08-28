@@ -3416,23 +3416,8 @@ def add_force_channel_handler(message):
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
 
-def reset_on_restart():
-    """Clear all assigned numbers and CC settings on restart."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("UPDATE users SET assigned_number=NULL, remove_cc=0 WHERE assigned_number IS NOT NULL OR remove_cc=1")
-        cleared = c.rowcount
-        conn.commit()
-        conn.close()
-        if cleared:
-            logger.info(f"Restart reset: cleared assignments for {cleared} users")
-    except Exception as e:
-        logger.error(f"Restart reset error: {e}")
-
 # =========================== MAIN ===========================
 def main():
-    reset_on_restart()
     threading.Thread(target=monitor_loop, daemon=True).start()
     threading.Thread(target=start_choice_sms, daemon=True).start()
     logger.info("Forwarders started (IVASMS + Choice SMS)")
