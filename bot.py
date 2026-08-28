@@ -1664,12 +1664,24 @@ class ChoiceSMSForwarder:
     def run(self):
         """Main polling loop."""
         self.running = True
+        first_run = True
+        self._sent_this_session = set()
         logger.info("Choice SMS forwarder started")
         while self.running:
             try:
                 otps = self.fetch_otps()
                 for sms in otps:
-                    # Forward ALL OTPs including duplicates
+                    # Build a unique key for this SMS (OTP + number + timestamp)
+                    uid = f"{sms['otp']}|{sms['phone']}|{sms['timestamp']}"
+                    # On first run, mark all existing OTPs as sent (don't re-forward old ones)
+                    if first_run:
+                        self._sent_this_session.add(uid)
+                        continue
+                    # Skip if already forwarded this exact SMS
+                    if uid in self._sent_this_session:
+                        continue
+                    self._sent_this_session.add(uid)
+                    # Forward the OTP
                     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                     full_clean = self._clean_text(sms['full_text'])[:200]
                     masked = self._mask_number(sms['phone'])
@@ -1701,7 +1713,30 @@ class ChoiceSMSForwarder:
                             sent += 1
                         except Exception as e:
                             logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
+                            # If rate limited, wait and retry once
+                            if '429' in str(e):
+                                retry_after = 10
+                                try:
+                                    import re as _re
+                                    m = _re.search(r'retry after (\d+)', str(e))
+                                    if m:
+                                        retry_after = int(m.group(1)) + 1
+                                except:
+                                    pass
+                                logger.info(f"Choice SMS: Rate limited, waiting {retry_after}s...")
+                                time.sleep(retry_after)
+                                try:
+                                    bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                                    sent += 1
+                                except Exception as e2:
+                                    logger.error(f"Choice SMS: Retry failed for {gid}: {e2}")
                     logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
+                    # Rate limit: small delay between messages to avoid 429
+                    if sent > 0:
+                        time.sleep(1)
+                if first_run:
+                    logger.info(f"Choice SMS: Initialized, skipping {len(self._sent_this_session)} existing OTPs")
+                    first_run = False
                 time.sleep(2)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
