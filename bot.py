@@ -1849,19 +1849,16 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     assign_number_to_user(chat_id, assigned)
     save_user(chat_id, country_code=country_key, assigned_number=assigned)
 
-    # Build premium layout with hardcoded IDs for WhatsApp and Togo
-    # Use the provided emoji IDs
-    whatsapp_id = "5233354831984353090"
-    togo_id = "5294097669688415562"
     country_name = COUNTRY_CODES.get(country_key, (country_key, "Unknown"))[0]
-    phone_icon = pe("phone", "📞")  # fallback if not in emoji file
-    status_icon = pe("hourglass", "⏳")
+    iso = COUNTRY_CODES.get(country_key, (country_key, "UN"))[1]
+    flag = flag_emoji_html(iso)
+    svc = app_emoji_html(app_name)
 
     msg_text = (
-        f"{phone_icon} <b>Number:</b> <code>+{assigned}</code>\n"
-        f"{pe('', '🌍', emoji_id=togo_id)} <b>Country:</b> {country_name}\n"
-        f"{pe('', '📱', emoji_id=whatsapp_id)} <b>Service:</b> {app_name}\n"
-        f"{status_icon} <b>Status:</b> Waiting for SMS"
+        f"📞 <b>Number:</b> <code>+{assigned}</code>\n"
+        f"{flag} <b>Country:</b> {country_name}\n"
+        f"{svc} <b>Service:</b> {app_name}\n"
+        f"⏳ <b>Status:</b> Waiting for SMS"
     )
 
     markup = types.InlineKeyboardMarkup()
