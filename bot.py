@@ -19,6 +19,7 @@ import traceback
 import logging
 import random
 import requests
+import hashlib
 import uuid
 import copy
 from datetime import datetime
@@ -34,6 +35,12 @@ try:
 except ImportError:
     SOCKETIO_AVAILABLE = False
     logging.warning("SocketIO not installed – OTP monitoring disabled.")
+
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
 
 # =========================== CONFIGURATION ===========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8779205330:AAE9hAye3DIqmNIdEphJSZ52l89-6DEyIrw")
@@ -1268,6 +1275,185 @@ def send_to_telegram_group(text, otp_code, number):
         except Exception as e:
             logger.error(f"Group send failed: {e}")
 
+# =========================== CHOICE SMS FORWARDER ===========================
+class ChoiceSMSForwarder:
+    """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json, text/javascript, */*',
+        })
+        self.seen_hashes = set()
+        self.running = False
+        self.SEEN_FILE = "choice_seen.json"
+        self._load_seen()
+
+    def _load_seen(self):
+        try:
+            if os.path.exists(self.SEEN_FILE):
+                with open(self.SEEN_FILE) as f:
+                    self.seen_hashes = set(json.load(f))
+        except:
+            self.seen_hashes = set()
+
+    def _save_seen(self):
+        try:
+            if len(self.seen_hashes) > 5000:
+                self.seen_hashes = set(list(self.seen_hashes)[-4000:])
+            with open(self.SEEN_FILE, "w") as f:
+                json.dump(list(self.seen_hashes), f)
+        except:
+            pass
+
+    def login(self):
+        """Login to Choice SMS panel."""
+        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
+        username = get_setting('choice_username') or ''
+        password = get_setting('choice_password') or ''
+        if not username or not password:
+            return False
+        try:
+            login_url = f"{panel_url}/signin"
+            signin_url = f"{panel_url}/signin"
+            # GET login page for captcha
+            resp = self.session.get(f"{panel_url}/login", timeout=30)
+            numbers = re.findall(r'(\d+)\s*\+\s*(\d+)', resp.text)
+            data = {'username': username, 'password': password}
+            if numbers:
+                data['capt'] = str(int(numbers[0][0]) + int(numbers[0][1]))
+            resp = self.session.post(signin_url, data=data, timeout=30, allow_redirects=True)
+            if 'dashboard' in resp.url.lower():
+                logger.info("Choice SMS: Login successful")
+                return True
+            logger.warning("Choice SMS: Login failed")
+            return False
+        except Exception as e:
+            logger.error(f"Choice SMS login error: {e}")
+            return False
+
+    def get_sesskey(self):
+        """Extract session key from report page."""
+        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
+        try:
+            resp = self.session.get(f"{panel_url}/agent/SMSCDRReports", timeout=30)
+            m = re.search(r'sesskey=([a-f0-9]{32})', resp.text)
+            if m:
+                return m.group(1)
+        except:
+            pass
+        return None
+
+    def fetch_otps(self):
+        """Fetch OTPs from the API."""
+        panel_url = get_setting('choice_panel_url') or 'http://51.77.52.79/ints'
+        sesskey = self.get_sesskey()
+        if not sesskey:
+            return []
+        today = datetime.now().strftime("%Y-%m-%d")
+        params = {
+            "draw": "1", "start": "0", "length": "100",
+            "search[value]": "", "search[regex]": "false",
+            "order[0][column]": "0", "order[0][dir]": "asc",
+            "fdate1": f"{today} 00:00:00", "fdate2": f"{today} 23:59:59",
+            "frange": "", "fclient": "", "fnum": "", "fcli": "",
+            "fgdate": "", "fgmonth": "", "fgrange": "", "fgclient": "",
+            "fgnumber": "", "fgcli": "", "fg": "0", "sesskey": sesskey
+        }
+        try:
+            resp = self.session.get(f"{panel_url}/agent/res/data_smscdr.php", params=params, timeout=30)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            records = data.get('data') or data.get('aaData') or []
+            if isinstance(data, list):
+                records = data
+            results = []
+            for rec in records:
+                text = " ".join(str(f) for f in rec) if isinstance(rec, list) else str(rec)
+                otp_m = re.search(r'code\s*:?\s*(\d{4,6})', text, re.IGNORECASE)
+                if otp_m:
+                    otp = otp_m.group(1)
+                    svc_m = re.search(r'(Bolt|Uber|Google|Facebook|WhatsApp|PayPal|Amazon|Microsoft|Apple|Instagram|Twitter|TikTok|Bank|Verification|Code)', text, re.IGNORECASE)
+                    service = svc_m.group(1) if svc_m else "Unknown"
+                    ts_m = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', text)
+                    ts = ts_m.group(1) if ts_m else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    results.append({'otp': otp, 'service': service, 'full_text': text[:500], 'timestamp': ts})
+            return results
+        except Exception as e:
+            logger.error(f"Choice SMS fetch error: {e}")
+            return []
+
+    def _clean_text(self, text):
+        text = re.sub(r'€\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'USD\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def run(self):
+        """Main polling loop."""
+        self.running = True
+        first_run = True
+        logged_in = False
+        logger.info("Choice SMS forwarder thread started")
+        while self.running:
+            try:
+                if not logged_in:
+                    logged_in = self.login()
+                    if not logged_in:
+                        time.sleep(60)
+                        continue
+                otps = self.fetch_otps()
+                for sms in otps:
+                    h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
+                    if h not in self.seen_hashes:
+                        self.seen_hashes.add(h)
+                        self._save_seen()
+                        if first_run:
+                            continue
+                        # Forward to OTP groups
+                        _rnd = lambda: random.choice(['\U0001f525','\u26a1','\U0001f48e','\U0001f680','\u2728','\U0001f4ab','\U0001f31f','\U0001f3af','\U0001f4b0','\U0001f3c6'])
+                        _r1, _r2 = _rnd(), _rnd()
+                        msg = (f"{_r1} <b>CHOICE SMS OTP</b> {_r1}\n"
+                               f"⚙ <b>Service:</b> {sms['service'].upper()}\n"
+                               f"🔐 <b>Code:</b> <code>{sms['otp']}</code>\n"
+                               f"🕒 <b>Time:</b> {sms['timestamp']}\n"
+                               f"\n{_r2} <b>Full:</b> {self._clean_text(sms['full_text'])[:300]}")
+                        kb = json.dumps({"inline_keyboard": [[
+                            {"text": f"📋 {sms['otp']}", "callback_data": f"copy_{sms['otp']}"}
+                        ]]})
+                        groups = json.loads(get_setting('otp_groups') or '[]')
+                        for gid in groups:
+                            try:
+                                bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                            except:
+                                pass
+                        logger.info(f"Choice SMS: OTP {sms['otp']} forwarded")
+                if first_run:
+                    logger.info(f"Choice SMS: Initialized with {len(self.seen_hashes)} existing OTPs")
+                    first_run = False
+                time.sleep(15)
+            except Exception as e:
+                logger.error(f"Choice SMS forwarder error: {e}")
+                time.sleep(30)
+
+CHOICE_SMS_FORWARDER = None
+
+def start_choice_sms():
+    global CHOICE_SMS_FORWARDER
+    if not BS4_AVAILABLE:
+        logger.warning("bs4 not installed – Choice SMS disabled")
+        return
+    if get_setting('choice_enabled') != '1':
+        logger.info("Choice SMS disabled in settings")
+        return
+    CHOICE_SMS_FORWARDER = ChoiceSMSForwarder()
+    CHOICE_SMS_FORWARDER.run()
+
 # =========================== SOCKET.IO MONITOR (fixed) ===========================
 if SOCKETIO_AVAILABLE:
     class IvasmsSocketIO:
@@ -2167,6 +2353,7 @@ def get_admin_menu():
         ibtn("OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
         ibtn("Users", callback_data="admin_users", style="primary", icon="people"),
         ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
+        ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
         ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
         ibtn("Leave", callback_data="close_menu", style="danger", icon="back")
     ]
@@ -2469,6 +2656,56 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.register_next_step_handler_by_chat_id(chat_id, admin_reject_reason_step)
         return
 
+
+    if data == "admin_choice_sms":
+        enabled = get_setting('choice_enabled') == '1'
+        panel = get_setting('choice_panel_url') or 'Not set'
+        user = get_setting('choice_username') or 'Not set'
+        status = "🟢 Enabled" if enabled else "🔴 Disabled"
+        text = (f"📡 <b>Choice SMS Forwarder</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"Status: {status}\n"
+                f"Panel: <code>{panel}</code>\n"
+                f"Username: <code>{user}</code>\n"
+                f"Password: <code>{'••••••' if get_setting('choice_password') else 'Not set'}</code>\n"
+                f"━━━━━━━━━━━━━━━")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(ibtn("Toggle On/Off", callback_data="admin_choice_toggle", style="success" if not enabled else "danger", icon="toggle"))
+        markup.add(ibtn("Set Panel URL", callback_data="admin_choice_panel", style="primary", icon="link"))
+        markup.add(ibtn("Set Username", callback_data="admin_choice_user", style="primary", icon="profile"))
+        markup.add(ibtn("Set Password", callback_data="admin_choice_pass", style="primary", icon="lock"))
+        markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_choice_toggle":
+        enabled = get_setting('choice_enabled') == '1'
+        set_setting('choice_enabled', '0' if enabled else '1')
+        bot.answer_callback_query(call.id, f"Choice SMS {'ENABLED' if not enabled else 'DISABLED'}", show_alert=True)
+        handle_admin_callback(call, "admin_choice_sms", chat_id, msg_id)
+        return
+
+    if data == "admin_choice_panel":
+        set_state(chat_id, "choice_panel_url")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_choice_sms", style="danger", icon="back"))
+        bot.edit_message_text("Send the panel URL (e.g., http://51.77.52.79/ints):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_choice_user":
+        set_state(chat_id, "choice_username")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_choice_sms", style="danger", icon="back"))
+        bot.edit_message_text("Send the panel username:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_choice_pass":
+        set_state(chat_id, "choice_password")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_choice_sms", style="danger", icon="back"))
+        bot.edit_message_text("Send the panel password:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
     if data == "admin_settings":
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(ibtn("Cooldown", callback_data="admin_set_cooldown", style="primary", icon="wrench"))
@@ -2651,6 +2888,26 @@ def admin_reject_reason_step(message):
         bot.send_message(message.chat.id, f"❌ {result}", parse_mode="HTML")
     clear_state(message)
     show_admin_panel(message.chat.id)
+
+# ---- Choice SMS admin step handlers ----
+@bot.message_handler(func=lambda msg: get_state(msg) == "choice_panel_url" and is_admin(msg.from_user.id))
+def set_choice_panel_handler(message):
+    url = message.text.strip().rstrip('/')
+    set_setting('choice_panel_url', url)
+    bot.reply_to(message, f"✅ Panel URL set to: {url}", parse_mode="HTML")
+    clear_state(message)
+
+@bot.message_handler(func=lambda msg: get_state(msg) == "choice_username" and is_admin(msg.from_user.id))
+def set_choice_user_handler(message):
+    set_setting('choice_username', message.text.strip())
+    bot.reply_to(message, "✅ Username set.", parse_mode="HTML")
+    clear_state(message)
+
+@bot.message_handler(func=lambda msg: get_state(msg) == "choice_password" and is_admin(msg.from_user.id))
+def set_choice_pass_handler(message):
+    set_setting('choice_password', message.text.strip())
+    bot.reply_to(message, "✅ Password set.", parse_mode="HTML")
+    clear_state(message)
 
 # ---- Other admin step handlers ----
 @bot.message_handler(func=lambda msg: get_state(msg) == "add_nums_country" and is_admin(msg.from_user.id))
@@ -2869,7 +3126,8 @@ def admin_send_reply(message):
 # =========================== MAIN ===========================
 def main():
     threading.Thread(target=monitor_loop, daemon=True).start()
-    logger.info("Socket.IO monitor started.")
+    threading.Thread(target=start_choice_sms, daemon=True).start()
+    logger.info("Forwarders started (IVASMS + Choice SMS)")
     logger.info("Bot polling started.")
     bot.infinity_polling()
 
