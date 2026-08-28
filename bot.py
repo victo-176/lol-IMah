@@ -664,11 +664,37 @@ def assign_number_to_user(user_id, number):
     return True
 
 def release_number(number):
+    """Release a number from user AND delete it entirely from the stock."""
     if not number:
         return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Remove from user assignment
     c.execute("UPDATE users SET assigned_number=NULL WHERE assigned_number=?", (number,))
+    # Delete from combo stock entirely
+    c.execute("SELECT id, numbers FROM combos")
+    for row in c.fetchall():
+        combo_id, nums_json = row
+        try:
+            nums = json.loads(nums_json)
+            if number in nums:
+                nums.remove(number)
+                c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(nums), combo_id))
+                logger.info(f"Deleted number {number} from stock combo {combo_id}")
+        except Exception:
+            pass
+    # Also delete from private combos
+    c.execute("SELECT user_id, numbers FROM private_combos")
+    for row in c.fetchall():
+        uid, nums_json = row
+        try:
+            nums = json.loads(nums_json)
+            if number in nums:
+                nums.remove(number)
+                c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(nums), uid))
+                logger.info(f"Deleted number {number} from private stock for user {uid}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
