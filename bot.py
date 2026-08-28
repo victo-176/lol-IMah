@@ -1240,29 +1240,33 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
 
 def format_message(date_str, number, sms, flag_html, app_emoji):
     masked = mask_number(number)
-    _rnd = lambda: random.choice(["\U0001f525","\u26a1","\U0001f48e","\U0001f680","\u2728","\U0001f4ab","\U0001f31f","\U0001f3af","\U0001f4b0","\U0001f3c6"])
-    _r1, _r2 = _rnd(), _rnd()
-    return (f"{_r1} ╭───────────────╮ {_r1}\n"
-            f"│ {flag_html} {app_emoji} {masked}\n"
-            f"│ {date_str}\n"
-            f"{_r2} ╰───────────────╯ {_r2}")
+    otp = extract_otp(sms)
+    service_name = detect_service(sms).upper()
+    # Find the service name in the SMS text for the Message line
+    msg_text = sms[:200] if sms else ""
+    return (
+        f"Anonmatrixx\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{flag_html} <b>{service_name}</b> 🟢\n"
+        f"📱 {masked}\n"
+        f"🔑 <b>OTP:</b> <code>{otp}</code>\n"
+        f"📨 <b>Message:</b> {msg_text[:150]}\n"
+        f"\nDon't share this code with others\n"
+        f"⏰ {date_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
 
 def send_to_telegram_group(text, otp_code, number):
-    keyboard = {
-        "inline_keyboard": [
-            [raw_btn(f"{otp_code}", callback_data=f"copy_{otp_code}", style="success", icon="flash")],
-            [
-                raw_btn("MATRIXX CHANNEL", url="https://t.me/Anonmatrixx_channel", style="primary", icon="chat"),
-                raw_btn("MATRIXX BOT", url="https://t.me/Anon_MatrixxV3bot", style="primary", icon="telegram")
-            ],
-            [raw_btn("MATRIXX OWNER", url="https://t.me/Jibohu1", style="danger", icon="admin")]
-        ]
-    }
+    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
+    kb = {"inline_keyboard": [[
+        {"text": "📋 Copy Message", "callback_data": f"copy_{otp_code}"},
+        {"text": "🤖 BOT LINK", "url": bot_link}
+    ]]}
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     for chat_id in chat_ids:
         try:
-            payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}
+            payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(kb)}
             resp = requests.post(url, data=payload, timeout=10)
             if resp.status_code == 200:
                 logger.info(f"Sent to group {chat_id}")
@@ -1276,7 +1280,8 @@ def send_to_telegram_group(text, otp_code, number):
         except Exception as e:
             logger.error(f"Group send failed: {e}")
 
-# =========================== CHOICE SMS FORWARDER ===========================
+
+# =========================== CHOICE SMS FORWARDER ====================
 class ChoiceSMSForwarder:
     """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
 
@@ -1417,15 +1422,21 @@ class ChoiceSMSForwarder:
                         if first_run:
                             continue
                         # Forward to OTP groups
-                        _rnd = lambda: random.choice(['\U0001f525','\u26a1','\U0001f48e','\U0001f680','\u2728','\U0001f4ab','\U0001f31f','\U0001f3af','\U0001f4b0','\U0001f3c6'])
-                        _r1, _r2 = _rnd(), _rnd()
-                        msg = (f"{_r1} <b>ANON OTP</b> {_r1}\n"
-                               f"⚙ <b>Service:</b> {sms['service'].upper()}\n"
-                               f"🔐 <b>Code:</b> <code>{sms['otp']}</code>\n"
-                               f"🕒 <b>Time:</b> {sms['timestamp']}\n"
-                               f"\n{_r2} <b>Full:</b> {self._clean_text(sms['full_text'])[:300]}")
+                        bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
+                        full_clean = self._clean_text(sms['full_text'])[:150]
+                        msg = (
+                            f"Anonmatrixx\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🟢 <b>{sms['service'].upper()}</b>\n"
+                            f"🔑 <b>OTP:</b> <code>{sms['otp']}</code>\n"
+                            f"📨 <b>Message:</b> {full_clean}\n"
+                            f"\nDon't share this code with others\n"
+                            f"⏰ {sms['timestamp']}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
                         kb = {"inline_keyboard": [[
-                            {"text": f"📋 {sms['otp']}", "callback_data": f"copy_{sms['otp']}"}
+                            {"text": "📋 Copy Message", "callback_data": f"copy_{sms['otp']}"},
+                            {"text": "🤖 BOT LINK", "url": bot_link}
                         ]]}
                         groups = json.loads(get_setting('otp_groups') or '[]')
                         for gid in groups:
@@ -2668,10 +2679,18 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup.add(ibtn("Num per Request", callback_data="admin_set_num_req", style="primary", icon="phone"))
         markup.add(ibtn("Support Link", callback_data="admin_set_support", style="primary", icon="support"))
         markup.add(ibtn("Watermark", callback_data="admin_set_watermark", style="primary", icon="star"))
+        markup.add(ibtn("Bot Link", callback_data="admin_set_botlink", style="primary", icon="link"))
         markup.add(ibtn("Force Subscribe", callback_data="admin_force_sub", style="primary", icon="lock"))
         markup.add(ibtn("Maintenance", callback_data="admin_toggle_maintenance", style="danger", icon="wrench"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
         bot.edit_message_text("⚙️ <b>Settings</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_set_botlink":
+        set_state(chat_id, "set_botlink")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_settings", style="danger", icon="back"))
+        bot.edit_message_text("Send the bot link (e.g., https://t.me/YourBot):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
     if data == "admin_set_cooldown":
@@ -2979,6 +2998,14 @@ def deduct_balance_handler(message):
     except:
         bot.reply_to(message, "❌ Invalid input.", parse_mode="HTML")
     clear_state(message)
+
+@bot.message_handler(func=lambda msg: get_state(msg) == "set_botlink" and is_admin(msg.from_user.id))
+def set_botlink_handler(message):
+    link = message.text.strip()
+    set_setting('bot_link', link)
+    bot.reply_to(message, f"✅ Bot link set to: {link}", parse_mode="HTML")
+    clear_state(message)
+
 
 @bot.message_handler(func=lambda msg: get_state(msg) == "set_cooldown" and is_admin(msg.from_user.id))
 def set_cooldown_handler(message):
