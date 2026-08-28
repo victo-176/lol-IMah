@@ -1433,6 +1433,9 @@ class ChoiceSMSForwarder:
         except:
             pass
 
+
+
+
     def _get_panel_url(self):
         return get_setting('choice_panel_url') or self.DEFAULT_PANEL_URL
 
@@ -1441,6 +1444,91 @@ class ChoiceSMSForwarder:
 
     def _get_password(self):
         return get_setting('choice_password') or self.DEFAULT_PASSWORD
+
+    def _extract_from_record(self, rec):
+        """Extract OTP, service, phone, country, timestamp from a DataTables record array."""
+        if isinstance(rec, dict):
+            date_val = str(rec.get('Date', rec.get('date', '')))
+            range_val = str(rec.get('Range', rec.get('range', '')))
+            number_val = str(rec.get('Number', rec.get('number', '')))
+            cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
+            sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
+        elif isinstance(rec, list):
+            date_val = str(rec[0]) if len(rec) > 0 else ""
+            range_val = str(rec[1]) if len(rec) > 1 else ""
+            number_val = str(rec[2]) if len(rec) > 2 else ""
+            cli_val = str(rec[3]) if len(rec) > 3 else ""
+            sms_val = str(rec[4]) if len(rec) > 4 else ""
+        else:
+            date_val = range_val = number_val = cli_val = sms_val = str(rec)
+
+        # Extract OTP
+        otp = None
+        m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        if m:
+            otp = m.group(1)
+        if not otp:
+            m2 = re.search(r'<#>\s*(\d{4,6})', sms_val)
+            if m2:
+                otp = m2.group(1)
+        if not otp:
+            m3 = re.search(r'\b(\d{4,6})\b', sms_val)
+            if m3:
+                otp = m3.group(1)
+        if not otp:
+            m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
+            if m4:
+                otp = m4.group(1)
+        if not otp:
+            return None
+
+        # Service
+        service = "Unknown"
+        if cli_val and cli_val not in ('None', 'null', ''):
+            service = cli_val.strip()
+
+        # Phone
+        phone = number_val if number_val and number_val not in ('None', 'null', '') else "N/A"
+
+        # Country
+        country = "Unknown"
+        country_m = re.match(r'([A-Za-z]+)', range_val)
+        if country_m:
+            country = country_m.group(1).capitalize()
+
+        # Timestamp
+        ts = date_val if date_val and re.match(r'\d{4}-\d{2}-\d{2}', date_val) else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        return {
+            'otp': otp,
+            'service': service,
+            'phone': phone,
+            'country': country,
+            'full_text': sms_val[:500],
+            'timestamp': ts,
+        }
+
+    def _clean_text(self, text):
+        text = re.sub(r'€\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'USD\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', text).strip()
+        text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', text).strip()
+        text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', text).strip()
+        return text
+
+    def _mask_number(self, phone):
+        if not phone or phone == "N/A" or len(phone) < 10:
+            return phone
+        return phone[:5] + '*' * (len(phone) - 10) + phone[-5:]
+
+    def _get_groups(self):
+        groups = json.loads(get_setting('otp_groups') or '[]')
+        if not groups:
+            groups = [self.DEFAULT_GROUP_ID]
+        return groups
 
     def _do_login(self):
         """Login to Choice SMS panel. Returns True if login succeeded."""
