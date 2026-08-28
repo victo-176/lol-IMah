@@ -1306,14 +1306,14 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
-            _rnd = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
-            _r1, _r2, _r3 = _rnd(), _rnd(), _rnd()
-            msg = (f"{_r1} <b>MATRIXX SMS V3</b> {_r1}\n"
-                   f"🌍 <b>Country:</b> {flag_html} {country_name}\n"
-                   f"⚙ <b>Service:</b> {app_emoji} {service}\n"
-                   f"☎ <b>Number:</b> {number}\n"
-                   f"🕒 <b>Time:</b> {date_str}\n\n"
-                   f"{_r2} <b>Code:</b> <code>{otp}</code> {_r3}")
+            _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
+            _e1, _e2, _e3 = _ep(), _ep(), _ep()
+            msg = (f"{_e1} <b>MATRIXX SMS V3</b> {_e1}\n"
+                   f"\U0001f30d <b>Country:</b> {flag_html} {country_name}\n"
+                   f"\u2699 <b>Service:</b> {app_emoji} {service}\n"
+                   f"\u260e <b>Number:</b> {number}\n"
+                   f"\u23f0 <b>Time:</b> {date_str}\n\n"
+                   f"{_e2} <b>Code:</b> <code>{otp}</code> {_e3}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1691,15 +1691,17 @@ class ChoiceSMSForwarder:
                     otp_display = sms['otp']
                     if len(sms['otp']) == 6:
                         otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+                    _ep = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
+                    _e1, _e2 = _ep(), _ep()
                     msg = (
-                        f"<b>Anonmatrixx</b>\n"
-                        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-                        f"{cflag} <b>{sms['service'].upper()}</b> \U0001f7e2\n"
-                        f"\U0001f4f1 <code>{masked}</code>\n"
+                        f"{_e1} <b>MATRIXX SMS V3</b> {_e1}\n"
+                        f"\U0001f30d <b>Country:</b> {cflag} {sms['country']}\n"
+                        f"⚙ <b>Service:</b> {sms['service'].upper()}\n"
+                        f"\U0001f4f1 <b>Number:</b> <code>{masked}</code>\n"
                         f"\U0001f511 <b>OTP:</b> <code>{otp_display}</code>\n"
                         f"\U0001f4e9 <b>Message:</b> <code>{full_clean}</code>\n"
-                        f"\u23f0 {sms['timestamp']}\n"
-                        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+                        f"\u23f0 <b>Time:</b> {sms['timestamp']}\n"
+                        f"{_e2} <b>━━━━━━━━━━━━━━━</b> {_e2}"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
@@ -1740,15 +1742,15 @@ class ChoiceSMSForwarder:
                             matched_user = get_user_by_number(phone_digits)
                             if matched_user:
                                 try:
-                                    _rnd = lambda: random.choice(['🔥','⚡','💎','🚀','✨','💫','🌟','🎯','💰','🏆'])
-                                    _r1, _r2, _r3 = _rnd(), _rnd(), _rnd()
+                                    _ep2 = lambda: pe(random.choice(['fire', 'bolt', 'gem', 'rocket', 'star', 'free', 'info2']), '🏆')
+                                    _e1d, _e2d, _e3d = _ep2(), _ep2(), _ep2()
                                     dm_msg = (
-                                        f"{_r1} <b>MATRIXX SMS V3</b> {_r1}\n"
+                                        f"{_e1d} <b>MATRIXX SMS V3</b> {_e1d}\n"
                                         f"🌍 <b>Country:</b> {cflag} {sms['country']}\n"
                                         f"⚙ <b>Service:</b> {sms['service']}\n"
                                         f"☎ <b>Number:</b> {sms['phone']}\n"
                                         f"⏰ <b>Time:</b> {sms['timestamp']}\n\n"
-                                        f"{_r2} <b>Code:</b> <code>{otp_display}</code> {_r3}"
+                                        f"{_e2d} <b>Code:</b> <code>{otp_display}</code> {_e3d}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
