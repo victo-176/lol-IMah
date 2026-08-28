@@ -1324,7 +1324,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
             conn.commit()
             conn.close()
-            logger.info(f"Balance updated for {user_id}: ${new_balance:.2f}")
+            logger.info(f"Balance updated for {user_id}: ${new_balance:.3f}")
         except Exception as bal_err:
             logger.error(f"Balance credit failed for {user_id}: {bal_err}")
 
@@ -1339,7 +1339,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
                    f"{pe('phone', '📱')} <b>Number:</b> {number}\n"
                    f"{pe('key', '🔑')} <b>Code:</b> <code>{otp}</code>\n"
                    f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n"
-                   f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.2f}")
+                   f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.3f}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1781,7 +1781,7 @@ class ChoiceSMSForwarder:
                                         _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
                                         _conn.commit()
                                         _conn.close()
-                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance:.2f}")
+                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance:.3f}")
                                     except Exception as bal_err:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
@@ -1791,7 +1791,7 @@ class ChoiceSMSForwarder:
                                         f"{pe('phone', '📱')} <b>Number:</b> {sms['phone']}\n"
                                         f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
                                         f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n"
-                                        f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.2f}"
+                                        f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.3f}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
@@ -1801,6 +1801,13 @@ class ChoiceSMSForwarder:
                                 logger.debug(f"Choice SMS: No user found for number {phone_digits}")
                     except Exception as match_err:
                         logger.error(f"Choice SMS: User match error: {match_err}")
+
+                    # Log OTP to admin panel
+                    try:
+                        log_otp(phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', ''), 
+                                otp_display, sms.get('message', ''), None)
+                    except Exception as log_err:
+                        logger.error(f"Choice SMS: log_otp failed: {log_err}")
 
                     # Rate limit: small delay between messages to avoid 429
                     if sent > 0:
@@ -2191,7 +2198,7 @@ def show_referrals(chat_id):
     bot_username = bot.get_me().username
     link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     text = (f"{pe('link', '🔗')} <b>Your Referral Link</b>\n\n<code>{link}</code>\n\n"
-            f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance:.2f}</b>\n"
+            f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance:.3f}</b>\n"
             f"{pe('people', '👥')} Referrals: <b>{refs}</b>\n"
             f"{pe('dollar', '💵')} Total Earned: <b>${refs * REFERRAL_REWARD:.2f}</b>")
     markup = types.InlineKeyboardMarkup()
