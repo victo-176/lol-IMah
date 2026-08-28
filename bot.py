@@ -1400,7 +1400,15 @@ class ChoiceSMSForwarder:
         Panel columns: [Date, Range, Number, CLI, SMS, Currency, My Payout]
         Example: ['2026-08-28 14:18:02', 'Nigeria-choice-28feb-234818100XXXX', '2348181000451', 'PariPulse', '<#> Verification code 83314 5kg+vynN/9', '€', '0.012']
         """
-        if isinstance(rec, list):
+        if isinstance(rec, dict):
+            # Dict format: {"Date": "...", "Range": "...", "Number": "...", "CLI": "...", "SMS": "...", ...}
+            rec_str = json.dumps(rec)
+            date_val = str(rec.get('Date', rec.get('date', '')))
+            range_val = str(rec.get('Range', rec.get('range', '')))
+            number_val = str(rec.get('Number', rec.get('number', '')))
+            cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
+            sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
+        elif isinstance(rec, list):
             rec_str = " ".join(str(f) for f in rec)
             # Parse individual fields by index
             date_val = str(rec[0]) if len(rec) > 0 else ""
@@ -1497,8 +1505,7 @@ class ChoiceSMSForwarder:
                 parsed = self._extract_from_record(rec)
                 if parsed:
                     results.append(parsed)
-            if results:
-                logger.info(f"Choice SMS: Fetched {len(results)} OTPs")
+            logger.info(f"Choice SMS: API returned {len(records)} records, {len(results)} with OTP")
             return results
         except Exception as e:
             logger.error(f"Choice SMS fetch error: {e}")
@@ -1539,6 +1546,12 @@ class ChoiceSMSForwarder:
                         logger.warning("Choice SMS: Login failed, retrying in 60s")
                         time.sleep(60)
                         continue
+                # Check session is still alive by getting sesskey
+                test_sesskey = self.get_sesskey()
+                if not test_sesskey:
+                    logger.warning("Choice SMS: Session expired, re-logging in...")
+                    logged_in = False
+                    continue
                 otps = self.fetch_otps()
                 for sms in otps:
                     h = hashlib.md5((sms['otp'] + sms['timestamp'] + sms['service']).encode()).hexdigest()
