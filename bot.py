@@ -187,54 +187,6 @@ def app_emoji_html(app_name):
             "default": "📱"}.get(str(app_name).lower() if app_name else "", "📱")
 
 # =========================== LIVE CHAT STEP HANDLERS ===========================
-# These MUST be module-level (not closures) to work with register_next_step_handler_by_chat_id.
-# They override any pending withdrawal/2FA handlers when user enters live chat.
-
-def _lc_user_step(msg):
-    """Handle each user message in live chat. Re-registers itself for next message."""
-    if msg.text and msg.text.startswith("/cancel"):
-        user_states.pop(msg.chat.id, None)
-        bot.send_message(msg.chat.id, "💬 Live chat ended.", parse_mode="HTML")
-        return
-    st = user_states.get(msg.chat.id, {})
-    if not isinstance(st, dict) or st.get("mode") != "live_chat":
-        return  # Not in live chat, let @bot.message_handler handle it
-    admin_id = st.get("target_admin")
-    if not admin_id:
-        bot.send_message(msg.chat.id, "❌ Live chat expired.", parse_mode="HTML")
-        user_states.pop(msg.chat.id, None)
-        return
-    uid = msg.from_user.id
-    uname = msg.from_user.first_name or str(uid)
-    try:
-        kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{uid}"}]]})
-        bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{uid}</code>):\n\n{msg.text}", parse_mode="HTML", reply_markup=kb)
-    except Exception as e:
-        logger.error(f"Live chat forward failed: {e}")
-    # Re-register for next message from this user
-    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_user_step)
-
-def _lc_admin_step(msg):
-    """Handle each admin reply in live chat. Re-registers itself for next message."""
-    if msg.text and msg.text.startswith("/cancel"):
-        user_states.pop(msg.chat.id, None)
-        bot.send_message(msg.chat.id, "💬 Reply mode ended.", parse_mode="HTML")
-        return
-    st = user_states.get(msg.chat.id, {})
-    if not isinstance(st, dict) or st.get("mode") != "admin_reply":
-        return
-    target_user = st.get("target_user")
-    if not target_user:
-        bot.send_message(msg.chat.id, "❌ No user selected.", parse_mode="HTML")
-        return
-    try:
-        bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{msg.text}", parse_mode="HTML")
-        bot.reply_to(msg, f"✅ Sent to {target_user}.")
-    except:
-        bot.reply_to(msg, "❌ Could not send to user.")
-    # Re-register for next admin message
-    bot.register_next_step_handler_by_chat_id(msg.chat.id, _lc_admin_step)
-
 # =========================== CUSTOM BUTTON HELPERS ===========================
 _old_inline_dict = types.InlineKeyboardButton.to_dict
 def _new_inline_dict(self):
@@ -1846,8 +1798,6 @@ def show_support(chat_id):
             "┗━━━━━━━ ⚡ ━━━━━━━┛")
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("SUPPORT", url=support_link, style="success"))
-    markup.add(ibtn("💬 Live Chat", callback_data="live_chat", style="primary"))
-    markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 def show_referrals(chat_id):
@@ -1925,25 +1875,6 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.answer_callback_query(call.id, "Bot is under maintenance.", show_alert=True)
             return
 
-    if data == "live_chat":
-        admin_id = get_all_admins()[0] if get_all_admins() else None
-        if admin_id:
-            # Enter live chat mode for this user
-            user_states[chat_id] = {"mode": "live_chat", "target_admin": admin_id}
-            user_states[user_id] = user_states[chat_id]
-            try:
-                user = get_user(user_id)
-                uname = ""
-                if user and user[2]:
-                    uname = user[2]
-                kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname or user_id}", "callback_data": f"reply_user|{user_id}"}]]})
-                bot.send_message(admin_id, f"💬 <b>Live Chat Request</b>\nUser: <a href='tg://user?id={user_id}'>{uname or user_id}</a>\nID: <code>{user_id}</code>", parse_mode="HTML", reply_markup=kb)
-                bot.answer_callback_query(call.id, "✅ Live chat started! Send your message.", show_alert=True)
-                bot.send_message(chat_id, "💬 <b>Live Chat Mode</b>\n\nType your message and it will be sent to admin.\nType /cancel to exit.", parse_mode="HTML")
-                bot.register_next_step_handler_by_chat_id(chat_id, _lc_user_step)
-                # Guard: override any pending next_step handler
-            except Exception as e:
-                bot.answer_callback_query(call.id, "❌ Could not reach admin.", show_alert=True)
         else:
             bot.answer_callback_query(call.id, "❌ No admin configured.", show_alert=True)
         return
@@ -1991,20 +1922,6 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.edit_message_text("━━━━━━━━━━━━━━━\n《 🌍 OTHER COUNTRY WITHDRAWAL 》\n━━━━━━━━━━━━━━━\n<b>Send your country name or currency code (e.g., India, EUR):</b>",
                                   chat_id, msg_id, parse_mode="HTML")
             bot.register_next_step_handler_by_chat_id(chat_id, process_others_country)
-        return
-
-    if data.startswith("reply_user|"):
-        if is_admin(user_id):
-            target_user = int(data.split("|")[1])
-            user_states[user_id] = {"mode": "admin_reply", "target_user": target_user}
-            try:
-                uname = ""
-                user = get_user(target_user)
-                if user and user[2]:
-                    uname = user[2]
-                bot.send_message(user_id, f"✏️ <b>Replying to {uname or target_user}</b>\nType your message:", parse_mode="HTML")
-            except:
-                bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
         return
 
     if data.startswith("usr_app|"):
@@ -2104,33 +2021,8 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
 
 # ---- 2FA and withdrawal step handlers ----
-# =========================== STEP HANDLER GUARD ===========================
-# When a user is in live_chat mode, ALL step handlers must yield immediately
-# so the live chat can receive the message. Without this, withdrawal/2FA/
-# admin panel step handlers intercept every message the user sends.
-
-def _step_guard(handler_fn):
-    """Wrap a step handler: if user switched to live_chat, skip and re-register live chat."""
-    def wrapper(message):
-        st = user_states.get(message.chat.id, {})
-        if isinstance(st, dict) and st.get("mode") == "live_chat":
-            # User is in live chat - don't intercept, re-register live chat handler
-            bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_user_step)
-            return
-        if isinstance(st, dict) and st.get("mode") == "admin_reply":
-            bot.register_next_step_handler_by_chat_id(message.chat.id, _lc_admin_step)
-            return
-        return handler_fn(message)
-    return wrapper
-
 def process_2fa_code(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        show_2fa_menu(message.chat.id)
-        return
     try:
         import pyotp
     except ImportError:
@@ -2158,11 +2050,6 @@ def process_2fa_code(message):
 
 def process_opay_phone(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     phone = message.text.strip()
     if not re.match(r'^[789]\d{9}$', phone):
         bot.reply_to(message, "❌ Invalid phone. Must be 10 digits starting with 7,8,9.", parse_mode="HTML")
@@ -2174,11 +2061,6 @@ def process_opay_phone(message):
 
 def process_opay_name(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     name = message.text.strip()
     if len(name) < 2:
         bot.reply_to(message, "❌ Invalid name.", parse_mode="HTML")
@@ -2203,11 +2085,6 @@ def check_withdrawal_amount(user_id, amount):
 
 def process_opay_amount(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     try:
         amount = float(message.text.strip())
         if amount <= 0:
@@ -2236,11 +2113,6 @@ def process_opay_amount(message):
 
 def process_usdt_address(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     address = message.text.strip()
     if not re.match(r'^0x[a-fA-F0-9]{40}$', address):
         bot.reply_to(message, "❌ Invalid BEP20 address.", parse_mode="HTML")
@@ -2252,11 +2124,6 @@ def process_usdt_address(message):
 
 def process_usdt_amount(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     try:
         amount = float(message.text.strip())
         if amount <= 0:
@@ -2282,11 +2149,6 @@ def process_usdt_amount(message):
 
 def process_upi_id(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     upi = message.text.strip()
     if '@' not in upi:
         bot.reply_to(message, "❌ Invalid UPI ID.", parse_mode="HTML")
@@ -2298,11 +2160,6 @@ def process_upi_id(message):
 
 def process_upi_name(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     name = message.text.strip()
     if len(name) < 2:
         bot.reply_to(message, "❌ Invalid name.", parse_mode="HTML")
@@ -2316,11 +2173,6 @@ def process_upi_name(message):
 
 def process_upi_amount(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     try:
         amount = float(message.text.strip())
         if amount <= 0:
@@ -2349,11 +2201,6 @@ def process_upi_amount(message):
 
 def process_others_country(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     raw = message.text.strip()
     currency = raw.upper() if re.match(r'^[A-Z]{3}$', raw) else None
     if not currency:
@@ -2365,11 +2212,6 @@ def process_others_country(message):
 
 def process_others_holder(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     name = message.text.strip()
     if len(name) < 2:
         bot.reply_to(message, "❌ Invalid name.", parse_mode="HTML")
@@ -2383,11 +2225,6 @@ def process_others_holder(message):
 
 def process_others_account(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     acc = message.text.strip()
     if len(acc) < 4:
         bot.reply_to(message, "❌ Account number too short.", parse_mode="HTML")
@@ -2401,11 +2238,6 @@ def process_others_account(message):
 
 def process_others_bank(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     bank = "Not provided" if message.text.lower() == '/skip' else message.text.strip()
     state = user_states.get(message.chat.id, {})
     state["others_bank"] = bank
@@ -2415,11 +2247,6 @@ def process_others_bank(message):
 
 def process_others_amount(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    if message.text == '/cancel':
-        return
     try:
         amount = float(message.text.strip())
         if amount <= 0:
@@ -2997,12 +2824,6 @@ def combo_app_selection(call):
 
 def admin_reject_reason_step(message):
     st = user_states.get(message.chat.id, {})
-    if isinstance(st, dict) and st.get("mode") in ("live_chat", "admin_reply"):
-        _lc_user_step(message) if st.get("mode") == "live_chat" else _lc_admin_step(message)
-        return
-    req_id = user_states.get(message.chat.id, {}).get("reject_reason")
-    if not req_id:
-        return
     reason = message.text if message.text.lower() != '/skip' else "Rejected by admin"
     success, result = reject_withdrawal(req_id, message.chat.id, reason)
     if success:
@@ -3204,66 +3025,6 @@ def add_force_channel_handler(message):
     else:
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
-
-# ---- Live chat admin reply callback ----
-@bot.callback_query_handler(func=lambda call: call.data.startswith("reply_user|"))
-def admin_reply_callback(call):
-    """Admin clicks Reply → enters reply mode."""
-    target_user = int(call.data.split("|")[1])
-    user_states[call.from_user.id] = {"mode": "admin_reply", "target_user": target_user}
-    try:
-        uname = ""
-        user = get_user(target_user)
-        if user and user[2]:
-            uname = user[2]
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.from_user.id, f"✏️ <b>Replying to {uname or target_user}</b>\nType your message:", parse_mode="HTML")
-        # Register next-step so admin reply is caught
-    except:
-        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
-
-# admin_send_reply handled by _global_message_router
-
-
-# =========================== GLOBAL MESSAGE ROUTER ===========================
-# Catches ALL text messages and routes based on state.
-# This runs AFTER all @bot.message_handler decorators, so it only fires
-# for messages that no other handler matched.
-@bot.message_handler(func=lambda msg: True, content_types=['text'])
-def _global_message_router(message):
-    """Route messages based on user state. Fires only if no other handler matched."""
-    uid = message.from_user.id
-    chat_id = message.chat.id
-    st = user_states.get(chat_id, {})
-    mode = st.get("mode") if isinstance(st, dict) else None
-
-    # --- User in live chat mode ---
-    if mode == "live_chat" and not is_admin(uid):
-        admin_id = st.get("target_admin")
-        if not admin_id:
-            bot.send_message(chat_id, "❌ Live chat expired. Click Support again.", parse_mode="HTML")
-            user_states.pop(chat_id, None)
-            return
-        uname = message.from_user.first_name or str(uid)
-        try:
-            kb = json.dumps({"inline_keyboard": [[{"text": f"✏️ Reply to {uname}", "callback_data": f"reply_user|{uid}"}]]})
-            bot.send_message(admin_id, f"💬 <b>{uname}</b> (<code>{uid}</code>):\n\n{message.text}", parse_mode="HTML", reply_markup=kb)
-        except Exception as e:
-            logger.error(f"Live chat forward failed: {e}")
-        return
-
-    # --- Admin in reply mode ---
-    if mode == "admin_reply" and is_admin(uid):
-        target_user = st.get("target_user")
-        if not target_user:
-            bot.send_message(chat_id, "❌ No user selected.", parse_mode="HTML")
-            return
-        try:
-            bot.send_message(target_user, f"🎧 <b>Support Reply:</b>\n\n{message.text}", parse_mode="HTML")
-            bot.reply_to(message, f"✅ Sent to {target_user}.")
-        except:
-            bot.reply_to(message, "❌ Could not send to user.")
-        return
 
 # =========================== MAIN ===========================
 def main():
