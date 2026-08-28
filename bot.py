@@ -1424,9 +1424,9 @@ class ChoiceSMSForwarder:
                                f"🔐 <b>Code:</b> <code>{sms['otp']}</code>\n"
                                f"🕒 <b>Time:</b> {sms['timestamp']}\n"
                                f"\n{_r2} <b>Full:</b> {self._clean_text(sms['full_text'])[:300]}")
-                        kb = json.dumps({"inline_keyboard": [[
+                        kb = {"inline_keyboard": [[
                             {"text": f"📋 {sms['otp']}", "callback_data": f"copy_{sms['otp']}"}
-                        ]]})
+                        ]]}
                         groups = json.loads(get_setting('otp_groups') or '[]')
                         for gid in groups:
                             try:
