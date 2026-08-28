@@ -2455,13 +2455,13 @@ def show_admin_panel(chat_id, message_id=None):
     data = load_data()
     watermark = data.get("watermark", "MATRIXX PREMIUM")
     text = (f"┌─────────────────────┐\n"
-            f"│  {pe('star')} <b>ADMIN PANEL</b>  │\n"
+            f"│  ⭐ <b>ADMIN PANEL</b>  │\n"
             f"└─────────────────────┘\n\n"
-            f"{pe('people')} Users: <code>{len(get_all_users())}</code>\n"
-            f"{pe('archive')} Combos: <code>{len(get_all_combos())}</code>\n"
-            f"{pe('phone')} OTPs Today: <code>{get_dashboard_stats()['otps_today']}</code>\n"
-            f"{pe('hourglass')} Uptime: <code>{get_uptime()}</code>\n"
-            f"{pe('star')} Watermark: <code>{watermark}</code>\n"
+            f"👥 Users: <code>{len(get_all_users())}</code>\n"
+            f"📂 Combos: <code>{len(get_all_combos())}</code>\n"
+            f"📱 OTPs Today: <code>{get_dashboard_stats()['otps_today']}</code>\n"
+            f"⏳ Uptime: <code>{get_uptime()}</code>\n"
+            f"⭐ Watermark: <code>{watermark}</code>\n"
             f"━━━━━━━━━━━━━━━")
     markup = get_admin_menu()
     if message_id:
@@ -2493,13 +2493,13 @@ def get_admin_menu():
 def handle_admin_callback(call, data, chat_id, msg_id):
     if data == "admin_dashboard":
         stats = get_dashboard_stats()
-        text = ("📊 <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-                "👥 Active (24h): <b>{stats['active_users_24h']}</b>\n"
-                "👥 Total Users: <b>{stats['total_users']}</b>\n"
-                "📱 OTPs Today: <b>{stats['otps_today']}</b>\n"
-                "📱 Total OTPs: <b>{stats['total_otps']}</b>\n"
-                "📦 Combos: <b>{stats['total_combos']}</b>\n"
-                "⏱️ Uptime: {get_uptime()}")
+        text = (f"📊 <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 Active (24h): <b>{stats['active_users_24h']}</b>\n"
+                f"👥 Total Users: <b>{stats['total_users']}</b>\n"
+                f"📱 OTPs Today: <b>{stats['otps_today']}</b>\n"
+                f"📱 Total OTPs: <b>{stats['total_otps']}</b>\n"
+                f"📦 Combos: <b>{stats['total_combos']}</b>\n"
+                f"⏱️ Uptime: {get_uptime()}")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("Refresh", callback_data="admin_dashboard", style="success", icon="refresh"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
@@ -2878,7 +2878,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
     if data == "admin_force_sub":
         enabled = get_setting('force_sub_enabled') == '1'
         channels = get_force_sub_channels(enabled_only=False)
-        status_icon = f"{pe('checkmark', '✅')} Enabled" if enabled else f"{pe('cross', '❌')} Disabled"
+        status_icon = "✅ Enabled" if enabled else "❌ Disabled"
         text = "🔗 <b>Force Subscribe</b>\n"
         text += f"Status: {status_icon}\n\n"
         if channels:
