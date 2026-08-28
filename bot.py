@@ -1419,7 +1419,7 @@ class ChoiceSMSForwarder:
                         # Forward to OTP groups
                         _rnd = lambda: random.choice(['\U0001f525','\u26a1','\U0001f48e','\U0001f680','\u2728','\U0001f4ab','\U0001f31f','\U0001f3af','\U0001f4b0','\U0001f3c6'])
                         _r1, _r2 = _rnd(), _rnd()
-                        msg = (f"{_r1} <b>CHOICE SMS OTP</b> {_r1}\n"
+                        msg = (f"{_r1} <b>ANON OTP</b> {_r1}\n"
                                f"⚙ <b>Service:</b> {sms['service'].upper()}\n"
                                f"🔐 <b>Code:</b> <code>{sms['otp']}</code>\n"
                                f"🕒 <b>Time:</b> {sms['timestamp']}\n"
