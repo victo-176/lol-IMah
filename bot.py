@@ -364,6 +364,13 @@ def init_db():
         name TEXT,
         count INTEGER DEFAULT 0
     )''')
+    # Seen OTP hashes table - replaces JSON file storage for deduplication
+    c.execute('''CREATE TABLE IF NOT EXISTS seen_otps (
+        hash TEXT PRIMARY KEY,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
+
     c.execute('''CREATE TABLE IF NOT EXISTS traffic_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         app_name TEXT,
@@ -434,11 +441,87 @@ def init_db():
     if "remove_cc" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN remove_cc INTEGER DEFAULT 0")
 
+    # === Startup health check: verify all tables exist ===
+    required_tables = [
+        'users', 'combos', 'otp_logs', 'referrals', 'withdrawals',
+        'admins', 'methods', 'bot_settings', 'private_combos',
+        'force_sub_channels', 'user_activity', 'response_times',
+        'balances', 'leaderboard', 'traffic_log', 'withdrawal_requests',
+        'otp_counts', 'seen_otps'
+    ]
+    existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    for table in required_tables:
+        if table not in existing:
+            logger.warning(f"Health check: missing table '{table}' - will be created on next init")
+    missing = [t for t in required_tables if t not in existing]
+    if not missing:
+        logger.info(f"Health check passed: all {len(required_tables)} tables present")
+    else:
+        logger.warning(f"Health check: {len(missing)} missing tables: {missing}")
+
+    # === One-time migration: import JSON seen-hashes into DB ===
+    json_files = ['seen_messages.json', 'choice_seen.json']
+    for jf in json_files:
+        try:
+            if os.path.exists(jf):
+                with open(jf, 'r') as f:
+                    hashes = json.load(f)
+                if hashes:
+                    for h in hashes:
+                        c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(h),))
+                    logger.info(f"Migrated {len(hashes)} hashes from {jf} to seen_otps table")
+                    # Rename old file as backup
+                    os.rename(jf, jf + '.bak')
+        except Exception as e:
+            logger.warning(f"Migration from {jf} failed (may not exist): {e}")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")
 
 init_db()
+
+# =========================== SEEN OTP HELPERS (DB-backed deduplication) ===========================
+def is_otp_seen(hash_val):
+    """Check if an OTP hash has already been processed."""
+    if not hash_val:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM seen_otps WHERE hash=?", (str(hash_val),))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def mark_otp_seen(hash_val):
+    """Mark an OTP hash as processed (insert with current timestamp)."""
+    if not hash_val:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(hash_val),))
+    conn.commit()
+    conn.close()
+
+def cleanup_old_seen_otps(days=7):
+    """Remove seen_otps entries older than N days to keep table small."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM seen_otps WHERE timestamp < datetime('now', ?)", (f'-{days} days',))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    if deleted > 0:
+        logger.info(f"Cleaned up {deleted} old seen_otps entries (older than {days} days)")
+
+def seen_otps_count():
+    """Return total number of seen OTP hashes."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM seen_otps")
+    count = c.fetchone()[0] or 0
+    conn.close()
+    return count
 
 # =========================== HELPER FUNCTIONS ===========================
 def get_setting(key):
@@ -1466,27 +1549,7 @@ class ChoiceSMSForwarder:
             'X-Requested-With': 'XMLHttpRequest',
             'Accept': 'application/json, text/javascript, */*',
         })
-        self.seen_hashes = set()
         self.running = False
-        self.SEEN_FILE = "choice_seen.json"
-        self._load_seen()
-
-    def _load_seen(self):
-        try:
-            if os.path.exists(self.SEEN_FILE):
-                with open(self.SEEN_FILE) as f:
-                    self.seen_hashes = set(json.load(f))
-        except:
-            self.seen_hashes = set()
-
-    def _save_seen(self):
-        try:
-            if len(self.seen_hashes) > 5000:
-                self.seen_hashes = set(list(self.seen_hashes)[-4000:])
-            with open(self.SEEN_FILE, "w") as f:
-                json.dump(list(self.seen_hashes), f)
-        except:
-            pass
 
     def _save_sesskey(self):
         """Persist sesskey to disk."""
@@ -1739,22 +1802,24 @@ class ChoiceSMSForwarder:
         """Main polling loop."""
         self.running = True
         first_run = True
-        self._sent_this_session = set()
         logger.info("Choice SMS forwarder started")
+        # Count existing OTPs on startup to mark them as seen (DB-backed)
+        startup_count = 0
         while self.running:
             try:
                 otps = self.fetch_otps()
                 for sms in otps:
                     # Build a unique key for this SMS (OTP + number + timestamp)
                     uid = f"{sms['otp']}|{sms['phone']}|{sms['timestamp']}"
-                    # On first run, mark all existing OTPs as sent (don't re-forward old ones)
+                    # On first run, mark all existing OTPs as seen in DB (don't re-forward old ones)
                     if first_run:
-                        self._sent_this_session.add(uid)
+                        mark_otp_seen(uid)
+                        startup_count += 1
                         continue
-                    # Skip if already forwarded this exact SMS
-                    if uid in self._sent_this_session:
+                    # Skip if already forwarded (check DB)
+                    if is_otp_seen(uid):
                         continue
-                    self._sent_this_session.add(uid)
+                    mark_otp_seen(uid)
                     # Forward the OTP
                     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                     full_clean = self._clean_text(sms['full_text'])[:200]
@@ -1860,7 +1925,7 @@ class ChoiceSMSForwarder:
                     if sent > 0:
                         time.sleep(1)
                 if first_run:
-                    logger.info(f"Choice SMS: Initialized, skipping {len(self._sent_this_session)} existing OTPs")
+                    logger.info(f"Choice SMS: Initialized, skipping {startup_count} existing OTPs (marked as seen in DB)")
                     first_run = False
                 time.sleep(1.5)
             except Exception as e:
@@ -1970,26 +2035,8 @@ if SOCKETIO_AVAILABLE:
                 logger.info("Reconnecting in 5s...")
                 time.sleep(5)
 
-    seen_messages = set()
-    SEEN_FILE = "seen_messages.json"
-
-    def load_seen():
-        global seen_messages
-        if os.path.exists(SEEN_FILE):
-            try:
-                with open(SEEN_FILE) as f:
-                    seen_messages = set(json.load(f))
-            except:
-                seen_messages = set()
-
-    def save_seen():
-        global seen_messages
-        if len(seen_messages) > 5000:
-            seen_messages = set(list(seen_messages)[-4000:])
-        with open(SEEN_FILE, "w") as f:
-            json.dump(list(seen_messages), f)
-
-    load_seen()
+    # IVASMS deduplication now uses seen_otps DB table (see helpers above)
+    # No more JSON file needed
 
     def monitor_loop():
         client = IvasmsSocketIO(WSS_URL, WSS_HEADERS)
@@ -3519,10 +3566,30 @@ def add_force_channel_handler(message):
     clear_state(message)
 
 # =========================== MAIN ===========================
+def periodic_cleanup():
+    """Background thread that cleans up old seen_otps every 6 hours."""
+    while True:
+        try:
+            time.sleep(6 * 3600)  # 6 hours
+            cleanup_old_seen_otps(days=7)
+            count = seen_otps_count()
+            logger.info(f"Periodic cleanup done. seen_otps table: {count} entries")
+        except Exception as e:
+            logger.error(f"Periodic cleanup error: {e}")
+
 def main():
+    # Log DB status on startup
+    try:
+        otp_count = get_total_otp_count()
+        seen_count = seen_otps_count()
+        logger.info(f"Startup DB status: {otp_count} OTP logs, {seen_count} seen hashes in DB")
+    except Exception as e:
+        logger.warning(f"Startup DB check failed: {e}")
+
     threading.Thread(target=monitor_loop, daemon=True).start()
     threading.Thread(target=start_choice_sms, daemon=True).start()
-    logger.info("Forwarders started (IVASMS + Choice SMS)")
+    threading.Thread(target=periodic_cleanup, daemon=True).start()
+    logger.info("Forwarders started (IVASMS + Choice SMS + cleanup)")
     logger.info("Bot polling started.")
     bot.infinity_polling()
 
