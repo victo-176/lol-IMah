@@ -1371,7 +1371,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
             conn.commit()
             conn.close()
-            logger.info(f"Balance updated for {user_id}: ${new_balance:.3f}")
+            logger.info(f"Balance updated for {user_id}: ${new_balance}")
         except Exception as bal_err:
             logger.error(f"Balance credit failed for {user_id}: {bal_err}")
 
@@ -1386,7 +1386,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
                    f"{pe('phone', '📱')} <b>Number:</b> {number}\n"
                    f"{pe('key', '🔑')} <b>Code:</b> <code>{otp}</code>\n"
                    f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n"
-                   f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.3f}")
+                   f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
         except Exception as e:
@@ -1828,7 +1828,7 @@ class ChoiceSMSForwarder:
                                         _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
                                         _conn.commit()
                                         _conn.close()
-                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance:.3f}")
+                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance}")
                                     except Exception as bal_err:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
@@ -1838,7 +1838,7 @@ class ChoiceSMSForwarder:
                                         f"{pe('phone', '📱')} <b>Number:</b> {sms['phone']}\n"
                                         f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
                                         f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n"
-                                        f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance:.3f}"
+                                        f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance}"
                                     )
                                     bot.send_message(matched_user, dm_msg, parse_mode="HTML")
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
@@ -2245,7 +2245,7 @@ def show_referrals(chat_id):
     bot_username = bot.get_me().username
     link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     text = (f"{pe('link', '🔗')} <b>Your Referral Link</b>\n\n<code>{link}</code>\n\n"
-            f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance:.3f}</b>\n"
+            f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance}</b>\n"
             f"{pe('people', '👥')} Referrals: <b>{refs}</b>\n"
             f"{pe('dollar', '💵')} Total Earned: <b>${refs * REFERRAL_REWARD:.2f}</b>")
     markup = types.InlineKeyboardMarkup()
@@ -2542,7 +2542,7 @@ def check_withdrawal_amount(user_id, amount):
     user = get_user(user_id)
     balance = user[10] if user and len(user) > 10 else 0.0
     if amount > balance:
-        return f"❌ Insufficient balance. You have ${balance:.2f}."
+        return f"❌ Insufficient balance. You have ${balance}."
     if amount < MIN_WITHDRAWAL:
         return f"❌ Minimum withdrawal is ${MIN_WITHDRAWAL:.2f}."
     if amount > MAX_WITHDRAWAL:
@@ -3043,7 +3043,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         req_id = data.split("|")[1]
         success, result = approve_withdrawal(req_id, chat_id, "Approved")
         if success:
-            bot.answer_callback_query(call.id, f"✅ Approved. New balance: ${result:.2f}", show_alert=True)
+            bot.answer_callback_query(call.id, f"✅ Approved. New balance: ${result}", show_alert=True)
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("SELECT user_id, amount FROM withdrawal_requests WHERE id=?", (req_id,))
@@ -3427,9 +3427,9 @@ def add_balance_handler(message):
             return
         new_bal = (user[10] if len(user) > 10 else 0.0) + amt
         save_user(uid, balance=new_bal)
-        bot.reply_to(message, f"✅ Added ${amt:.2f} to user {uid}. New balance: ${new_bal:.2f}", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Added ${amt} to user {uid}. New balance: ${new_bal}", parse_mode="HTML")
         try:
-            bot.send_message(uid, f"💰 <b>Balance Updated</b>\n+${amt:.2f}\nNew balance: ${new_bal:.2f}", parse_mode="HTML")
+            bot.send_message(uid, f"💰 <b>Balance Updated</b>\n+${amt}\nNew balance: ${new_bal}", parse_mode="HTML")
         except:
             pass
     except:
@@ -3455,9 +3455,9 @@ def deduct_balance_handler(message):
             return
         new_bal = current - amt
         save_user(uid, balance=new_bal)
-        bot.reply_to(message, f"✅ Deducted ${amt:.2f} from user {uid}. New balance: ${new_bal:.2f}", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Deducted ${amt} from user {uid}. New balance: ${new_bal}", parse_mode="HTML")
         try:
-            bot.send_message(uid, f"💰 <b>Balance Updated</b>\n-${amt:.2f}\nNew balance: ${new_bal:.2f}", parse_mode="HTML")
+            bot.send_message(uid, f"💰 <b>Balance Updated</b>\n-${amt}\nNew balance: ${new_bal}", parse_mode="HTML")
         except:
             pass
     except:
