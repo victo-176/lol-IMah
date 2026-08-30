@@ -2850,14 +2850,18 @@ def show_admin_panel(chat_id, message_id=None):
         return
     data = load_data()
     watermark = data.get("watermark", "MATRIXX PREMIUM")
+    panels_count = len(get_all_sms_panels())
+    admins_count = len(get_all_admins())
     text = (f"┌─────────────────────┐\n"
             f"│  {pe('star')} <b>ADMIN PANEL</b>  │\n"
             f"└─────────────────────┘\n\n"
-            f"{pe('people')} Users: <code>{len(get_all_users())}</code>\n"
-            f"{pe('archive')} Combos: <code>{len(get_all_combos())}</code>\n"
-            f"{pe('phone')} OTPs Today: <code>{get_dashboard_stats()['otps_today']}</code>\n"
-            f"{pe('hourglass')} Uptime: <code>{get_uptime()}</code>\n"
-            f"{pe('star')} Watermark: <code>{watermark}</code>\n"
+            f"{pe('people', '👥')} Users: <code>{len(get_all_users())}</code>\n"
+            f"{pe('archive', '📦')} Combos: <code>{len(get_all_combos())}</code>\n"
+            f"{pe('phone', '📱')} OTPs Today: <code>{get_dashboard_stats()['otps_today']}</code>\n"
+            f"{pe('link', '🔗')} SMS Panels: <code>{panels_count}</code>\n"
+            f"{pe('admin', '🛡️')} Admins: <code>{admins_count}</code>\n"
+            f"{pe('hourglass', '⏱️')} Uptime: <code>{get_uptime()}</code>\n"
+            f"{pe('star', '⭐')} Watermark: <code>{watermark}</code>\n"
             f"━━━━━━━━━━━━━━━")
     markup = get_admin_menu()
     if message_id:
@@ -2868,15 +2872,16 @@ def show_admin_panel(chat_id, message_id=None):
 def get_admin_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = [
-        ibtn("Dashboard", callback_data="admin_dashboard", style="success", icon="stats"),
-        ibtn("Manage Combos", callback_data="admin_combos", style="primary", icon="list"),
-        ibtn("Manage Numbers", callback_data="admin_numbers", style="primary", icon="phone"),
-        ibtn("OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
-        ibtn("Users", callback_data="admin_users", style="primary", icon="people"),
-        ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
-        ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
-        ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
-        ibtn("Leave", callback_data="close_menu", style="danger", icon="back")
+        ibtn(f"{pe('stats', '📊')} Dashboard", callback_data="admin_dashboard", style="success", icon="stats"),
+        ibtn(f"{pe('list', '📋')} Manage Combos", callback_data="admin_combos", style="primary", icon="list"),
+        ibtn(f"{pe('phone', '📱')} Manage Numbers", callback_data="admin_numbers", style="primary", icon="phone"),
+        ibtn(f"{pe('announcement', '📢')} OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
+        ibtn(f"{pe('people', '👥')} Users", callback_data="admin_users", style="primary", icon="people"),
+        ibtn(f"{pe('card', '💳')} Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
+        ibtn(f"{pe('link', '🔗')} SMS Panels", callback_data="admin_sms_panels", style="primary", icon="link"),
+        ibtn(f"{pe('settings', '⚙️')} Settings", callback_data="admin_settings", style="danger", icon="settings"),
+        ibtn(f"{pe('admin', '🛡️')} Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
+        ibtn(f"{pe('back', '⬅️')} Leave", callback_data="close_menu", style="danger", icon="back")
     ]
     for i in range(0, len(buttons), 2):
         if i+1 < len(buttons):
@@ -3359,6 +3364,149 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         handle_admin_callback(call, "admin_settings", chat_id, msg_id)
         return
 
+    # === SMS PANELS ===
+    if data == "admin_sms_panels":
+        panels = get_all_sms_panels()
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for pid, name, url, login_type, username, enabled in panels:
+            status_icon = pe("checkmark") if enabled else pe("cross")
+            markup.add(ibtn(status_icon + " " + name + " (" + login_type + ")", callback_data="admin_view_panel|" + str(pid), style="primary", icon="link"))
+        markup.add(ibtn(pe("plus", "+") + " Add SMS Panel", callback_data="admin_add_sms_panel", style="success", icon="plus"))
+        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(pe("link", "🔗") + " <b>SMS Panels</b>\n\nManage your SMS panel connections. Each panel auto-connects to SMSCDRStats for live OTP monitoring.", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_add_sms_panel":
+        set_state(chat_id, "add_sms_panel_name")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+        bot.edit_message_text(pe("plus", "➕") + " <b>Add SMS Panel</b>\n\nSend the panel name (e.g., My Choice SMS):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_view_panel|"):
+        pid = int(data.split("|")[1])
+        panel = get_sms_panel(pid)
+        if not panel:
+            bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
+            return
+        _, name, url, login_type, username, password, enabled, created = panel
+        status_str = pe("checkmark", "✅") + " Enabled" if enabled else pe("cross", "❌") + " Disabled"
+        text = (
+            pe("link", "🔗") + " <b>SMS Panel</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            + pe("info_bw", "ℹ") + " <b>Name:</b> " + name + "\n"
+            + pe("link", "🔗") + " <b>URL:</b> <code>" + url + "</code>\n"
+            + pe("profile", "👤") + " <b>Type:</b> " + login_type.upper() + "\n"
+            + pe("key", "🔑") + " <b>User:</b> <code>" + username + "</code>\n"
+            + pe("checkmark", "✅") + " <b>Status:</b> " + status_str + "\n"
+            + pe("calendar", "📅") + " <b>Added:</b> " + str(created) + "\n"
+            "━━━━━━━━━━━━━━━"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        toggle_label = pe("toggle", "🔘") + " Toggle On/Off"
+        markup.add(ibtn(toggle_label, callback_data="admin_toggle_panel|" + str(pid), style="success" if not enabled else "danger", icon="toggle"))
+        markup.add(ibtn(pe("trash", "🗑") + " Delete", callback_data="admin_del_panel|" + str(pid), style="danger", icon="trash"))
+        markup.add(ibtn(pe("refresh", "🔄") + " Test Connection", callback_data="admin_test_panel|" + str(pid), style="primary", icon="refresh"))
+        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_sms_panels", style="primary", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_toggle_panel|"):
+        pid = int(data.split("|")[1])
+        toggle_sms_panel(pid)
+        bot.answer_callback_query(call.id, "Toggled!", show_alert=True)
+        handle_admin_callback(call, "admin_view_panel|" + str(pid), chat_id, msg_id)
+        return
+
+    if data.startswith("admin_del_panel|"):
+        pid = int(data.split("|")[1])
+        delete_sms_panel(pid)
+        bot.answer_callback_query(call.id, "Deleted!", show_alert=True)
+        handle_admin_callback(call, "admin_sms_panels", chat_id, msg_id)
+        return
+
+    if data.startswith("admin_test_panel|"):
+        pid = int(data.split("|")[1])
+        panel = get_sms_panel(pid)
+        if not panel:
+            bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
+            return
+        _, name, url, login_type, username, password, enabled, _ = panel
+        bot.answer_callback_query(call.id, "Testing connection...", show_alert=False)
+        try:
+            import requests as _req
+            sess = _req.Session()
+            sess.verify = False
+            login_url = url.rstrip("/") + "/login"
+            resp = sess.get(login_url, timeout=15)
+            nums = re.findall(r"(\d+)\s*\+\s*(\d+)", resp.text)
+            data_dict = {"username": username, "password": password}
+            if nums:
+                data_dict["capt"] = str(int(nums[0][0]) + int(nums[0][1]))
+            resp2 = sess.post(url.rstrip("/") + "/signin", data=data_dict, timeout=15, allow_redirects=True)
+            if "signin" not in resp2.url.lower() and "login" not in resp2.url.lower():
+                stats_resp = sess.get(url.rstrip("/") + "/client/SMSCDRStats", timeout=15)
+                sk_match = re.search(r"sesskey=([a-f0-9]{32})", stats_resp.text)
+                sesskey = sk_match.group(1) if sk_match else "N/A"
+                bot.answer_callback_query(call.id, "Connected! Sesskey: " + sesskey[:8] + "...", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "Login failed - check credentials.", show_alert=True)
+        except Exception as e:
+            bot.answer_callback_query(call.id, "Error: " + str(e)[:80], show_alert=True)
+        return
+
+    # === ADMIN MANAGER ===
+    if data == "admin_manage_admins":
+        admins = get_all_admins()
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for aid in admins:
+            user = get_user(aid)
+            name = user[2] if user and user[2] else ("@" + user[1] if user and user[1] else str(aid))
+            markup.add(ibtn(pe("admin", "🛡") + " " + name + " (" + str(aid) + ")", callback_data="admin_view_admin|" + str(aid), style="primary", icon="admin"))
+        markup.add(ibtn(pe("plus", "+") + " Add Admin", callback_data="admin_add_admin", style="success", icon="plus"))
+        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(pe("admin", "🛡") + " <b>Admin Management</b>\n\nTotal admins: " + str(len(admins)), chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_add_admin":
+        set_state(chat_id, "add_new_admin")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data="admin_manage_admins", style="danger", icon="back"))
+        bot.edit_message_text(pe("plus", "➕") + " <b>Add Admin</b>\n\nSend the user ID to make them an admin:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_view_admin|"):
+        aid = int(data.split("|")[1])
+        user = get_user(aid)
+        name = user[2] if user and user[2] else ("@" + user[1] if user and user[1] else str(aid))
+        text = (
+            pe("admin", "🛡") + " <b>Admin Info</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            + pe("info_bw", "ℹ") + " <b>Name:</b> " + name + "\n"
+            + pe("phone", "📞") + " <b>ID:</b> <code>" + str(aid) + "</code>\n"
+            "━━━━━━━━━━━━━━━"
+        )
+        markup = types.InlineKeyboardMarkup()
+        if aid != ADMIN_IDS[0]:
+            markup.add(ibtn(pe("cross", "❌") + " Remove Admin", callback_data="admin_remove_admin|" + str(aid), style="danger", icon="cross"))
+        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_manage_admins", style="primary", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_remove_admin|"):
+        aid = int(data.split("|")[1])
+        if aid == ADMIN_IDS[0]:
+            bot.answer_callback_query(call.id, "Cannot remove the main admin!", show_alert=True)
+            return
+        remove_admin(aid)
+        bot.answer_callback_query(call.id, "Admin removed!", show_alert=True)
+        handle_admin_callback(call, "admin_manage_admins", chat_id, msg_id)
+        return
+
+    if data == "admin_panel":
+        show_admin_panel(chat_id, msg_id)
+        return
+
     if data == "admin_panel":
         show_admin_panel(chat_id, msg_id)
         return
@@ -3679,6 +3827,113 @@ def broadcast_handler(message):
         f"Failed: {failed}",
         parse_mode="HTML"
     )
+
+
+# ======================== SMS PANEL ADD HANDLERS ========================
+@bot.message_handler(func=lambda msg: get_state(msg) == "add_sms_panel_name" and is_admin(msg.from_user.id))
+def sms_panel_name_handler(message):
+    name = message.text.strip()
+    if not name:
+        bot.reply_to(message, "❌ Name cannot be empty.", parse_mode="HTML")
+        return
+    set_state(message.chat.id, {"add_sms_panel_step": "url", "panel_name": name})
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.reply_to(message, pe("link", "🔗") + " Send the panel URL (e.g., http://51.77.52.79/ints):", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "url" and is_admin(msg.from_user.id))
+def sms_panel_url_handler(message):
+    url = message.text.strip().rstrip("/")
+    state = get_state(message.chat.id)
+    state["panel_url"] = url
+    state["add_sms_panel_step"] = "type"
+    set_state(message.chat.id, state)
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(ibtn("Agent", callback_data="sms_panel_type|agent", style="primary", icon="admin"))
+    markup.add(ibtn("Client", callback_data="sms_panel_type|client", style="primary", icon="profile"))
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.reply_to(message, pe("info_bw", "ℹ") + " Is this an Agent or Client panel?", parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sms_panel_type|") and is_admin(call.from_user.id))
+def sms_panel_type_handler(call):
+    login_type = call.data.split("|")[1]
+    state = get_state(call.message.chat.id)
+    if not state:
+        bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
+        return
+    state["login_type"] = login_type
+    state["add_sms_panel_step"] = "username"
+    set_state(call.message.chat.id, state)
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "username" and is_admin(msg.from_user.id))
+def sms_panel_username_handler(message):
+    state = get_state(message.chat.id)
+    state["panel_username"] = message.text.strip()
+    state["add_sms_panel_step"] = "password"
+    set_state(message.chat.id, state)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.reply_to(message, pe("lock", "🔐") + " Send the panel password:", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "password" and is_admin(msg.from_user.id))
+def sms_panel_password_handler(message):
+    state = get_state(message.chat.id)
+    password = message.text.strip()
+    name = state.get("panel_name", "Unnamed")
+    url = state.get("panel_url", "")
+    login_type = state.get("login_type", "client")
+    username = state.get("panel_username", "")
+    try:
+        panel_id = save_sms_panel(name, url, login_type, username, password)
+        clear_state(message)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("View Panels", callback_data="admin_sms_panels", style="success", icon="list"))
+        markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
+        bot.reply_to(message,
+            pe("checkmark", "✅") + " <b>SMS Panel Added!</b>\n\n"
+            + pe("info_bw", "ℹ") + " Name: " + name + "\n"
+            + pe("link", "🔗") + " URL: <code>" + url + "</code>\n"
+            + pe("profile", "👤") + " Type: " + login_type.upper() + "\n"
+            + pe("key", "🔑") + " User: <code>" + username + "</code>\n\n"
+            "Panel is now active and will auto-connect to SMSCDRStats.",
+            parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        clear_state(message)
+        bot.reply_to(message, "❌ Error saving panel: " + str(e), parse_mode="HTML")
+
+# ======================== ADD ADMIN HANDLER ========================
+@bot.message_handler(func=lambda msg: get_state(msg) == "add_new_admin" and is_admin(msg.from_user.id))
+def add_admin_handler(message):
+    try:
+        uid = int(message.text.strip())
+        if uid == message.from_user.id:
+            bot.reply_to(message, "❌ You are already an admin.", parse_mode="HTML")
+            clear_state(message)
+            return
+        if add_admin(uid):
+            markup = types.InlineKeyboardMarkup()
+            markup.add(ibtn("View Admins", callback_data="admin_manage_admins", style="success", icon="admin"))
+            markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
+            bot.reply_to(message,
+                pe("checkmark", "✅") + " <b>Admin Added!</b>\n\n"
+                + pe("admin", "🛡") + " User <code>" + str(uid) + "</code> is now an admin.",
+                parse_mode="HTML", reply_markup=markup)
+            try:
+                bot.send_message(uid,
+                    pe("admin", "🛡") + " <b>You are now an admin!</b>\n\n"
+                    "Use /start to access the admin panel.",
+                    parse_mode="HTML")
+            except:
+                pass
+        else:
+            bot.reply_to(message, "❌ User " + str(uid) + " is already an admin.", parse_mode="HTML")
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid user ID. Send a numeric ID.", parse_mode="HTML")
+    clear_state(message)
 
 
 # ======================== CHECK USER ========================
