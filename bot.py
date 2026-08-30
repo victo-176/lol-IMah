@@ -3565,6 +3565,67 @@ def add_force_channel_handler(message):
         bot.reply_to(message, "❌ Already exists.", parse_mode="HTML")
     clear_state(message)
 
+
+# ======================== CHECK USER ========================
+def get_otp_count_for_user(user_id):
+    """Count OTPs where assigned_to matches user_id."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM otp_logs WHERE assigned_to=?", (user_id,))
+    count = c.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
+@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().lower().startswith('/checkuser') and is_admin(msg.from_user.id))
+def checkuser_handler(message):
+    """Admin command: /checkuser <user_id> — shows balance and OTP count."""
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Usage: /checkuser <user_id>", parse_mode="HTML")
+        return
+    try:
+        uid = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid user ID.", parse_mode="HTML")
+        return
+
+    user = get_user(uid)
+    if not user:
+        bot.reply_to(message, f"❌ User {uid} not found.", parse_mode="HTML")
+        return
+
+    # Extract fields by index: 0=user_id,1=username,2=first_name,3=last_name,
+    # 4=country_code,5=assigned_number,6=is_banned,7=private_combo_country,
+    # 8=join_date,9=last_active,10=balance,11=remove_cc
+    username = user[1] or ""
+    first_name = user[2] or ""
+    country_code = user[4] or "N/A"
+    assigned_number = user[5] or "None"
+    is_banned = "Yes" if user[6] else "No"
+    balance = user[10] if user[10] is not None else 0.0
+    otp_count = get_otp_count_for_user(uid)
+
+    display_name = first_name if first_name else (f"@{username}" if username else str(uid))
+    username_display = f"@{username}" if username else "N/A"
+
+    text = (
+        f"👤 <b>User Info</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📛 Name: {display_name}\n"
+        f"👤 Username: {username_display}\n"
+        f"🌍 Country: {country_code}\n"
+        f"📱 Number: {assigned_number}\n"
+        f"💰 Balance: ${balance}\n"
+        f"📊 OTPs Received: {otp_count}\n"
+        f"🚫 Banned: {is_banned}\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+
+    bot.reply_to(message, text, parse_mode="HTML")
+
+
 # =========================== MAIN ===========================
 def periodic_cleanup():
     """Background thread that cleans up old seen_otps every 6 hours."""
