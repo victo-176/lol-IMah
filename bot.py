@@ -3468,17 +3468,18 @@ def show_admin_panel(chat_id, message_id=None):
 
 def get_admin_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
+    # Fixed: removed Unicode emoji from text, only premium icon via icon= parameter
     buttons = [
-        ibtn(f"{pe('stats', '📊')} Dashboard", callback_data="admin_dashboard", style="success", icon="stats"),
-        ibtn(f"{pe('list', '📋')} Manage Combos", callback_data="admin_combos", style="primary", icon="list"),
-        ibtn(f"{pe('phone', '📱')} Manage Numbers", callback_data="admin_numbers", style="primary", icon="phone"),
-        ibtn(f"{pe('announcement', '📢')} OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
-        ibtn(f"{pe('people', '👥')} Users", callback_data="admin_users", style="primary", icon="people"),
-        ibtn(f"{pe('card', '💳')} Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
-        ibtn(f"{pe('link', '🔗')} SMS Panels", callback_data="admin_sms_panels", style="primary", icon="link"),
-        ibtn(f"{pe('settings', '⚙️')} Settings", callback_data="admin_settings", style="danger", icon="settings"),
-        ibtn(f"{pe('admin', '🛡️')} Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
-        ibtn(f"{pe('back', '⬅️')} Leave", callback_data="close_menu", style="danger", icon="back")
+        ibtn("Dashboard", callback_data="admin_dashboard", style="success", icon="stats"),
+        ibtn("Manage Combos", callback_data="admin_combos", style="primary", icon="list"),
+        ibtn("Manage Numbers", callback_data="admin_numbers", style="primary", icon="phone"),
+        ibtn("OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
+        ibtn("Users", callback_data="admin_users", style="primary", icon="people"),
+        ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
+        ibtn("SMS Panels", callback_data="admin_sms_panels", style="primary", icon="link"),
+        ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
+        ibtn("Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
+        ibtn("Leave", callback_data="close_menu", style="danger", icon="back")
     ]
     for i in range(0, len(buttons), 2):
         if i+1 < len(buttons):
