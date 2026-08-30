@@ -2321,15 +2321,17 @@ def show_stock_info(chat_id):
 
 def show_support(chat_id):
     support_link = get_setting('support_link') or "https://t.me/Jibohu1"
-    text = ("┏━━━━━━━ 🌙 ━━━━━━━┓\n"
-            "═《 <b>𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b> 》═\n"
-            "━━━━━━━━━━━━━\n"
-            "💬 <b>𝗪𝗘𝗟𝗖𝗢𝗠𝗘 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧</b>\n"
-            "➤ <b>𝗧𝗔𝗣 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗕𝗨𝗧𝗧𝗢𝗡</b>\n"
-            "➤ <b>𝗧𝗢 𝗖𝗢𝗡𝗧𝗔𝗖𝗧 𝗔𝗗𝗠𝗜𝗡</b>\n"
-            "┗━━━━━━━ ⚡ ━━━━━━━┛")
+    text = (
+        f"┏━━━━━━ {pe('fire', '★')} ━━━━━━┓\n"
+        f"═《 <b>SUPPORT</b> 》═\n"
+        f"━━━━━━━━━━━━\n"
+        f"{pe('support', '💬')} <b>WELCOME TO SUPPORT</b>\n"
+        f"{pe('strelka_right', '➡️')} <b>TAP SUPPORT BUTTON</b>\n"
+        f"{pe('strelka_right', '➡️')} <b>TO CONTACT ADMIN</b>\n"
+        f"┏━━━━━━ {pe('fire', '⚡')} ━━━━━━┛"
+    )
     markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("SUPPORT", url=support_link, style="success"))
+    markup.add(ibtn(pe('headphones', '🎧') + " SUPPORT", url=support_link, style="success"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 def show_referrals(chat_id):
