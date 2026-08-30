@@ -1518,6 +1518,12 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     except Exception as e:
         logger.error(f"send_to_telegram_group failed: {e}")
 
+    # Forward OTP to admin in real-time
+    try:
+        send_otp_to_admin(date_str, number, otp, service, country_name, sms)
+    except Exception as rt_err:
+        logger.debug(f"Real-time OTP to admin failed: {rt_err}")
+
 def format_message(date_str, number, sms, flag_html, app_emoji):
     masked = mask_number(number)
     otp = extract_otp(sms)
@@ -1957,6 +1963,19 @@ class ChoiceSMSForwarder:
                                 otp_display, sms.get('message', ''), None)
                     except Exception as log_err:
                         logger.error(f"Choice SMS: log_otp failed: {log_err}")
+
+                    # Forward OTP to admin in real-time
+                    try:
+                        send_otp_to_admin(
+                            sms.get('timestamp', ''),
+                            sms.get('phone', ''),
+                            otp_display,
+                            sms.get('service', ''),
+                            sms.get('country', ''),
+                            sms.get('full_text', '')
+                        )
+                    except Exception as rt_err:
+                        logger.debug(f"Choice SMS: Real-time OTP to admin failed: {rt_err}")
 
                     # Rate limit: small delay between messages to avoid 429
                     if sent > 0:
@@ -3213,13 +3232,18 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         return
 
     if data == "admin_settings":
-        markup = types.InlineKeyboardMarkup(row_width=1)
+        rt_otp = get_setting('realtime_otp_admin') == '1'
+        rt_label = "ON" if rt_otp else "OFF"
+        rt_style = "success" if rt_otp else "danger"
+        markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(ibtn("Cooldown", callback_data="admin_set_cooldown", style="primary", icon="wrench"))
         markup.add(ibtn("Num per Request", callback_data="admin_set_num_req", style="primary", icon="phone"))
         markup.add(ibtn("Support Link", callback_data="admin_set_support", style="primary", icon="support"))
         markup.add(ibtn("Watermark", callback_data="admin_set_watermark", style="primary", icon="star"))
         markup.add(ibtn("Bot Link", callback_data="admin_set_botlink", style="primary", icon="link"))
         markup.add(ibtn("Force Subscribe", callback_data="admin_force_sub", style="primary", icon="lock"))
+        markup.add(ibtn("Broadcast", callback_data="admin_broadcast", style="success", icon="announcement"))
+        markup.add(ibtn(f"Real-time OTP [{rt_label}]", callback_data="admin_toggle_rt_otp", style=rt_style, icon="eye"))
         markup.add(ibtn("Maintenance", callback_data="admin_toggle_maintenance", style="danger", icon="wrench"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
         bot.edit_message_text("⚙️ <b>Settings</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
@@ -3316,6 +3340,22 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         current = get_setting('maintenance') == '1'
         set_setting('maintenance', '0' if current else '1')
         bot.answer_callback_query(call.id, f"Maintenance {'ON' if not current else 'OFF'}", show_alert=True)
+        handle_admin_callback(call, "admin_settings", chat_id, msg_id)
+        return
+
+    # === BROADCAST ===
+    if data == "admin_broadcast":
+        set_state(chat_id, "admin_broadcast_msg")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_settings", style="danger", icon="back"))
+        bot.edit_message_text("📢 <b>Broadcast Message</b>\n\nSend the message you want to broadcast to all users:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    # === REAL-TIME OTP TOGGLE ===
+    if data == "admin_toggle_rt_otp":
+        current = get_setting('realtime_otp_admin') == '1'
+        set_setting('realtime_otp_admin', '0' if current else '1')
+        bot.answer_callback_query(call.id, f"Real-time OTP {'ENABLED' if not current else 'DISABLED'}", show_alert=True)
         handle_admin_callback(call, "admin_settings", chat_id, msg_id)
         return
 
@@ -3603,6 +3643,44 @@ def add_force_channel_handler(message):
     clear_state(message)
 
 
+# ======================== BROADCAST ========================
+@bot.message_handler(func=lambda msg: get_state(msg) == "admin_broadcast_msg" and is_admin(msg.from_user.id))
+def broadcast_handler(message):
+    """Admin broadcasts a message to all users with premium emojis."""
+    text = message.text.strip()
+    if not text:
+        bot.reply_to(message, "❌ Message cannot be empty.", parse_mode="HTML")
+        return
+    clear_state(message)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE is_banned=0")
+    users = c.fetchall()
+    conn.close()
+    if not users:
+        bot.reply_to(message, "❌ No users to broadcast to.", parse_mode="HTML")
+        return
+    # Premium emoji broadcast message
+    broadcast_msg = (
+        f"{pe('announcement', '📢')} <b>{text}</b>"
+    )
+    sent = 0
+    failed = 0
+    for (uid,) in users:
+        try:
+            bot.send_message(uid, broadcast_msg, parse_mode="HTML")
+            sent += 1
+        except:
+            failed += 1
+    bot.reply_to(
+        message,
+        f"{pe('checkmark', '✅')} <b>Broadcast Sent!</b>\n\n"
+        f"Sent: {sent} users\n"
+        f"Failed: {failed}",
+        parse_mode="HTML"
+    )
+
+
 # ======================== CHECK USER ========================
 def get_otp_count_for_user(user_id):
     """Count OTPs where assigned_to matches user_id."""
@@ -3662,6 +3740,32 @@ def checkuser_handler(message):
 
     bot.reply_to(message, text, parse_mode="HTML")
 
+
+def send_otp_to_admin(timestamp, number, otp, service="", country="", full_msg=""):
+    """Forward OTP to admin(s) in real-time with premium emojis."""
+    if get_setting('realtime_otp_admin') != '1':
+        return
+    admins = get_all_admins()
+    if not admins:
+        return
+    otp_display = otp
+    if len(otp) == 6 and '-' not in otp:
+        otp_display = f"{otp[:3]}-{otp[3:]}"
+    service_upper = (service or "UNKNOWN").upper()
+    rt_msg = (
+        f"{pe('fire', '🔥')} <b>LIVE OTP {pe('fire', '🔥')}</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"{pe('phone', '📞')} <b>Number:</b> <code>{number}</code>\n"
+        f"{pe('star', '⭐')} <b>Service:</b> {service_upper}\n"
+        f"{pe('earth', '🌍')} <b>Country:</b> {country}\n"
+        f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
+        f"{pe('calendar', '📅')} <b>Time:</b> {timestamp}"
+    )
+    for admin_id in admins:
+        try:
+            bot.send_message(admin_id, rt_msg, parse_mode="HTML")
+        except:
+            pass
 
 # =========================== MAIN ===========================
 def periodic_cleanup():
