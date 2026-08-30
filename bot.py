@@ -67,6 +67,36 @@ MAX_WITHDRAWAL = 5.0
 ADMIN_IDS = [ADMIN_ID, *EXTRA_ADMINS]
 DB_PATH = "bot.db"
 
+# ======================== THREAD SAFETY & PERSISTENCE ========================
+# Thread lock for all SQLite write operations
+_db_lock = threading.Lock()
+
+def _persist_db():
+    """Commit bot.db to git so it survives platform restarts."""
+    try:
+        import subprocess
+        subprocess.run(["git", "add", "bot.db"], capture_output=True, timeout=10)
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--", "bot.db"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode != 0:  # There are staged changes
+            subprocess.run(
+                ["git", "commit", "-m", "Auto-persist bot.db", "--quiet"],
+                capture_output=True, timeout=15
+            )
+            subprocess.run(["git", "push", "--quiet"], capture_output=True, timeout=30)
+            logger.info("bot.db persisted to git")
+    except Exception as e:
+        logger.warning(f"Failed to persist bot.db: {e}")
+
+def _get_conn():
+    """Get a SQLite connection with WAL mode for concurrent reads."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
 # =========================== LOGGING ===========================
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -265,219 +295,220 @@ def raw_btn(text, url=None, callback_data=None, style=None, icon=None):
 
 # =========================== DB SETUP ===========================
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_name TEXT,
-        last_name TEXT,
-        country_code TEXT,
-        assigned_number TEXT,
-        is_banned INTEGER DEFAULT 0,
-        private_combo_country TEXT,
-        join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        balance REAL DEFAULT 0.0,
-        remove_cc INTEGER DEFAULT 0
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS combos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        country_code TEXT,
-        combo_index INTEGER DEFAULT 1,
-        numbers TEXT,
-        app_name TEXT DEFAULT 'WhatsApp',
-        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(country_code, combo_index)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS otp_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        number TEXT,
-        otp TEXT,
-        full_message TEXT,
-        timestamp TEXT,
-        assigned_to INTEGER,
-        service TEXT,
-        country TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS referrals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        referrer_id INTEGER NOT NULL,
-        referred_id INTEGER NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        reward_claimed INTEGER DEFAULT 1,
-        UNIQUE(referred_id)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        address TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        processed_at TIMESTAMP,
-        admin_reason TEXT,
-        admin_id INTEGER
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS methods (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        country_code TEXT NOT NULL,
-        method_name TEXT NOT NULL,
-        solution TEXT,
-        added_by INTEGER,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(country_code, method_name)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS private_combos (
-        user_id INTEGER, country_code TEXT, numbers TEXT,
-        PRIMARY KEY (user_id, country_code)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS force_sub_channels (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel_url TEXT UNIQUE NOT NULL,
-        description TEXT DEFAULT '',
-        enabled INTEGER DEFAULT 1
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS user_activity (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        action TEXT,
-        details TEXT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        ip_address TEXT,
-        country TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS response_times (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        endpoint TEXT,
-        response_time REAL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS balances (
-        user_id INTEGER PRIMARY KEY,
-        balance REAL DEFAULT 0.0
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
-        user_id INTEGER PRIMARY KEY,
-        name TEXT,
-        count INTEGER DEFAULT 0
-    )''')
-    # Seen OTP hashes table - replaces JSON file storage for deduplication
-    c.execute('''CREATE TABLE IF NOT EXISTS seen_otps (
-        hash TEXT PRIMARY KEY,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            country_code TEXT,
+            assigned_number TEXT,
+            is_banned INTEGER DEFAULT 0,
+            private_combo_country TEXT,
+            join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            balance REAL DEFAULT 0.0,
+            remove_cc INTEGER DEFAULT 0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS combos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country_code TEXT,
+            combo_index INTEGER DEFAULT 1,
+            numbers TEXT,
+            app_name TEXT DEFAULT 'WhatsApp',
+            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(country_code, combo_index)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS otp_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            number TEXT,
+            otp TEXT,
+            full_message TEXT,
+            timestamp TEXT,
+            assigned_to INTEGER,
+            service TEXT,
+            country TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS referrals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_id INTEGER NOT NULL,
+            referred_id INTEGER NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reward_claimed INTEGER DEFAULT 1,
+            UNIQUE(referred_id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            address TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processed_at TIMESTAMP,
+            admin_reason TEXT,
+            admin_id INTEGER
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS methods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country_code TEXT NOT NULL,
+            method_name TEXT NOT NULL,
+            solution TEXT,
+            added_by INTEGER,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(country_code, method_name)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS private_combos (
+            user_id INTEGER, country_code TEXT, numbers TEXT,
+            PRIMARY KEY (user_id, country_code)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS force_sub_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_url TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS user_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT,
+            details TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ip_address TEXT,
+            country TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS response_times (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint TEXT,
+            response_time REAL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS balances (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0.0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT,
+            count INTEGER DEFAULT 0
+        )''')
+        # Seen OTP hashes table - replaces JSON file storage for deduplication
+        c.execute('''CREATE TABLE IF NOT EXISTS seen_otps (
+            hash TEXT PRIMARY KEY,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
 
-    c.execute('''CREATE TABLE IF NOT EXISTS traffic_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        app_name TEXT,
-        country TEXT,
-        count INTEGER DEFAULT 1,
-        UNIQUE(app_name, country)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS withdrawal_requests (
-        id TEXT PRIMARY KEY,
-        user_id INTEGER,
-        amount REAL,
-        status TEXT,
-        payment_method TEXT,
-        phone TEXT,
-        full_name TEXT,
-        address TEXT,
-        admin_id INTEGER,
-        admin_reason TEXT,
-        processed_at TIMESTAMP,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS otp_counts (
-        user_id INTEGER PRIMARY KEY,
-        count INTEGER DEFAULT 0
-    )''')
-    owner_id = ADMIN_IDS[0]
-    c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (owner_id,))
-    for eid in EXTRA_ADMINS:
-        c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (eid,))
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('force_sub_enabled', '0')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('otp_groups', '[]')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('watermark', 'MATRIXX PREMIUM')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('support_link', 'https://t.me/Jibohu1')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown', '60')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('num_per_request', '5')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('maintenance', '0')")
-    # Ensure no duplicate numbers across users (migration for existing DBs)
-    try:
-        c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
-        rows = c.fetchall()
-        seen = {}
-        for uid, num in rows:
-            if num in seen:
-                c.execute("UPDATE users SET assigned_number=NULL WHERE user_id=?", (uid,))
-                logger.info(f"Cleared duplicate number {num} from user {uid} (already assigned to {seen[num]})")
-            else:
-                seen[num] = uid
-    except Exception:
-        pass
-
-    # Migrations for existing tables
-    for table, col_def in (
-        ("withdrawal_requests", "admin_id INTEGER"),
-        ("withdrawal_requests", "admin_reason TEXT"),
-        ("withdrawal_requests", "processed_at TIMESTAMP"),
-    ):
-        cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})")]
-        if col_def.split()[0] not in cols:
-            c.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
-
-    # Add app_name column to combos if missing
-    cols = [r[1] for r in c.execute("PRAGMA table_info(combos)")]
-    if "app_name" not in cols:
-        c.execute("ALTER TABLE combos ADD COLUMN app_name TEXT DEFAULT 'WhatsApp'")
-
-    # Add remove_cc column to users if missing
-    user_cols = [r[1] for r in c.execute("PRAGMA table_info(users)")]
-    if "remove_cc" not in user_cols:
-        c.execute("ALTER TABLE users ADD COLUMN remove_cc INTEGER DEFAULT 0")
-
-    # === Startup health check: verify all tables exist ===
-    required_tables = [
-        'users', 'combos', 'otp_logs', 'referrals', 'withdrawals',
-        'admins', 'methods', 'bot_settings', 'private_combos',
-        'force_sub_channels', 'user_activity', 'response_times',
-        'balances', 'leaderboard', 'traffic_log', 'withdrawal_requests',
-        'otp_counts', 'seen_otps'
-    ]
-    existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    for table in required_tables:
-        if table not in existing:
-            logger.warning(f"Health check: missing table '{table}' - will be created on next init")
-    missing = [t for t in required_tables if t not in existing]
-    if not missing:
-        logger.info(f"Health check passed: all {len(required_tables)} tables present")
-    else:
-        logger.warning(f"Health check: {len(missing)} missing tables: {missing}")
-
-    # === One-time migration: import JSON seen-hashes into DB ===
-    json_files = ['seen_messages.json', 'choice_seen.json']
-    for jf in json_files:
+        c.execute('''CREATE TABLE IF NOT EXISTS traffic_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app_name TEXT,
+            country TEXT,
+            count INTEGER DEFAULT 1,
+            UNIQUE(app_name, country)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS withdrawal_requests (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER,
+            amount REAL,
+            status TEXT,
+            payment_method TEXT,
+            phone TEXT,
+            full_name TEXT,
+            address TEXT,
+            admin_id INTEGER,
+            admin_reason TEXT,
+            processed_at TIMESTAMP,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS otp_counts (
+            user_id INTEGER PRIMARY KEY,
+            count INTEGER DEFAULT 0
+        )''')
+        owner_id = ADMIN_IDS[0]
+        c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (owner_id,))
+        for eid in EXTRA_ADMINS:
+            c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (eid,))
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('force_sub_enabled', '0')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('otp_groups', '[]')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('watermark', 'MATRIXX PREMIUM')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('support_link', 'https://t.me/Jibohu1')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown', '60')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('num_per_request', '5')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('maintenance', '0')")
+        # Ensure no duplicate numbers across users (migration for existing DBs)
         try:
-            if os.path.exists(jf):
-                with open(jf, 'r') as f:
-                    hashes = json.load(f)
-                if hashes:
-                    for h in hashes:
-                        c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(h),))
-                    logger.info(f"Migrated {len(hashes)} hashes from {jf} to seen_otps table")
-                    # Rename old file as backup
-                    os.rename(jf, jf + '.bak')
-        except Exception as e:
-            logger.warning(f"Migration from {jf} failed (may not exist): {e}")
+            c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+            rows = c.fetchall()
+            seen = {}
+            for uid, num in rows:
+                if num in seen:
+                    c.execute("UPDATE users SET assigned_number=NULL WHERE user_id=?", (uid,))
+                    logger.info(f"Cleared duplicate number {num} from user {uid} (already assigned to {seen[num]})")
+                else:
+                    seen[num] = uid
+        except Exception:
+            pass
 
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized")
+        # Migrations for existing tables
+        for table, col_def in (
+            ("withdrawal_requests", "admin_id INTEGER"),
+            ("withdrawal_requests", "admin_reason TEXT"),
+            ("withdrawal_requests", "processed_at TIMESTAMP"),
+        ):
+            cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})")]
+            if col_def.split()[0] not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+
+        # Add app_name column to combos if missing
+        cols = [r[1] for r in c.execute("PRAGMA table_info(combos)")]
+        if "app_name" not in cols:
+            c.execute("ALTER TABLE combos ADD COLUMN app_name TEXT DEFAULT 'WhatsApp'")
+
+        # Add remove_cc column to users if missing
+        user_cols = [r[1] for r in c.execute("PRAGMA table_info(users)")]
+        if "remove_cc" not in user_cols:
+            c.execute("ALTER TABLE users ADD COLUMN remove_cc INTEGER DEFAULT 0")
+
+        # === Startup health check: verify all tables exist ===
+        required_tables = [
+            'users', 'combos', 'otp_logs', 'referrals', 'withdrawals',
+            'admins', 'methods', 'bot_settings', 'private_combos',
+            'force_sub_channels', 'user_activity', 'response_times',
+            'balances', 'leaderboard', 'traffic_log', 'withdrawal_requests',
+            'otp_counts', 'seen_otps'
+        ]
+        existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        for table in required_tables:
+            if table not in existing:
+                logger.warning(f"Health check: missing table '{table}' - will be created on next init")
+        missing = [t for t in required_tables if t not in existing]
+        if not missing:
+            logger.info(f"Health check passed: all {len(required_tables)} tables present")
+        else:
+            logger.warning(f"Health check: {len(missing)} missing tables: {missing}")
+
+        # === One-time migration: import JSON seen-hashes into DB ===
+        json_files = ['seen_messages.json', 'choice_seen.json']
+        for jf in json_files:
+            try:
+                if os.path.exists(jf):
+                    with open(jf, 'r') as f:
+                        hashes = json.load(f)
+                    if hashes:
+                        for h in hashes:
+                            c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(h),))
+                        logger.info(f"Migrated {len(hashes)} hashes from {jf} to seen_otps table")
+                        # Rename old file as backup
+                        os.rename(jf, jf + '.bak')
+            except Exception as e:
+                logger.warning(f"Migration from {jf} failed (may not exist): {e}")
+
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized")
 
 init_db()
 
@@ -486,42 +517,46 @@ def is_otp_seen(hash_val):
     """Check if an OTP hash has already been processed."""
     if not hash_val:
         return False
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM seen_otps WHERE hash=?", (str(hash_val),))
-    row = c.fetchone()
-    conn.close()
-    return row is not None
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM seen_otps WHERE hash=?", (str(hash_val),))
+        row = c.fetchone()
+        conn.close()
+        return row is not None
 
 def mark_otp_seen(hash_val):
     """Mark an OTP hash as processed (insert with current timestamp)."""
     if not hash_val:
         return
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(hash_val),))
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO seen_otps (hash, timestamp) VALUES (?, datetime('now'))", (str(hash_val),))
+        conn.commit()
+        conn.close()
 
 def cleanup_old_seen_otps(days=7):
     """Remove seen_otps entries older than N days to keep table small."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM seen_otps WHERE timestamp < datetime('now', ?)", (f'-{days} days',))
-    deleted = c.rowcount
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM seen_otps WHERE timestamp < datetime('now', ?)", (f'-{days} days',))
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
     if deleted > 0:
         logger.info(f"Cleaned up {deleted} old seen_otps entries (older than {days} days)")
 
 def seen_otps_count():
     """Return total number of seen OTP hashes."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM seen_otps")
-    count = c.fetchone()[0] or 0
-    conn.close()
-    return count
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM seen_otps")
+        count = c.fetchone()[0] or 0
+        conn.close()
+        return count
 
 # =========================== HELPER FUNCTIONS ===========================
 def get_setting(key):
@@ -533,11 +568,13 @@ def get_setting(key):
     return row[0] if row else None
 
 def set_setting(key, value):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, value))
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+        conn.close()
+    _persist_db()
 
 def get_all_admins():
     conn = sqlite3.connect(DB_PATH)
@@ -587,28 +624,30 @@ def get_user(user_id):
     return row
 
 def save_user(user_id, username="", first_name="", last_name="", country_code=None, assigned_number=None, private_combo_country=None, balance=None):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    existing = get_user(user_id)
-    if existing:
-        country_code = country_code if country_code is not None else existing[4]
-        assigned_number = assigned_number if assigned_number is not None else existing[5]
-        private_combo_country = private_combo_country if private_combo_country is not None else existing[7]
-        balance = balance if balance is not None else (existing[10] if len(existing) > 10 else 0.0)
-    else:
-        if country_code is None: country_code = ""
-        if assigned_number is None: assigned_number = ""
-        if private_combo_country is None: private_combo_country = ""
-        if balance is None: balance = 0.0
-    c.execute("""REPLACE INTO users
-        (user_id, username, first_name, last_name, country_code, assigned_number, is_banned, private_combo_country, join_date, last_active, balance, remove_cc)
-        VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT is_banned FROM users WHERE user_id=?), 0), ?,
-                COALESCE((SELECT join_date FROM users WHERE user_id=?), CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, ?,
-                COALESCE((SELECT remove_cc FROM users WHERE user_id=?), 0))""",
-        (user_id, username, first_name, last_name, country_code, assigned_number, user_id, private_combo_country, user_id, balance, user_id))
-    conn.commit()
-    conn.close()
-    log_user_activity(user_id, "user_update", "Profile updated")
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        existing = get_user(user_id)
+        if existing:
+            country_code = country_code if country_code is not None else existing[4]
+            assigned_number = assigned_number if assigned_number is not None else existing[5]
+            private_combo_country = private_combo_country if private_combo_country is not None else existing[7]
+            balance = balance if balance is not None else (existing[10] if len(existing) > 10 else 0.0)
+        else:
+            if country_code is None: country_code = ""
+            if assigned_number is None: assigned_number = ""
+            if private_combo_country is None: private_combo_country = ""
+            if balance is None: balance = 0.0
+        c.execute("""REPLACE INTO users
+            (user_id, username, first_name, last_name, country_code, assigned_number, is_banned, private_combo_country, join_date, last_active, balance, remove_cc)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT is_banned FROM users WHERE user_id=?), 0), ?,
+                    COALESCE((SELECT join_date FROM users WHERE user_id=?), CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, ?,
+                    COALESCE((SELECT remove_cc FROM users WHERE user_id=?), 0))""",
+            (user_id, username, first_name, last_name, country_code, assigned_number, user_id, private_combo_country, user_id, balance, user_id))
+        conn.commit()
+        conn.close()
+        log_user_activity(user_id, "user_update", "Profile updated")
+        _persist_db()
 
 def get_remove_cc(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -621,11 +660,13 @@ def get_remove_cc(user_id):
 def toggle_remove_cc(user_id):
     current = get_remove_cc(user_id)
     new_val = 0 if current else 1
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE users SET remove_cc=? WHERE user_id=?", (new_val, user_id))
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("UPDATE users SET remove_cc=? WHERE user_id=?", (new_val, user_id))
+        conn.commit()
+        conn.close()
+    _persist_db()
     return new_val
 
 def is_banned(user_id):
@@ -633,9 +674,10 @@ def is_banned(user_id):
     return user and user[6] == 1
 
 def ban_user(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_banned=1, assigned_number=NULL WHERE user_id=?", (user_id,))
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("UPDATE users SET is_banned=1, assigned_number=NULL WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
     log_user_activity(user_id, "user_banned", "User banned by admin")
@@ -731,55 +773,59 @@ def get_app_for_number(number):
     return "WhatsApp"
 
 def assign_number_to_user(user_id, number):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Check if number is already taken by another user
-    c.execute("SELECT user_id FROM users WHERE assigned_number=? AND user_id!=?", (number, user_id))
-    existing = c.fetchone()
-    if existing:
-        logger.warning(f"Number {number} already taken by user {existing[0]}, rejecting assignment to {user_id}")
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        # Check if number is already taken by another user
+        c.execute("SELECT user_id FROM users WHERE assigned_number=? AND user_id!=?", (number, user_id))
+        existing = c.fetchone()
+        if existing:
+            logger.warning(f"Number {number} already taken by user {existing[0]}, rejecting assignment to {user_id}")
+            conn.close()
+            return False
+        c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (number, user_id))
+        conn.commit()
         conn.close()
-        return False
-    c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (number, user_id))
-    conn.commit()
-    conn.close()
-    log_user_activity(user_id, "number_assigned", f"Number {number} assigned")
-    return True
+        log_user_activity(user_id, "number_assigned", f"Number {number} assigned")
+        _persist_db()
+        return True
 
 def release_number(number):
     """Release a number from user AND delete it entirely from the stock."""
     if not number:
         return
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Remove from user assignment
-    c.execute("UPDATE users SET assigned_number=NULL WHERE assigned_number=?", (number,))
-    # Delete from combo stock entirely
-    c.execute("SELECT id, numbers FROM combos")
-    for row in c.fetchall():
-        combo_id, nums_json = row
-        try:
-            nums = json.loads(nums_json)
-            if number in nums:
-                nums.remove(number)
-                c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(nums), combo_id))
-                logger.info(f"Deleted number {number} from stock combo {combo_id}")
-        except Exception:
-            pass
-    # Also delete from private combos
-    c.execute("SELECT user_id, numbers FROM private_combos")
-    for row in c.fetchall():
-        uid, nums_json = row
-        try:
-            nums = json.loads(nums_json)
-            if number in nums:
-                nums.remove(number)
-                c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(nums), uid))
-                logger.info(f"Deleted number {number} from private stock for user {uid}")
-        except Exception:
-            pass
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        # Remove from user assignment
+        c.execute("UPDATE users SET assigned_number=NULL WHERE assigned_number=?", (number,))
+        # Delete from combo stock entirely
+        c.execute("SELECT id, numbers FROM combos")
+        for row in c.fetchall():
+            combo_id, nums_json = row
+            try:
+                nums = json.loads(nums_json)
+                if number in nums:
+                    nums.remove(number)
+                    c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(nums), combo_id))
+                    logger.info(f"Deleted number {number} from stock combo {combo_id}")
+            except Exception:
+                pass
+        # Also delete from private combos
+        c.execute("SELECT user_id, numbers FROM private_combos")
+        for row in c.fetchall():
+            uid, nums_json = row
+            try:
+                nums = json.loads(nums_json)
+                if number in nums:
+                    nums.remove(number)
+                    c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(nums), uid))
+                    logger.info(f"Deleted number {number} from private stock for user {uid}")
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+        _persist_db()
 
 def get_combo(country_code, combo_index=1, user_id=None):
     conn = sqlite3.connect(DB_PATH)
@@ -828,8 +874,9 @@ def get_all_combos():
     return rows
 
 def delete_combo(country_code, combo_index=None):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
     if combo_index:
         c.execute("DELETE FROM combos WHERE country_code=? AND combo_index=?", (country_code, combo_index))
     else:
@@ -851,12 +898,13 @@ def get_available_numbers(country_code, combo_index=1, user_id=None):
 def log_otp(number, otp, full_message, assigned_to=None):
     service = detect_service(full_message)
     country_name, iso, _ = get_country_info(number)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO otp_logs (number, otp, full_message, timestamp, assigned_to, service, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              (number, otp, full_message, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), assigned_to, service, country_name))
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("INSERT INTO otp_logs (number, otp, full_message, timestamp, assigned_to, service, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (number, otp, full_message, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), assigned_to, service, country_name))
+        conn.commit()
+        conn.close()
 
 def get_otp_logs_for_number(number, limit=5):
     conn = sqlite3.connect(DB_PATH)
@@ -920,8 +968,9 @@ def delete_force_sub_channel(channel_id):
     return changed
 
 def toggle_force_sub_channel(channel_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
     c.execute("UPDATE force_sub_channels SET enabled = 1 - enabled WHERE id=?", (channel_id,))
     conn.commit()
     conn.close()
@@ -1007,8 +1056,9 @@ def process_referral(referrer_id, referred_id):
         conn.close()
 
 def create_withdrawal_request(user_id, amount, method, details):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
     req_id = str(uuid.uuid4())[:8]
     status = "pending"
     timestamp = datetime.now().isoformat()
@@ -1038,8 +1088,9 @@ def get_pending_withdrawals():
     return rows
 
 def approve_withdrawal(req_id, admin_id, reason=""):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
     c.execute("SELECT user_id, amount FROM withdrawal_requests WHERE id=? AND status='pending'", (req_id,))
     row = c.fetchone()
     if not row:
@@ -1061,8 +1112,9 @@ def approve_withdrawal(req_id, admin_id, reason=""):
     return True, new_balance
 
 def reject_withdrawal(req_id, admin_id, reason):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
     c.execute("UPDATE withdrawal_requests SET status='rejected', admin_id=?, admin_reason=?, processed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
               (admin_id, reason, req_id))
     if c.rowcount == 0:
