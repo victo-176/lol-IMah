@@ -545,8 +545,18 @@ def toggle_sms_panel(panel_id):
         c.execute("UPDATE sms_panels SET enabled = CASE WHEN enabled=1 THEN 0 ELSE 1 END WHERE id=?", (panel_id,))
         conn.commit()
         conn.close()
+    # Start or stop the forwarder thread
+    panel = get_sms_panel(panel_id)
+    if panel and panel[6]:  # enabled
+        try:
+            start_panel_forwarder(panel_id)
+        except Exception as e:
+            logger.error(f"Failed to start panel {panel_id}: {e}")
+    else:
+        stop_panel_forwarder(panel_id)
 
 def delete_sms_panel(panel_id):
+    stop_panel_forwarder(panel_id)
     with _db_lock:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -2064,6 +2074,382 @@ def start_choice_sms():
         return
     CHOICE_SMS_FORWARDER = ChoiceSMSForwarder()
     CHOICE_SMS_FORWARDER.run()
+
+
+# ======================== GENERIC SMS PANEL FORWARDER ========================
+# Each admin-added SMS panel gets its own forwarder thread that:
+# 1. Logs in to the panel (with captcha solving)
+# 2. Extracts sesskey from SMSCDRStats page
+# 3. Polls the DataTables API for OTPs
+# 4. Forwards OTPs to groups and DMs matched users
+
+_panel_forwarder_threads = {}  # panel_id -> threading.Thread
+_panel_forwarder_stop = {}     # panel_id -> threading.Event
+
+class SMSPanelForwarder:
+    """Generic forwarder for any SMS panel added via admin panel."""
+
+    def __init__(self, panel_id, name, url, login_type, username, password):
+        self.panel_id = panel_id
+        self.name = name
+        self.url = url.rstrip('/')
+        self.login_type = login_type
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json, text/javascript, */*',
+        })
+        self._cached_sesskey = None
+        self.stop_event = threading.Event()
+
+    def _do_login(self):
+        """Login to panel with captcha solving. Returns True if successful."""
+        try:
+            resp = self.session.get(f"{self.url}/login", timeout=30)
+            numbers = re.findall(r'(\d+)\s*\+\s*(\d+)', resp.text)
+            data = {'username': self.username, 'password': self.password}
+            if numbers:
+                data['capt'] = str(int(numbers[0][0]) + int(numbers[0][1]))
+                logger.info(f"Panel [{self.name}]: Captcha {numbers[0][0]} + {numbers[0][1]} = {data['capt']}")
+            resp = self.session.post(f"{self.url}/signin", data=data, timeout=30, allow_redirects=True)
+            final_url = resp.url.lower()
+            if 'signin' not in final_url and 'login' not in final_url:
+                logger.info(f"Panel [{self.name}]: Login OK (redirected)")
+                return True
+            if len(self.session.cookies) > 0:
+                logger.info(f"Panel [{self.name}]: Login OK (got cookies)")
+                return True
+            logger.warning(f"Panel [{self.name}]: Login FAILED - URL: {resp.url[:80]}")
+            return False
+        except Exception as e:
+            logger.error(f"Panel [{self.name}] login error: {e}")
+            return False
+
+    def _get_sesskey(self):
+        """Extract sesskey from SMSCDRStats page."""
+        try:
+            resp = self.session.get(f"{self.url}/client/SMSCDRStats", timeout=30)
+            if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                return None
+            for pattern in [
+                r'sesskey=([a-f0-9]{32})',
+                r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+            ]:
+                m = re.search(pattern, resp.text)
+                if m:
+                    return m.group(1)
+        except Exception as e:
+            logger.debug(f"Panel [{self.name}] get_sesskey error: {e}")
+        return None
+
+    def _ensure_session(self):
+        """Ensure valid session + sesskey."""
+        if self._cached_sesskey:
+            return self._cached_sesskey
+        if self._do_login():
+            time.sleep(0.5)
+            sk = self._get_sesskey()
+            if sk:
+                self._cached_sesskey = sk
+                logger.info(f"Panel [{self.name}]: Session established")
+                return sk
+            logger.warning(f"Panel [{self.name}]: Login OK but no sesskey")
+        return None
+
+    def _extract_from_record(self, rec):
+        """Extract OTP, service, phone, country, timestamp from a DataTables record."""
+        if isinstance(rec, dict):
+            date_val = str(rec.get('Date', rec.get('date', '')))
+            range_val = str(rec.get('Range', rec.get('range', '')))
+            number_val = str(rec.get('Number', rec.get('number', '')))
+            cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
+            sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
+        elif isinstance(rec, list):
+            date_val = str(rec[0]) if len(rec) > 0 else ""
+            range_val = str(rec[1]) if len(rec) > 1 else ""
+            number_val = str(rec[2]) if len(rec) > 2 else ""
+            cli_val = str(rec[3]) if len(rec) > 3 else ""
+            sms_val = str(rec[4]) if len(rec) > 4 else ""
+        else:
+            date_val = range_val = number_val = cli_val = sms_val = str(rec)
+
+        otp = None
+        m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        if m:
+            otp = m.group(1)
+        if not otp:
+            m2 = re.search(r'<#>\s*(\d{4,6})', sms_val)
+            if m2:
+                otp = m2.group(1)
+        if not otp:
+            m3 = re.search(r'\b(\d{4,6})\b', sms_val)
+            if m3:
+                otp = m3.group(1)
+        if not otp:
+            m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
+            if m4:
+                otp = m4.group(1)
+        if not otp:
+            return None
+
+        service = "Unknown"
+        if cli_val and cli_val not in ('None', 'null', ''):
+            service = cli_val.strip()
+        phone = number_val if number_val and number_val not in ('None', 'null', '') else "N/A"
+        country = "Unknown"
+        country_m = re.match(r'([A-Za-z]+)', range_val)
+        if country_m:
+            country = country_m.group(1).capitalize()
+        ts = date_val if date_val and re.match(r'\d{4}-\d{2}-\d{2}', date_val) else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            'otp': otp,
+            'service': service,
+            'phone': phone,
+            'country': country,
+            'full_text': sms_val[:500],
+            'timestamp': ts,
+        }
+
+    def _clean_text(self, text):
+        text = re.sub(r'€\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'USD\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'EUR\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'GBP\s*[\d.]+\s*[\d.]*', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', text).strip()
+        text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', text).strip()
+        text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', text).strip()
+        return text
+
+    def _mask_number(self, phone):
+        if not phone or phone == "N/A" or len(phone) < 10:
+            return phone
+        return phone[:5] + '*' * (len(phone) - 10) + phone[-5:]
+
+    def _get_groups(self):
+        groups = json.loads(get_setting('otp_groups') or '[]')
+        return groups if groups else []
+
+    def fetch_otps(self):
+        """Fetch OTPs from the panel API."""
+        sesskey = self._ensure_session()
+        if not sesskey:
+            return []
+        today = datetime.now().strftime("%Y-%m-%d")
+        params = {
+            "draw": "1", "start": "0", "length": "100",
+            "search[value]": "", "search[regex]": "false",
+            "order[0][column]": "0", "order[0][dir]": "asc",
+            "fdate1": f"{today} 00:00:00", "fdate2": f"{today} 23:59:59",
+            "frange": "", "fclient": "", "fnum": "", "fcli": "",
+            "fgdate": "", "fgmonth": "", "fgrange": "", "fgclient": "",
+            "fgnumber": "", "fgcli": "", "fg": "0", "sesskey": sesskey
+        }
+        try:
+            resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+            if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                logger.warning(f"Panel [{self.name}]: Session expired, re-logging in...")
+                self._cached_sesskey = None
+                new_sk = self._ensure_session()
+                if new_sk:
+                    params["sesskey"] = new_sk
+                    resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+                    if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                        return []
+            if resp.status_code == 503:
+                self._cached_sesskey = None
+                new_sk = self._ensure_session()
+                if new_sk:
+                    params["sesskey"] = new_sk
+                    resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            records = data.get('data') or data.get('aaData') or []
+            if isinstance(data, list):
+                records = data
+            results = []
+            for rec in records:
+                parsed = self._extract_from_record(rec)
+                if parsed:
+                    results.append(parsed)
+            return results
+        except Exception as e:
+            logger.error(f"Panel [{self.name}] fetch error: {e}")
+            self._cached_sesskey = None
+            return []
+
+    def run(self):
+        """Main polling loop for this panel."""
+        first_run = True
+        startup_count = 0
+        logger.info(f"Panel forwarder [{self.name}] started (ID: {self.panel_id})")
+        while not self.stop_event.is_set():
+            try:
+                otps = self.fetch_otps()
+                for sms in otps:
+                    uid_key = f"{sms['otp']}|{sms['phone']}|{sms['timestamp']}"
+                    if first_run:
+                        mark_otp_seen(uid_key)
+                        startup_count += 1
+                        continue
+                    if is_otp_seen(uid_key):
+                        continue
+                    mark_otp_seen(uid_key)
+
+                    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
+                    full_clean = self._clean_text(sms['full_text'])[:200]
+                    masked = self._mask_number(sms['phone'])
+                    country_upper = sms['country'].upper()
+                    cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
+                    otp_display = sms['otp']
+                    if len(sms['otp']) == 6:
+                        otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+
+                    msg = (
+                        f"<b>Anonmatrixx</b>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
+                        f"📱 <code>{masked}</code>\n"
+                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
+                        f"⏰ {sms['timestamp']}\n"
+                        f"━━━━━━━━━━━━━━━"
+                    )
+                    kb = types.InlineKeyboardMarkup(row_width=2)
+                    kb.add(
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{sms['otp']}"),
+                        types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
+                    )
+                    groups = self._get_groups()
+                    sent = 0
+                    for gid in groups:
+                        try:
+                            bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                            sent += 1
+                        except Exception as e:
+                            if '429' in str(e):
+                                time.sleep(10)
+                                try:
+                                    bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                                    sent += 1
+                                except:
+                                    pass
+
+                    # Match number to user and DM
+                    phone_digits = re.sub(r'\D', '', sms.get('phone', ''))
+                    if phone_digits and phone_digits != 'N/A':
+                        matched_user = get_user_by_number(phone_digits)
+                        if matched_user:
+                            try:
+                                new_balance = 0.0
+                                u = get_user(matched_user)
+                                if u:
+                                    cur_bal = u[10] if len(u) > 10 else 0.0
+                                    new_balance = cur_bal + 0.006
+                                _conn = sqlite3.connect(DB_PATH)
+                                _c = _conn.cursor()
+                                _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
+                                _conn.commit()
+                                _conn.close()
+                                pe_fire = pe('fire', '\U0001f3c6')
+                                pe_sw = pe('settings_bw', '\u2699')
+                                pe_ph = pe('phone', '\U0001f4f1')
+                                pe_key = pe('key', '\U0001f511')
+                                pe_info = pe('info_bw', '\u23f0')
+                                pe_dol = pe('dollar', '\U0001f4b0')
+                                dm_msg = (
+                                    f"{pe_fire} <b>MATRIXX SMS V3</b> {pe_fire}\n"
+                                    f"{cflag} <b>Country:</b> {sms['country']}\n"
+                                    f"{pe_sw} <b>Service:</b> {sms['service']}\n"
+                                    f"{pe_ph} <b>Number:</b> {sms['phone']}\n"
+                                    f"{pe_key} <b>Code:</b> <code>{otp_display}</code>\n"
+                                    f"{pe_info} <b>Time:</b> {sms['timestamp']}\n"
+                                    f"{pe_dol} <b>Balance:</b> ${new_balance}"
+                                )
+                                bot.send_message(matched_user, dm_msg, parse_mode="HTML")
+                            except Exception as dm_err:
+                                logger.error(f"Panel [{self.name}] DM failed: {dm_err}")
+
+                    # Log OTP
+                    try:
+                        log_otp(phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', ''),
+                                otp_display, sms.get('full_text', ''), None)
+                    except:
+                        pass
+
+                    # Real-time OTP to admin
+                    try:
+                        send_otp_to_admin(
+                            sms.get('timestamp', ''),
+                            sms.get('phone', ''),
+                            otp_display,
+                            sms.get('service', ''),
+                            sms.get('country', ''),
+                            sms.get('full_text', '')
+                        )
+                    except:
+                        pass
+
+                    if sent > 0:
+                        time.sleep(1)
+
+                if first_run:
+                    logger.info(f"Panel [{self.name}]: Initialized, skipping {startup_count} existing OTPs")
+                    first_run = False
+                time.sleep(1.5)
+            except Exception as e:
+                logger.error(f"Panel [{self.name}] error: {e}")
+                self._cached_sesskey = None
+                time.sleep(5)
+        logger.info(f"Panel forwarder [{self.name}] stopped")
+
+
+def start_panel_forwarder(panel_id):
+    """Start a forwarder thread for a specific SMS panel."""
+    if panel_id in _panel_forwarder_threads and _panel_forwarder_threads[panel_id].is_alive():
+        return  # already running
+    panel = get_sms_panel(panel_id)
+    if not panel:
+        return
+    _, name, url, login_type, username, password, enabled, _ = panel
+    if not enabled:
+        return
+    stop_event = threading.Event()
+    _panel_forwarder_stop[panel_id] = stop_event
+    forwarder = SMSPanelForwarder(panel_id, name, url, login_type, username, password)
+    forwarder.stop_event = stop_event
+    t = threading.Thread(target=forwarder.run, daemon=True, name=f"panel-{panel_id}")
+    _panel_forwarder_threads[panel_id] = t
+    t.start()
+    logger.info(f"Started panel forwarder thread for [{name}] (ID: {panel_id})")
+
+def stop_panel_forwarder(panel_id):
+    """Stop a panel forwarder thread."""
+    if panel_id in _panel_forwarder_stop:
+        _panel_forwarder_stop[panel_id].set()
+    if panel_id in _panel_forwarder_threads:
+        t = _panel_forwarder_threads[panel_id]
+        if t.is_alive():
+            t.join(timeout=5)
+        del _panel_forwarder_threads[panel_id]
+    if panel_id in _panel_forwarder_stop:
+        del _panel_forwarder_stop[panel_id]
+    logger.info(f"Stopped panel forwarder thread for panel ID: {panel_id}")
+
+def start_all_panel_forwarders():
+    """Start forwarders for all enabled SMS panels."""
+    panels = get_all_sms_panels()
+    for pid, name, url, login_type, username, enabled in panels:
+        if enabled:
+            try:
+                start_panel_forwarder(pid)
+            except Exception as e:
+                logger.error(f"Failed to start panel [{name}]: {e}")
+
 
 # =========================== SOCKET.IO MONITOR (fixed) ===========================
 if SOCKETIO_AVAILABLE:
@@ -4100,7 +4486,12 @@ def main():
     threading.Thread(target=monitor_loop, daemon=True).start()
     threading.Thread(target=start_choice_sms, daemon=True).start()
     threading.Thread(target=periodic_cleanup, daemon=True).start()
-    logger.info("Forwarders started (IVASMS + Choice SMS + cleanup)")
+    # Start forwarders for all admin-added SMS panels
+    try:
+        start_all_panel_forwarders()
+    except Exception as e:
+        logger.error(f"Failed to start panel forwarders: {e}")
+    logger.info("Forwarders started (IVASMS + Choice SMS + Panels + cleanup)")
     logger.info("Bot polling started.")
     bot.infinity_polling()
 
