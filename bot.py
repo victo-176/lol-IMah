@@ -2175,7 +2175,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized, skipping {startup_count} existing OTPs (marked as seen in DB)")
                     first_run = False
-                time.sleep(1.5)
+                time.sleep(2)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
@@ -2526,7 +2526,7 @@ class SMSPanelForwarder:
                 if first_run:
                     logger.info(f"Panel [{self.name}]: Initialized, skipping {startup_count} existing OTPs")
                     first_run = False
-                time.sleep(1.5)
+                time.sleep(2)
             except Exception as e:
                 logger.error(f"Panel [{self.name}] error: {e}")
                 self._cached_sesskey = None
@@ -4023,7 +4023,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         if not panel:
             bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
             return
-        _, name, url, login_type, username, password, enabled, created = panel
+        _, name, url, login_type, username, _, enabled, created = panel
         status_str = pe("checkmark", "✅") + " Enabled" if enabled else pe("cross", "❌") + " Disabled"
         text = (
             pe("link", "🔗") + " <b>SMS Panel</b>\n"
@@ -4519,6 +4519,11 @@ def sms_panel_password_handler(message):
     username = state.get("panel_username", "")
     try:
         panel_id = save_sms_panel(name, url, login_type, username, password)
+        # Auto-start the forwarder for the new panel
+        try:
+            start_panel_forwarder(panel_id)
+        except Exception as start_err:
+            logger.error(f"Failed to auto-start panel {name}: {start_err}")
         clear_state(message)
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("View Panels", callback_data="admin_sms_panels", style="success", icon="list"))
