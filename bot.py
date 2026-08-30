@@ -516,6 +516,124 @@ def init_db():
 init_db()
 
 # =========================== SEEN OTP HELPERS (DB-backed deduplication) ===========================
+
+# ======================== LIVE SUPPORT ========================
+@bot.callback_query_handler(func=lambda call: call.data == "live_support_start")
+def live_support_start(call):
+    """User wants to send a message to admin."""
+    user_id = call.from_user.id
+    if get_setting('maintenance') == '1' and not is_admin(user_id):
+        bot.answer_callback_query(call.id, "\u274c Bot is under maintenance.", show_alert=True)
+        return
+    set_state(call.message.chat.id, "live_support_msg")
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("\u274c Cancel", callback_data="close_menu", style="danger", icon="cross"))
+    pe_c = pe('chat', '\U0001F4AC')
+    bot.edit_message_text(
+        f"{pe_c} <b>LIVE SUPPORT</b>\n\n"
+        f"Send your message below and it will be forwarded to the admin.\n"
+        f"\n<b>Type your message now:</b>",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda msg: get_state(msg) == "live_support_msg")
+def live_support_send(message):
+    """Forward user's support message to admin(s)."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    text = message.text.strip() if message.text else ""
+    clear_state(message)
+    if not text:
+        bot.reply_to(message, "\u274c Message cannot be empty.", parse_mode="HTML")
+        return
+    # Forward to all admins
+    admins = get_all_admins()
+    sent = False
+    for admin_id in admins:
+        if admin_id == user_id:
+            continue
+        try:
+            user = get_user(user_id)
+            username = user[1] if user and len(user) > 1 else ""
+            first_name = user[2] if user and len(user) > 2 else ""
+            display = first_name or (f"@{username}" if username else str(user_id))
+            pe_c3 = pe('chat', '\U0001F4AC')
+            pe_p = pe('people', '\U0001F465')
+            admin_msg = (
+                f"{pe_c3} <b>SUPPORT MESSAGE</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"{pe_p} <b>From:</b> {display} (<code>{user_id}</code>)\n"
+                f"{pe_c3} <b>Message:</b>\n"
+                f"<code>{text[:500]}</code>\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            # Add reply button for admin
+            kb = types.InlineKeyboardMarkup()
+            kb.add(ibtn(f"Reply to {display}", callback_data=f"support_reply|{user_id}", style="success", icon="chat"))
+            bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
+            sent = True
+        except:
+            pass
+    if sent:
+        pe_ck = pe('checkmark', '\u2705')
+        bot.send_message(chat_id,
+            f"{pe_ck} <b>MESSAGE SENT!</b>\n\n"
+            f"Your message has been forwarded to the admin.\n"
+            f"They will reply shortly.",
+            parse_mode="HTML")
+    else:
+        pe_x = pe('cross', '\u274C')
+        bot.send_message(chat_id,
+            f"{pe_x} <b>Failed to send message.</b>\nPlease try again later.",
+            parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("support_reply|") and is_admin(call.from_user.id))
+def admin_support_reply_start(call):
+    """Admin wants to reply to a support message."""
+    parts = call.data.split("|")
+    target_user = int(parts[1])
+    set_state(call.message.chat.id, {"support_reply_to": target_user})
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("\u274c Cancel", callback_data="close_menu", style="danger", icon="cross"))
+    pe_c2 = pe('chat', '\U0001F4AC')
+    bot.edit_message_text(
+        f"{pe_c2} <b>REPLY TO USER</b>\n\n"
+        f"User ID: <code>{target_user}</code>\n\n"
+        f"<b>Type your reply:</b>",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("support_reply_to") and is_admin(msg.from_user.id))
+def admin_support_reply_send(message):
+    """Admin sends reply to user."""
+    state = get_state(message.chat.id)
+    target_user = state.get("support_reply_to")
+    text = message.text.strip() if message.text else ""
+    clear_state(message)
+    if not text or not target_user:
+        bot.reply_to(message, "\u274c Empty message or no target user.", parse_mode="HTML")
+        return
+    try:
+        pe_s = pe('support', '\U0001F3A7')
+        reply_msg = (
+            f"{pe_s} <b>SUPPORT REPLY</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"{text}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"<i>Reply from admin</i>"
+        )
+        bot.send_message(target_user, reply_msg, parse_mode="HTML")
+        pe_ck2 = pe('checkmark', '\u2705')
+        bot.reply_to(message, f"{pe_ck2} Reply sent to user <code>{target_user}</code>.", parse_mode="HTML")
+    except Exception as e:
+        pe_x2 = pe('cross', '\u274C')
+        bot.reply_to(message, f"{pe_x2} Failed to send: {str(e)[:100]}", parse_mode="HTML")
+
+
 # ======================== SMS PANEL DB FUNCTIONS ========================
 def get_all_sms_panels():
     with _db_lock:
@@ -2793,17 +2911,23 @@ def show_stock_info(chat_id):
 
 def show_support(chat_id):
     support_link = get_setting('support_link') or "https://t.me/Jibohu1"
+    pe_h = pe('headphones', '\U0001F3A7')
+    pe_fire = pe('fire', '\U0001F525')
+    pe_chat = pe('chat', '\U0001F4AC')
+    pe_right = pe('strelka_right', '\u27A1\uFE0F')
+    pe_light = pe('flash', '\u26A1')
     text = (
-        f"┏━━━━━━ {pe('fire', '★')} ━━━━━━┓\n"
-        f"═《 <b>SUPPORT</b> 》═\n"
-        f"━━━━━━━━━━━━\n"
-        f"{pe('support', '💬')} <b>WELCOME TO SUPPORT</b>\n"
-        f"{pe('strelka_right', '➡️')} <b>TAP SUPPORT BUTTON</b>\n"
-        f"{pe('strelka_right', '➡️')} <b>TO CONTACT ADMIN</b>\n"
-        f"┏━━━━━━ {pe('fire', '⚡')} ━━━━━━┛"
+        f"\u250f\u2501\u2501\u2501\u2501\u2501\u2501 {pe_fire} \u2501\u2501\u2501\u2501\u2501\u2501\u2513\n"
+        f"\u2550\u300a <b>SUPPORT</b> \u300b\u2550\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"{pe_chat} <b>WELCOME TO SUPPORT</b>\n"
+        f"{pe_right} <b>TAP A BUTTON BELOW</b>\n"
+        f"{pe_right} <b>TO CONTACT ADMIN</b>\n"
+        f"\u250f\u2501\u2501\u2501\u2501\u2501\u2501 {pe_light} \u2501\u2501\u2501\u2501\u2501\u2501\u251b"
     )
-    markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn(pe('headphones', '🎧') + " SUPPORT", url=support_link, style="success"))
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(ibtn(pe_h + " SUPPORT (Open Chat)", url=support_link, style="success"))
+    markup.add(ibtn(pe_chat + " SEND MESSAGE TO ADMIN", callback_data="live_support_start", style="primary"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 def show_referrals(chat_id):
