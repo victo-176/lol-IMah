@@ -412,6 +412,16 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             count INTEGER DEFAULT 0
         )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS sms_panels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            url TEXT,
+            login_type TEXT DEFAULT 'client',
+            username TEXT,
+            password TEXT,
+            enabled INTEGER DEFAULT 1,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
         owner_id = ADMIN_IDS[0]
         c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (owner_id,))
         for eid in EXTRA_ADMINS:
@@ -498,6 +508,52 @@ def init_db():
 init_db()
 
 # =========================== SEEN OTP HELPERS (DB-backed deduplication) ===========================
+# ======================== SMS PANEL DB FUNCTIONS ========================
+def get_all_sms_panels():
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, name, url, login_type, username, enabled FROM sms_panels")
+        rows = c.fetchall()
+        conn.close()
+    return rows
+
+def get_sms_panel(panel_id):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, name, url, login_type, username, password, enabled, created FROM sms_panels WHERE id=?", (panel_id,))
+        row = c.fetchone()
+        conn.close()
+    return row
+
+def save_sms_panel(name, url, login_type, username, password):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO sms_panels (name, url, login_type, username, password) VALUES (?, ?, ?, ?, ?)",
+                  (name, url, login_type, username, password))
+        panel_id = c.lastrowid
+        conn.commit()
+        conn.close()
+    return panel_id
+
+def toggle_sms_panel(panel_id):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE sms_panels SET enabled = CASE WHEN enabled=1 THEN 0 ELSE 1 END WHERE id=?", (panel_id,))
+        conn.commit()
+        conn.close()
+
+def delete_sms_panel(panel_id):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM sms_panels WHERE id=?", (panel_id,))
+        conn.commit()
+        conn.close()
+
 def is_otp_seen(hash_val):
     """Check if an OTP hash has already been processed."""
     if not hash_val:
@@ -3503,10 +3559,6 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         remove_admin(aid)
         bot.answer_callback_query(call.id, "Admin removed!", show_alert=True)
         handle_admin_callback(call, "admin_manage_admins", chat_id, msg_id)
-        return
-
-    if data == "admin_panel":
-        show_admin_panel(chat_id, msg_id)
         return
 
     if data == "admin_panel":
