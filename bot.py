@@ -72,23 +72,8 @@ DB_PATH = "bot.db"
 _db_lock = threading.Lock()
 
 def _persist_db():
-    """Commit bot.db to git so it survives platform restarts."""
-    try:
-        import subprocess
-        subprocess.run(["git", "add", "bot.db"], capture_output=True, timeout=10)
-        result = subprocess.run(
-            ["git", "diff", "--cached", "--quiet", "--", "bot.db"],
-            capture_output=True, timeout=10
-        )
-        if result.returncode != 0:  # There are staged changes
-            subprocess.run(
-                ["git", "commit", "-m", "Auto-persist bot.db", "--quiet"],
-                capture_output=True, timeout=15
-            )
-            subprocess.run(["git", "push", "--quiet"], capture_output=True, timeout=30)
-            logger.info("bot.db persisted to git")
-    except Exception as e:
-        logger.warning(f"Failed to persist bot.db: {e}")
+    """No-op — SQLite file persists on disk automatically."""
+    pass
 
 def _get_conn():
     """Get a SQLite connection with WAL mode for concurrent reads."""
