@@ -226,7 +226,12 @@ def _new_kb_dict(self):
     return d
 types.KeyboardButton.to_dict = _new_kb_dict
 
+_BTN_STRIP_RE = re.compile(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>')
+
 def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, icon=None, icon_id=None):
+    # Fixed: Strip premium emoji HTML tags from button text (buttons don't support HTML)
+    if isinstance(text, str):
+        text = _BTN_STRIP_RE.sub(r'\1', text)
     if icon_id is None:
         icon_id = premium_icon(icon)
     kwargs = {"text": text}
@@ -255,6 +260,9 @@ def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, ico
         return b
 
 def rbtn(text, style=None, icon=None, icon_id=None):
+    # Fixed: Strip premium emoji HTML tags from button text
+    if isinstance(text, str):
+        text = _BTN_STRIP_RE.sub(r'\1', text)
     if icon_id is None:
         icon_id = premium_icon(icon)
     try:
@@ -473,7 +481,7 @@ def init_db():
             'admins', 'methods', 'bot_settings', 'private_combos',
             'force_sub_channels', 'user_activity', 'response_times',
             'balances', 'leaderboard', 'traffic_log', 'withdrawal_requests',
-            'otp_counts', 'seen_otps'
+            'otp_counts', 'seen_otps', 'sms_panels'
         ]
         existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         for table in required_tables:
@@ -2552,6 +2560,10 @@ def cancel_handler(message):
     chat_id = message.chat.id
     user_states.pop(chat_id, None)
     user_states.pop(user_id, None)
+    # Fixed: maintenance check for /cancel
+    if get_setting('maintenance') == '1' and not is_admin(user_id):
+        bot.send_message(chat_id, "\u274c Bot is under maintenance. Please try again later.", parse_mode="HTML")
+        return
     show_main_menu(chat_id, user_id, message.from_user.first_name)
 
 @bot.message_handler(commands=['start'])
@@ -2559,6 +2571,10 @@ def send_welcome(message):
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id
+        # Fixed: maintenance check for /start
+        if get_setting('maintenance') == '1' and not is_admin(user_id):
+            bot.send_message(chat_id, "❌ Bot is under maintenance. Please try again later.", parse_mode="HTML")
+            return
         if message.text and 'ref_' in message.text:
             try:
                 ref = int(message.text.split('ref_')[1].split()[0])
@@ -2614,7 +2630,21 @@ def show_main_menu(chat_id, user_id, first_name):
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 def menu_match(label):
-    return lambda m: bool(m.text) and m.text.strip().upper().endswith(label.upper())
+    # Fixed: added maintenance check + admin bypass to all menu handlers
+    def _match(m):
+        if not m.text:
+            return False
+        if not m.text.strip().upper().endswith(label.upper()):
+            return False
+        # Block non-admin users during maintenance
+        if get_setting('maintenance') == '1' and not is_admin(m.from_user.id):
+            try:
+                bot.send_message(m.chat.id, "❌ Bot is under maintenance. Please try again later.", parse_mode="HTML")
+            except:
+                pass
+            return False
+        return True
+    return _match
 
 def get_main_menu(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -2846,14 +2876,13 @@ def callback_handler(call):
             pass
 
 def _dispatch_callback(call, data, chat_id, msg_id, user_id):
+    # Fixed: maintenance blocks ALL non-admin callbacks
     if get_setting('maintenance') == '1' and not is_admin(user_id):
+        # Allow close_menu and check_sub to still work (UI cleanup)
         if data not in ["check_sub", "close_menu"]:
-            bot.answer_callback_query(call.id, "Bot is under maintenance.", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Bot is under maintenance.", show_alert=True)
             return
-
-        else:
-            bot.answer_callback_query(call.id, "❌ No admin configured.", show_alert=True)
-        return
+        # For close_menu/check_sub, let them pass through silently
 
     if data == "close_menu":
         try:
@@ -3787,7 +3816,43 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 
     if data == "admin_toggle_maintenance":
         current = get_setting('maintenance') == '1'
-        set_setting('maintenance', '0' if current else '1')
+        new_val = '0' if current else '1'
+        set_setting('maintenance', new_val)
+        # Broadcast maintenance status to all users
+        if new_val == '1':
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT user_id FROM users WHERE is_banned=0")
+                users = c.fetchall()
+                conn.close()
+                sent = 0
+                for (uid,) in users:
+                    try:
+                        bot.send_message(uid, "⚠️ <b>Maintenance Mode Activated</b>\n\nThe bot is now under maintenance. Please try again later.", parse_mode="HTML")
+                        sent += 1
+                    except:
+                        pass
+                bot.answer_callback_query(call.id, f"Maintenance ON - notified {sent} users", show_alert=True)
+            except:
+                bot.answer_callback_query(call.id, "Maintenance mode ON", show_alert=True)
+        else:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT user_id FROM users WHERE is_banned=0")
+                users = c.fetchall()
+                conn.close()
+                sent = 0
+                for (uid,) in users:
+                    try:
+                        bot.send_message(uid, "✅ <b>Maintenance Complete</b>\n\nThe bot is back online! You can now use all features.", parse_mode="HTML")
+                        sent += 1
+                    except:
+                        pass
+                bot.answer_callback_query(call.id, f"Maintenance OFF - notified {sent} users", show_alert=True)
+            except:
+                bot.answer_callback_query(call.id, "Maintenance mode OFF", show_alert=True)
         bot.answer_callback_query(call.id, f"Maintenance {'ON' if not current else 'OFF'}", show_alert=True)
         handle_admin_callback(call, "admin_settings", chat_id, msg_id)
         return
