@@ -430,6 +430,54 @@ def init_db():
             enabled INTEGER DEFAULT 1,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT,
+            sent_by INTEGER,
+            sent_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            action TEXT,
+            details TEXT,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS group_settings (
+            group_id TEXT PRIMARY KEY,
+            name TEXT,
+            otp_enabled INTEGER DEFAULT 1,
+            forward_enabled INTEGER DEFAULT 1,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS number_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            number TEXT,
+            country_code TEXT,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            released_at TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS blacklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            reason TEXT,
+            added_by INTEGER,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS bulk_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            operation TEXT,
+            target_count INTEGER DEFAULT 0,
+            success_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            details TEXT,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
         owner_id = ADMIN_IDS[0]
         c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (owner_id,))
         for eid in EXTRA_ADMINS:
@@ -481,7 +529,9 @@ def init_db():
             'admins', 'methods', 'bot_settings', 'private_combos',
             'force_sub_channels', 'user_activity', 'response_times',
             'balances', 'leaderboard', 'traffic_log', 'withdrawal_requests',
-            'otp_counts', 'seen_otps', 'sms_panels'
+            'otp_counts', 'seen_otps', 'sms_panels',
+            'broadcasts', 'admin_logs', 'group_settings',
+            'number_history', 'blacklist', 'bulk_operations'
         ]
         existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         for table in required_tables:
