@@ -1496,10 +1496,15 @@ def live_support_send(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("support_reply|") and is_admin(call.from_user.id))
 def admin_support_reply_start(call):
     """Admin wants to reply to a support message."""
-    parts = call.data.split("|")
-    target_user = int(parts[1])
-    set_state(call.message.chat.id, {"support_reply_to": target_user})
-    bot.answer_callback_query(call.id)
+    try:
+        parts = call.data.split("|")
+        target_user = int(parts[1])
+        logger.info(f"Admin reply: Starting reply to user {target_user} from admin {call.from_user.id}")
+        set_state(call.message.chat.id, {"support_reply_to": target_user})
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        logger.error(f"Admin reply start error: {e}")
+        bot.answer_callback_query(call.id, "Error starting reply", show_alert=True)
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("\u274c Cancel", callback_data="close_menu", style="danger", icon="cross"))
     pe_c2 = pe('chat', '\U0001F4AC')
@@ -1518,6 +1523,7 @@ def admin_support_reply_send(message):
     target_user = state.get("support_reply_to")
     text = message.text.strip() if message.text else ""
     clear_state(message)
+    logger.info(f"Admin reply: Sending to user {target_user}, text: {text[:50]}")
     if not text or not target_user:
         bot.reply_to(message, "\u274c Empty message or no target user.", parse_mode="HTML")
         return
@@ -1531,9 +1537,11 @@ def admin_support_reply_send(message):
             f"<i>Reply from admin</i>"
         )
         bot.send_message(target_user, reply_msg, parse_mode="HTML")
+        logger.info(f"Admin reply: Successfully sent to user {target_user}")
         pe_ck2 = pe('checkmark', '\u2705')
         bot.reply_to(message, f"{pe_ck2} Reply sent to user <code>{target_user}</code>.", parse_mode="HTML")
     except Exception as e:
+        logger.error(f"Admin reply failed: {e}")
         pe_x2 = pe('cross', '\u274C')
         bot.reply_to(message, f"{pe_x2} Failed to send: {str(e)[:100]}", parse_mode="HTML")
 
