@@ -4131,9 +4131,6 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 
     if data.startswith("admin_remove_admin|"):
         aid = int(data.split("|")[1])
-        if aid == ADMIN_IDS[0]:
-            bot.answer_callback_query(call.id, "Cannot remove the main admin!", show_alert=True)
-            return
         remove_admin(aid)
         bot.answer_callback_query(call.id, "Admin removed!", show_alert=True)
         handle_admin_callback(call, "admin_manage_admins", chat_id, msg_id)

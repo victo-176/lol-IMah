@@ -2,3 +2,4 @@
 seen_messages.json
 __pycache__/
 *.pyc
+bot.db
