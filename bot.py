@@ -1439,13 +1439,14 @@ def live_support_start(call):
         parse_mode="HTML", reply_markup=markup
     )
 
-@bot.message_handler(func=lambda msg: get_state(msg) == "live_support_msg")
+@bot.message_handler(func=lambda msg: get_state(msg) == "live_support_msg" and msg.text and not msg.text.startswith("/"))
 def live_support_send(message):
     """Forward user's support message to admin(s)."""
     user_id = message.from_user.id
     chat_id = message.chat.id
     text = message.text.strip() if message.text else ""
     clear_state(message)
+    logger.info(f"Live support: User {user_id} sending: {text[:50]}")
     if not text:
         bot.reply_to(message, "\u274c Message cannot be empty.", parse_mode="HTML")
         return
@@ -1475,8 +1476,12 @@ def live_support_send(message):
             kb.add(ibtn(f"Reply to {display}", callback_data=f"support_reply|{user_id}", style="success", icon="chat"))
             bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
             sent = True
-        except:
-            pass
+        except Exception as send_err:
+            logger.error(f"Live support: Failed to send to admin {admin_id}: {send_err}")
+    if not admins:
+        logger.warning("Live support: No admins found to send to!")
+        bot.send_message(chat_id, "\u274c No admins configured. Cannot send message.", parse_mode="HTML")
+        return
     if sent:
         pe_ck = pe('checkmark', '\u2705')
         bot.send_message(chat_id,
