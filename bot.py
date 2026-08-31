@@ -2984,6 +2984,22 @@ def clear_state(message):
     user_states.pop(message.chat.id, None)
     user_states.pop(message.from_user.id, None)
 
+# SMS Panel type selection callback (must be before catch-all)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sms_panel_type|") and is_admin(call.from_user.id))
+def sms_panel_type_handler(call):
+    login_type = call.data.split("|")[1]
+    state = get_state(call.message.chat.id)
+    if not state:
+        bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
+        return
+    state["login_type"] = login_type
+    state["add_sms_panel_step"] = "username"
+    set_state(call.message.chat.id, state)
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.from_user.id
@@ -4514,21 +4530,6 @@ def sms_panel_url_handler(message):
     markup.add(ibtn("Client", callback_data="sms_panel_type|client", style="primary", icon="profile"))
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
     bot.reply_to(message, pe("info_bw", "ℹ") + " Is this an Agent or Client panel?", parse_mode="HTML", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("sms_panel_type|") and is_admin(call.from_user.id))
-def sms_panel_type_handler(call):
-    login_type = call.data.split("|")[1]
-    state = get_state(call.message.chat.id)
-    if not state:
-        bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
-        return
-    state["login_type"] = login_type
-    state["add_sms_panel_step"] = "username"
-    set_state(call.message.chat.id, state)
-    bot.answer_callback_query(call.id)
-    markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
-    bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "username" and is_admin(msg.from_user.id))
 def sms_panel_username_handler(message):
