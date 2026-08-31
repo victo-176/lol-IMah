@@ -1519,7 +1519,7 @@ def admin_support_reply_start(call):
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("support_reply_to") and is_admin(msg.from_user.id))
 def admin_support_reply_send(message):
     """Admin sends reply to user."""
-    state = get_state(message.chat.id)
+    state = get_state(message)
     target_user = state.get("support_reply_to")
     text = message.text.strip() if message.text else ""
     clear_state(message)
@@ -2996,7 +2996,7 @@ def clear_state(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("sms_panel_type|") and is_admin(call.from_user.id))
 def sms_panel_type_handler(call):
     login_type = call.data.split("|")[1]
-    state = get_state(call.message.chat.id)
+    state = get_state(call.message)
     if not state:
         bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
         return
@@ -4529,7 +4529,7 @@ def sms_panel_name_handler(message):
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "url" and is_admin(msg.from_user.id))
 def sms_panel_url_handler(message):
     url = message.text.strip().rstrip("/")
-    state = get_state(message.chat.id)
+    state = get_state(message)
     state["panel_url"] = url
     state["add_sms_panel_step"] = "type"
     set_state(message.chat.id, state)
@@ -4541,7 +4541,7 @@ def sms_panel_url_handler(message):
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "username" and is_admin(msg.from_user.id))
 def sms_panel_username_handler(message):
-    state = get_state(message.chat.id)
+    state = get_state(message)
     state["panel_username"] = message.text.strip()
     state["add_sms_panel_step"] = "password"
     set_state(message.chat.id, state)
@@ -4551,7 +4551,7 @@ def sms_panel_username_handler(message):
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "password" and is_admin(msg.from_user.id))
 def sms_panel_password_handler(message):
-    state = get_state(message.chat.id)
+    state = get_state(message)
     password = message.text.strip()
     name = state.get("panel_name", "Unnamed")
     url = state.get("panel_url", "")
