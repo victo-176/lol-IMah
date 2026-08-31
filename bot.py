@@ -3130,8 +3130,8 @@ def _strip_cc(number, country_key):
         return str(number)[cc_len:]
     return str(number)
 
-def _show_number_display(chat_id, message_id, number, country_key, app_name):
-    """Display the assigned number with CC toggle and other buttons."""
+def _show_number_display(chat_id, message_id, number, country_key, app_name, extra_numbers=None):
+    """Display the assigned number(s) with CC toggle and other buttons."""
     country_name = COUNTRY_CODES.get(country_key, (country_key, "Unknown"))[0]
     iso = COUNTRY_CODES.get(country_key, (country_key, "UN"))[1]
     flag = flag_emoji_html(iso)
@@ -3151,6 +3151,9 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name):
         f"{svc} <b>Service:</b> {app_name}\n"
         f"⏳ <b>Status:</b> Waiting for SMS"
     )
+    # Fixed: Show extra numbers if num_per_request > 1
+    if extra_numbers:
+        msg_text += f"\n\n📋 <b>All Assigned Numbers:</b>\n{extra_numbers}"
 
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("View OTP", url="https://t.me/animatrixx_otp", style="primary", icon="eye"))
@@ -3168,7 +3171,7 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     row = c.fetchone()
     conn.close()
     if not row:
-        bot.edit_message_text("❌ No numbers for this country.", chat_id, message_id, parse_mode="HTML")
+        bot.edit_message_text("\u274c No numbers for this country.", chat_id, message_id, parse_mode="HTML")
         return
     numbers = json.loads(row[0])
     used = []
@@ -3179,17 +3182,43 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     conn.close()
     available = [n for n in numbers if n not in used]
     if not available:
-        bot.edit_message_text("❌ All numbers currently in use.", chat_id, message_id, parse_mode="HTML")
+        bot.edit_message_text("\u274c All numbers currently in use.", chat_id, message_id, parse_mode="HTML")
         return
-    assigned = random.choice(available)
-    # Release old number before assigning new one
+
+    # Fixed: Get num_per_request setting and give user that many numbers
+    num_per_req = 1
+    try:
+        npr_setting = get_setting('num_per_request')
+        if npr_setting:
+            num_per_req = int(npr_setting)
+    except:
+        num_per_req = 1
+    num_per_req = max(1, min(num_per_req, len(available)))  # Clamp to available
+
+    # Release old number before assigning new ones
     old_user = get_user(chat_id)
     if old_user and len(old_user) > 5 and old_user[5]:
         release_number(old_user[5])
-    assign_number_to_user(chat_id, assigned)
-    save_user(chat_id, country_code=country_key, assigned_number=assigned)
 
-    _show_number_display(chat_id, message_id, assigned, country_key, app_name)
+    # Assign num_per_req numbers
+    assigned_numbers = random.sample(available, min(num_per_req, len(available)))
+    assigned = assigned_numbers[0]  # Primary number for display
+
+    # Save all assigned numbers (store as comma-separated in assigned_number)
+    if len(assigned_numbers) > 1:
+        save_user(chat_id, country_code=country_key, assigned_number=",".join(assigned_numbers))
+        for num in assigned_numbers:
+            assign_number_to_user(chat_id, num)
+    else:
+        assign_number_to_user(chat_id, assigned)
+        save_user(chat_id, country_code=country_key, assigned_number=assigned)
+
+    # Show all assigned numbers
+    if len(assigned_numbers) > 1:
+        nums_text = "\n".join([f"\u2022 <code>{n}</code>" for n in assigned_numbers])
+        _show_number_display(chat_id, message_id, assigned, country_key, app_name, extra_numbers=nums_text)
+    else:
+        _show_number_display(chat_id, message_id, assigned, country_key, app_name)
 
 # ---- 2FA and withdrawal step handlers ----
 def process_2fa_code(message):
