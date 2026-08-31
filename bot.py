@@ -1519,21 +1519,21 @@ def admin_support_reply_start(call):
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("support_reply_to") and is_admin(msg.from_user.id))
 def admin_support_reply_send(message):
     """Admin sends reply to user."""
-    state = get_state(message)
-    target_user = state.get("support_reply_to")
-    text = message.text.strip() if message.text else ""
-    clear_state(message)
-    logger.info(f"Admin reply: Sending to user {target_user}, text: {text[:50]}")
-    if not text or not target_user:
-        bot.reply_to(message, "\u274c Empty message or no target user.", parse_mode="HTML")
-        return
     try:
+        state = get_state(message)
+        target_user = state.get("support_reply_to") if state else None
+        text = message.text.strip() if message.text else ""
+        clear_state(message)
+        logger.info(f"Admin reply: Sending to user {target_user}, text: {text[:50]}")
+        if not text or not target_user:
+            bot.reply_to(message, "\u274c Empty message or no target user.", parse_mode="HTML")
+            return
         pe_s = pe('support', '\U0001F3A7')
         reply_msg = (
             f"{pe_s} <b>SUPPORT REPLY</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
             f"{text}\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
             f"<i>Reply from admin</i>"
         )
         bot.send_message(target_user, reply_msg, parse_mode="HTML")
@@ -1542,10 +1542,11 @@ def admin_support_reply_send(message):
         bot.reply_to(message, f"{pe_ck2} Reply sent to user <code>{target_user}</code>.", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Admin reply failed: {e}")
-        pe_x2 = pe('cross', '\u274C')
-        bot.reply_to(message, f"{pe_x2} Failed to send: {str(e)[:100]}", parse_mode="HTML")
-
-
+        try:
+            pe_x2 = pe('cross', '\u274C')
+            bot.reply_to(message, f"{pe_x2} Failed to send: {str(e)[:100]}", parse_mode="HTML")
+        except:
+            pass
 
 BOT_START_TIME = datetime.now()
 
