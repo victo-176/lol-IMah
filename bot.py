@@ -120,6 +120,9 @@ PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
 # Toggle for premium emoji – set to False if Telegram keeps rejecting custom emoji
 PREMIUM_EMOJI_OK = os.getenv("PREMIUM_EMOJI", "1") == "1"
 
+# ADDED: Startup log for premium emoji status
+logger.info(f"Premium emoji: {'ENABLED' if PREMIUM_EMOJI_OK else 'DISABLED'}, icons={len(PREMIUM_ICONS)}, flags={len(PREMIUM_FLAGS)}, file={EMOJI_FILE}")
+
 # Explicit Unicode fallbacks for when premium emoji IDs aren't available.
 # Only mapped where a specific visual symbol is needed — no blanket replacements.
 UNICODE_FALLBACKS = {
