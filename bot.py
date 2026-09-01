@@ -1822,7 +1822,7 @@ def send_to_telegram_group(text, otp_code, number):
     for chat_id in chat_ids:
         try:
             payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(kb)}
-            resp = requests.post(url, data=payload, timeout=10)
+            resp = requests.post(url, data=payload, timeout=30)
             if resp.status_code == 200:
                 logger.info(f"Sent to group {chat_id}")
                 msg_id = resp.json()["result"]["message_id"]
@@ -2006,12 +2006,29 @@ class ChoiceSMSForwarder:
             if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                 return None
             for pattern in [
+                r'data_smscdr\.php\?[^"]*sesskey=([a-f0-9]{32})',
                 r'sesskey=([a-f0-9]{32})',
                 r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                r"sesskey=([a-f0-9]{32})",
+                r'session[_-]?key=([a-f0-9]{32})',
             ]:
                 m = re.search(pattern, resp.text)
                 if m:
                     return m.group(1)
+            # FIXED: Try /client/SMSCDRStats and /agent/SMSCDRStats as fallback
+            for fallback_page in ['/client/SMSCDRStats', '/agent/SMSCDRStats', '/dashboard']:
+                try:
+                    resp2 = self.session.get(f"{panel_url}{fallback_page}", timeout=30)
+                    if 'login' not in resp2.url.lower():
+                        for pattern in [
+                            r'sesskey=([a-f0-9]{32})',
+                            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                        ]:
+                            m = re.search(pattern, resp2.text)
+                            if m:
+                                return m.group(1)
+                except Exception:
+                    continue
         except Exception as e:
             logger.debug(f"Choice SMS: get_sesskey error: {e}")
         return None
@@ -2323,18 +2340,36 @@ class SMSPanelForwarder:
             return False
 
     def _get_sesskey(self):
-        """Extract sesskey from SMSCDRStats page."""
+        """Extract sesskey from panel pages - tries 5 patterns + fallback pages."""
         try:
-            resp = self.session.get(f"{self.url}/client/SMSCDRStats", timeout=30)
-            if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                return None
-            for pattern in [
-                r'sesskey=([a-f0-9]{32})',
-                r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
-            ]:
-                m = re.search(pattern, resp.text)
-                if m:
-                    return m.group(1)
+            # Try both agent and client paths
+            for path in [f"{self.url}/{self.login_type}/SMSCDRStats", f"{self.url}/client/SMSCDRStats", f"{self.url}/agent/SMSCDRStats"]:
+                try:
+                    resp = self.session.get(path, timeout=30)
+                    if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                        continue
+                    for pattern in [
+                        r'data_smscdr\.php\?[^"]*sesskey=([a-f0-9]{32})',
+                        r'sesskey=([a-f0-9]{32})',
+                        r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                        r"sesskey=([a-f0-9]{32})",
+                        r'session[_-]?key=([a-f0-9]{32})',
+                    ]:
+                        m = re.search(pattern, resp.text)
+                        if m:
+                            return m.group(1)
+                except Exception:
+                    continue
+            # FIXED: Try dashboard as last resort
+            for dash_path in [f"{self.url}/{self.login_type}/dashboard", f"{self.url}/dashboard"]:
+                try:
+                    resp = self.session.get(dash_path, timeout=30)
+                    if 'login' not in resp.url.lower():
+                        m = re.search(r'sesskey=([a-f0-9]{32})', resp.text)
+                        if m:
+                            return m.group(1)
+                except Exception:
+                    continue
         except Exception as e:
             logger.debug(f"Panel [{self.name}] get_sesskey error: {e}")
         return None
@@ -4259,7 +4294,17 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             resp2 = sess.post(url.rstrip("/") + "/signin", data=data_dict, timeout=15, allow_redirects=True)
             if "signin" not in resp2.url.lower() and "login" not in resp2.url.lower():
                 stats_resp = sess.get(url.rstrip("/") + "/client/SMSCDRStats", timeout=15)
-                sk_match = re.search(r"sesskey=([a-f0-9]{32})", stats_resp.text)
+                sk_match = None
+                for sk_pattern in [
+                    r'data_smscdr\.php\?[^"]*sesskey=([a-f0-9]{32})',
+                    r'sesskey=([a-f0-9]{32})',
+                    r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+                    r"sesskey=([a-f0-9]{32})",
+                    r'session[_-]?key=([a-f0-9]{32})',
+                ]:
+                    sk_match = re.search(sk_pattern, stats_resp.text)
+                    if sk_match:
+                        break
                 sesskey = sk_match.group(1) if sk_match else "N/A"
                 bot.answer_callback_query(call.id, "Connected! Sesskey: " + sesskey[:8] + "...", show_alert=True)
             else:
@@ -4564,7 +4609,7 @@ def quick_panel_pass_handler(message):
                     r = s.get(base + page_name, timeout=10, verify=False)
                     if r.status_code == 200:
                         import re as _re
-                        m = _re.search(r'sesskey=([a-f0-9]+)', r.text)
+                        m = _re.search(r'(?:data_smscdr\.php\?[^"]*sesskey=|sesskey=|session[_-]?key=)([a-f0-9]{32})', r.text)
                         if m:
                             sesskey = m.group(1)
                             break
@@ -4572,7 +4617,7 @@ def quick_panel_pass_handler(message):
                     continue
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('CREATE TABLE IF NOT EXISTS sms_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, url TEXT NOT NULL, login_type TEXT DEFAULT ' + "'agent'" + ', username TEXT, password TEXT, sesskey TEXT DEFAULT ' + "''" + ', enabled INTEGER DEFAULT 1, last_check TIMESTAMP)')
+        c.execute("CREATE TABLE IF NOT EXISTS sms_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, url TEXT NOT NULL, login_type TEXT DEFAULT 'agent', username TEXT, password TEXT, sesskey TEXT DEFAULT '', enabled INTEGER DEFAULT 1, last_check TIMESTAMP)")
         c.execute("INSERT OR IGNORE INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, ?, ?, ?, ?)",
                   (panel_name, panel_url, panel_type, username, password, sesskey))
         conn.commit()
