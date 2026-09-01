@@ -3550,6 +3550,70 @@ def process_others_amount(message):
             pass
     user_states.pop(user_id, None)
 
+# =========================== PREDEFINED PANELS (48 PANELS) ===========================
+PREDEFINED_PANELS = [
+    ("Astra SMS", "http://51.161.128.71/ints"),
+    ("Bolt", "http://93.190.143.35/ints"),
+    ("Choice SMS", "http://51.77.52.79/ints"),
+    ("Core SMS", "http://139.99.68.231/ints"),
+    ("Emo SMS", "http://139.99.69.196/ints"),
+    ("EVS SMS", "http://57.129.107.62/ints"),
+    ("FireSMS", "http://54.39.104.241/ints"),
+    ("Flex SMS", "http://168.119.13.175/ints"),
+    ("Fly SMS", "http://193.70.33.154/ints"),
+    ("Flyn SMS", "http://91.232.105.47/ints"),
+    ("Gaza IPRN", "http://144.217.71.192/ints"),
+    ("Goat SMS", "http://167.114.117.67/ints"),
+    ("Green SMS", "http://139.99.9.4/ints"),
+    ("Hadi", "http://2.59.169.96/ints"),
+    ("Hi SMS", "http://108.165.233.94"),
+    ("IMS SMS", "https://imssms.org"),
+    ("Ivasms", "wss://ivasms.qzz.io:2087/socket.io/"),
+    ("KM SMS", "http://54.36.173.235/ints"),
+    ("Konekta", "https://konektapremium.net"),
+    ("Lamix", "http://139.99.208.63/ints"),
+    ("Link SMS", "http://167.114.117.67/ints"),
+    ("Markoitech", "http://51.75.144.178/ints"),
+    ("Meteorite", "http://217.23.5.21/ints"),
+    ("MSI", "http://145.239.130.45/ints"),
+    ("Number Panel", "http://tempnumbers.net"),
+    ("Proof SMS", "http://217.182.195.194/ints"),
+    ("Proton", "http://109.236.84.81/ints"),
+    ("PSCall", "http://pscall.net/ints"),
+    ("Purple", "http://85.195.94.50/sms"),
+    ("Rexo SMS", "http://51.68.181.141/ints"),
+    ("Rez SMS", "http://166.1.2.54/ints"),
+    ("Roxy", "http://167.114.209.78/roxy"),
+    ("Rsayel", "http://176.9.58.30/ints"),
+    ("Seven1tel", "http://94.23.120.156/ints"),
+    ("Shark", "http://65.109.111.158/ints"),
+    ("Sniper SMS", "http://135.125.222.224/ints"),
+    ("Squad SMS", "http://51.77.221.209/ints"),
+    ("Star SMS", "http://144.217.182.17/ints"),
+    ("Target SMS", "http://51.75.55.16/ints"),
+    ("ThirdWave", "https://app.thirdwave.im/api/v1/traffic"),
+    ("Time", "https://www.timesms.org"),
+    ("Voicegate", "http://139.99.68.183/ints"),
+    ("Wolf", "http://213.32.24.208/ints"),
+    ("XAP", "http://147.135.212.148/ints"),
+    ("Xisora", "https://portal.xisoranetworks.com"),
+    ("Zento", "http://54.38.176.48/ints"),
+    ("Zone SMS", "http://51.68.39.124/sms"),
+    ("Zyron SMS", "http://151.80.19.204/ints"),
+]
+SPECIAL_PANELS = {"IMS SMS", "Ivasms", "Konekta", "ThirdWave", "Time", "Xisora"}
+
+def _panel_already_added(panel_name):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM sms_panels WHERE name=?", (panel_name,))
+        exists = c.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception:
+        return False
+
 # =========================== ADMIN PANEL ===========================
 def show_admin_panel(chat_id, message_id=None):
     if not is_admin(chat_id):
@@ -3585,7 +3649,9 @@ def get_admin_menu():
         ibtn("OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
         ibtn("Users", callback_data="admin_users", style="primary", icon="people"),
         ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
+        ibtn("All Panels", callback_data="admin_all_panels", style="primary", icon="link"),
         ibtn("SMS Panels", callback_data="admin_sms_panels", style="primary", icon="link"),
+        ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
         ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
         ibtn("Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
         ibtn("Leave", callback_data="close_menu", style="danger", icon="back")
@@ -4247,6 +4313,100 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         show_admin_panel(chat_id, msg_id)
         return
 
+    # ADDED: admin_all_panels - paginated list of 48 panels
+    if data == "admin_all_panels" or data.startswith("admin_all_panels_pg|"):
+        page = 0
+        if data.startswith("admin_all_panels_pg|"):
+            try:
+                page = int(data.split("|")[1])
+            except (ValueError, IndexError):
+                page = 0
+        per_page = 12
+        total_pages = (len(PREDEFINED_PANELS) + per_page - 1) // per_page
+        start = page * per_page
+        end = min(start + per_page, len(PREDEFINED_PANELS))
+        panels_slice = PREDEFINED_PANELS[start:end]
+        text = (f"{pe('link', '📦')} <b>ALL SMS PANELS</b>\n"
+                f"{pe('calendar', '📄')} Page {page+1}/{total_pages}\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"Select a panel to quick-add:")
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for panel_name, _ in panels_slice:
+            if _panel_already_added(panel_name):
+                btn_text = f"{pe('checkmark', '✅')} {panel_name}"
+            else:
+                btn_text = f"{pe('link', '📦')} {panel_name}"
+            markup.add(ibtn(btn_text, callback_data=f"admin_panel_quick_add|{panel_name}", style="primary", icon="link"))
+        nav_row = []
+        if page > 0:
+            nav_row.append(ibtn(f"{pe('back', '⬅️')} Prev", callback_data=f"admin_all_panels_pg|{page-1}", style="primary", icon="back"))
+        if page < total_pages - 1:
+            nav_row.append(ibtn(f"Next {pe('strelka_right', '➡️')}", callback_data=f"admin_all_panels_pg|{page+1}", style="primary", icon="strelka_right"))
+        if nav_row:
+            markup.row(*nav_row)
+        markup.add(ibtn(f"{pe('back', '⬅️')} Back to Admin", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    # ADDED: admin_panel_quick_add - panel details + agent/client selection
+    if data.startswith("admin_panel_quick_add|"):
+        panel_name = data.split("|", 1)[1]
+        panel_url = None
+        for name, url in PREDEFINED_PANELS:
+            if name == panel_name:
+                panel_url = url
+                break
+        if not panel_url:
+            bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
+            return
+        if panel_name in SPECIAL_PANELS:
+            text = (f"{pe('info_bw', '📋')} <b>PANEL: {panel_name}</b>\n"
+                    f"{pe('link', '🔗')} URL: {panel_url}\n\n"
+                    f"{pe('warning_yellow', '⚠️')} {panel_name} uses a custom API format.\n"
+                    f"Please add it manually via <b>Add SMS Panel</b>.")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(ibtn(f"{pe('back', '⬅️')} Back", callback_data="admin_all_panels", style="primary", icon="back"))
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+            return
+        if _panel_already_added(panel_name):
+            bot.answer_callback_query(call.id, f"{panel_name} is already added!", show_alert=True)
+            return
+        text = (f"{pe('info_bw', '📋')} <b>PANEL: {panel_name}</b>\n"
+                f"{pe('link', '🔗')} URL: {panel_url}\n\n"
+                f"<b>SELECT PANEL TYPE:</b>")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            ibtn(f"{pe('admin', '🤖')} AGENT", callback_data=f"admin_panel_quick_type|{panel_name}|agent", style="primary", icon="admin"),
+            ibtn(f"{pe('profile', '👤')} CLIENT", callback_data=f"admin_panel_quick_type|{panel_name}|client", style="primary", icon="profile")
+        )
+        markup.add(ibtn(f"{pe('back', '⬅️')} Back", callback_data="admin_all_panels", style="primary", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    # ADDED: admin_panel_quick_type - login type selected, ask username
+    if data.startswith("admin_panel_quick_type|"):
+        parts = data.split("|")
+        panel_name = parts[1]
+        login_type = parts[2]
+        panel_url = None
+        for name, url in PREDEFINED_PANELS:
+            if name == panel_name:
+                panel_url = url
+                break
+        if not panel_url:
+            bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
+            return
+        set_state(chat_id, {"quick_panel_name": panel_name, "quick_panel_url": panel_url, "quick_panel_type": login_type, "step": "quick_panel_user"})
+        text = (f"{pe('info_bw', '📋')} <b>{panel_name}</b>\n"
+                f"Type: <b>{login_type.upper()}</b>\n\n"
+                f"{pe('profile', '👤')} <b>ENTER USERNAME:</b>\n"
+                f"<i>Login username for the panel</i>\n\n"
+                f"{pe('cross', '❌')} /cancel to cancel")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn(f"{pe('back', '⬅️')} Cancel", callback_data="admin_all_panels", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
     # Handle copy OTP buttons from OTP groups
     if data.startswith("copy_"):
         otp_text = data[5:]  # remove "copy_" prefix
@@ -4334,6 +4494,109 @@ def admin_reject_reason_step(message):
         bot.send_message(message.chat.id, f"❌ {result}", parse_mode="HTML")
     clear_state(message)
     show_admin_panel(message.chat.id)
+
+# ---- ADDED: Quick panel add step handlers ----
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("step") == "quick_panel_user" and is_admin(msg.from_user.id))
+def quick_panel_user_handler(message):
+    if not is_admin(message.from_user.id):
+        return
+    st = user_states.get(message.chat.id, {})
+    if message.text and message.text.strip() == "/cancel":
+        clear_state(message)
+        show_admin_panel(message.chat.id)
+        return
+    username = message.text.strip()
+    st["quick_panel_user"] = username
+    st["step"] = "quick_panel_pass"
+    user_states[message.chat.id] = st
+    panel_name = st.get("quick_panel_name", "Unknown")
+    panel_type = st.get("quick_panel_type", "agent")
+    text = (f"{pe('info_bw', '📋')} <b>{panel_name}</b>\n"
+            f"Type: <b>{panel_type.upper()}</b>\n"
+            f"User: <b>{username}</b>\n\n"
+            f"{pe('lock', '🔑')} <b>ENTER PASSWORD:</b>\n"
+            f"<i>Login password for the panel</i>\n\n"
+            f"{pe('cross', '❌')} /cancel to cancel")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn(f"{pe('back', '⬅️')} Cancel", callback_data="admin_all_panels", style="danger", icon="back"))
+    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("step") == "quick_panel_pass" and is_admin(msg.from_user.id))
+def quick_panel_pass_handler(message):
+    if not is_admin(message.from_user.id):
+        return
+    st = user_states.get(message.chat.id, {})
+    if message.text and message.text.strip() == "/cancel":
+        clear_state(message)
+        show_admin_panel(message.chat.id)
+        return
+    password = message.text.strip()
+    panel_name = st.get("quick_panel_name", "Unknown")
+    panel_url = st.get("quick_panel_url", "")
+    panel_type = st.get("quick_panel_type", "agent")
+    username = st.get("quick_panel_user", "")
+    clear_state(message)
+    testing_msg = bot.send_message(message.chat.id, f"{pe('wrench', '🧪')} <b>TESTING CONNECTION...</b>", parse_mode="HTML")
+    try:
+        s = requests.Session()
+        login_url = panel_url.rstrip('/') + "/login"
+        resp = s.get(login_url, timeout=10, verify=False)
+        csrf_token = ""
+        if BS4_AVAILABLE:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            tok = soup.find('input', {'name': '_token'})
+            if tok:
+                csrf_token = tok.get('value', '')
+        login_data = {"username": username, "password": password}
+        if csrf_token:
+            login_data["_token"] = csrf_token
+        resp = s.post(login_url, data=login_data, timeout=10, verify=False, allow_redirects=True)
+        login_ok = resp.status_code == 200
+        sesskey = ""
+        if login_ok:
+            base = panel_url.rstrip('/') + "/" + panel_type + "/"
+            for page_name in ["SMSCDRStats", "SMSCDRReports", "Dashboard"]:
+                try:
+                    r = s.get(base + page_name, timeout=10, verify=False)
+                    if r.status_code == 200:
+                        import re as _re
+                        m = _re.search(r'sesskey=([a-f0-9]+)', r.text)
+                        if m:
+                            sesskey = m.group(1)
+                            break
+                except Exception:
+                    continue
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('CREATE TABLE IF NOT EXISTS sms_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, url TEXT NOT NULL, login_type TEXT DEFAULT ' + "'agent'" + ', username TEXT, password TEXT, sesskey TEXT DEFAULT ' + "''" + ', enabled INTEGER DEFAULT 1, last_check TIMESTAMP)')
+        c.execute("INSERT OR IGNORE INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, ?, ?, ?, ?)",
+                  (panel_name, panel_url, panel_type, username, password, sesskey))
+        conn.commit()
+        conn.close()
+        sesskey_display = sesskey[:8] + "..." if len(sesskey) > 8 else (sesskey if sesskey else "N/A")
+        status_icon = pe('checkmark', '✅') if login_ok else pe('cross', '❌')
+        login_text = "Success" if login_ok else "Failed"
+        result_text = (f"━━━━━━━━━━━━━━━\n"
+                       f"{pe('checkmark', '✅')} <b>PANEL SETUP COMPLETE!</b>\n"
+                       f"━━━━━━━━━━━━━━━\n"
+                       f"{pe('info_bw', '📋')} Name: <b>{panel_name}</b>\n"
+                       f"{pe('link', '🔗')} URL: {panel_url}\n"
+                       f"{pe('profile', '👤')} Type: <b>{panel_type.upper()}</b>\n"
+                       f"{pe('lock', '🔐')} Login: {status_icon} {login_text}\n"
+                       f"{pe('key', '🔑')} Sesskey: <code>{sesskey_display}</code>\n"
+                       f"━━━━━━━━━━━━━━━\n"
+                       f"{pe('refresh', '📡')} <b>OTP monitoring ACTIVE!</b>")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn(f"{pe('back', '⬅️')} Back to Panels", callback_data="admin_all_panels", style="primary", icon="back"))
+        bot.edit_message_text(result_text, message.chat.id, testing_msg.message_id, parse_mode="HTML", reply_markup=markup)
+        logger.info(f"Quick add panel: {panel_name} ({panel_type}) - login={login_ok}, sesskey={'yes' if sesskey else 'no'}")
+    except Exception as e:
+        logger.error(f"Quick add panel error: {e}")
+        try:
+            bot.edit_message_text(f"{pe('cross', '❌')} <b>Setup failed:</b> {str(e)[:200]}",
+                                  message.chat.id, testing_msg.message_id, parse_mode="HTML")
+        except Exception:
+            bot.send_message(message.chat.id, f"{pe('cross', '❌')} <b>Setup failed:</b> {str(e)[:200]}", parse_mode="HTML")
 
 # ---- Choice SMS admin step handlers ----
 @bot.message_handler(func=lambda msg: get_state(msg) == "choice_panel_url" and is_admin(msg.from_user.id))
