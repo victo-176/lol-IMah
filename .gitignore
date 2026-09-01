@@ -3,3 +3,8 @@ seen_messages.json
 __pycache__/
 *.pyc
 bot.db
+choice_seen.json
+choice_sesskey.txt
+emoji.txt
+/data/
+app/data/

@@ -65,7 +65,11 @@ REFERRAL_REWARD = 0.10
 MIN_WITHDRAWAL = 1.0
 MAX_WITHDRAWAL = 5.0
 ADMIN_IDS = [ADMIN_ID, *EXTRA_ADMINS]
-DB_PATH = "bot.db"
+# ======================== PERSISTENT STORAGE ========================
+PERSISTENT_DIR = os.environ.get("PERSISTENT_DIR", "/app/data/")
+os.makedirs(PERSISTENT_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(PERSISTENT_DIR, "bot.db")
 
 # ======================== THREAD SAFETY & PERSISTENCE ========================
 # Thread lock for all SQLite write operations
@@ -87,7 +91,7 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # =========================== PREMIUM EMOJI LOADER ===========================
-EMOJI_FILE = "emoji.txt"
+EMOJI_FILE = os.path.join(PERSISTENT_DIR, "emoji.txt")
 
 # Hardcoded premium emoji IDs for specific elements
 PREMIUM_EMOJI_IDS = {
@@ -544,7 +548,7 @@ def init_db():
             logger.warning(f"Health check: {len(missing)} missing tables: {missing}")
 
         # === One-time migration: import JSON seen-hashes into DB ===
-        json_files = ['seen_messages.json', 'choice_seen.json']
+        json_files = [os.path.join(PERSISTENT_DIR, 'seen_messages.json'), os.path.join(PERSISTENT_DIR, 'choice_seen.json')]
         for jf in json_files:
             try:
                 if os.path.exists(jf):
@@ -1853,7 +1857,7 @@ class ChoiceSMSForwarder:
     def _save_sesskey(self):
         """Persist sesskey to disk."""
         try:
-            with open("choice_sesskey.txt", "w") as f:
+            with open(os.path.join(PERSISTENT_DIR, "choice_sesskey.txt"), "w") as f:
                 f.write(self._cached_sesskey or "")
         except:
             pass
@@ -1861,8 +1865,8 @@ class ChoiceSMSForwarder:
     def _load_sesskey_from_disk(self):
         """Load sesskey from disk."""
         try:
-            if os.path.exists("choice_sesskey.txt"):
-                with open("choice_sesskey.txt") as f:
+            if os.path.exists(os.path.join(PERSISTENT_DIR, "choice_sesskey.txt")):
+                with open(os.path.join(PERSISTENT_DIR, "choice_sesskey.txt")) as f:
                     sk = f.read().strip()
                     if sk and len(sk) == 32:
                         self._cached_sesskey = sk
