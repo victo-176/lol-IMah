@@ -91,7 +91,9 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # =========================== PREMIUM EMOJI LOADER ===========================
-EMOJI_FILE = os.path.join(PERSISTENT_DIR, "emoji.txt")
+# FIXED: Try persistent dir first, fall back to project root
+_EMOJI_CANDIDATES = [os.path.join(PERSISTENT_DIR, "emoji.txt"), "emoji.txt"]
+EMOJI_FILE = next((p for p in _EMOJI_CANDIDATES if os.path.isfile(p)), _EMOJI_CANDIDATES[0])
 
 # Hardcoded premium emoji IDs for specific elements
 PREMIUM_EMOJI_IDS = {
