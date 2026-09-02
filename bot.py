@@ -2950,66 +2950,85 @@ class SMSPanelForwarder:
         self.stop_event = threading.Event()
 
     def _do_login(self):
-        """Login to panel with captcha solving using panel-specific config. Returns True if successful."""
+        """Login to panel with captcha solving. Tries multiple login paths."""
         cfg = get_panel_config(self.name)
-        # Skip custom/websocket panels
         if cfg.get("type") in ("websocket", "custom"):
             logger.warning(f"Panel [{self.name}]: Custom type, skipping login")
             return False
         try:
-            login_path = cfg.get("login_url", "/login")
-            signin_path = cfg.get("signin_url", "/signin")
             fields = cfg.get("login_fields", {})
             captcha_pat = cfg.get("captcha_pattern", r'(\d+)\s*\+\s*(\d+)')
+            uname_field = fields.get("username", "username")
+            pass_field = fields.get("password", "password")
+            capt_field = fields.get("captcha", "capt")
 
-            resp = self.session.get(f"{self.url}{login_path}", timeout=30)
-            numbers = re.findall(captcha_pat, resp.text)
+            # Try multiple login page + signin combinations
+            login_paths = [
+                (cfg.get("login_url", "/login"), cfg.get("signin_url", "/signin")),
+                ("/signin", "/signin"),
+                ("/auth/login", "/auth/signin"),
+                ("/login", "/login"),
+                ("/", "/signin"),
+            ]
 
-            data = {
-                fields.get("username", "username"): self.username,
-                fields.get("password", "password"): self.password,
-            }
-            if numbers:
-                captcha_field = fields.get("captcha", "capt")
-                captcha_val = str(int(numbers[0][0]) + int(numbers[0][1]))
-                data[captcha_field] = captcha_val
-                logger.info(f"Panel [{self.name}]: Captcha {numbers[0][0]} + {numbers[0][1]} = {captcha_val}")
-
-            resp = self.session.post(f"{self.url}{signin_path}", data=data, timeout=30, allow_redirects=True)
-            final_url = resp.url.lower()
-            if 'signin' not in final_url and 'login' not in final_url:
-                logger.info(f"Panel [{self.name}]: Login OK (redirected to {resp.url[:60]})")
-                return True
-            if len(self.session.cookies) > 0:
-                logger.info(f"Panel [{self.name}]: Login OK (got cookies)")
-                return True
-
-            # Fallback: try alternate login paths if standard failed
-            for alt_login, alt_signin in [("/signin", "/login"), ("/auth/login", "/auth/signin")]:
+            for login_path, signin_path in login_paths:
                 try:
-                    resp2 = self.session.get(f"{self.url}{alt_login}", timeout=30)
-                    nums2 = re.findall(captcha_pat, resp2.text)
-                    data2 = {fields.get("username", "username"): self.username, fields.get("password", "password"): self.password}
-                    if nums2:
-                        data2[fields.get("captcha", "capt")] = str(int(nums2[0][0]) + int(nums2[0][1]))
-                    resp2 = self.session.post(f"{self.url}{alt_signin}", data=data2, timeout=30, allow_redirects=True)
-                    if 'login' not in resp2.url.lower() and 'signin' not in resp2.url.lower():
-                        logger.info(f"Panel [{self.name}]: Login OK via alternate path {alt_login}")
+                    resp = self.session.get(f"{self.url}{login_path}", timeout=30)
+                    if resp.status_code >= 400:
+                        continue
+                    numbers = re.findall(captcha_pat, resp.text)
+
+                    data = {uname_field: self.username, pass_field: self.password}
+                    if numbers:
+                        data[capt_field] = str(int(numbers[0][0]) + int(numbers[0][1]))
+                        logger.info(f"Panel [{self.name}]: Captcha {numbers[0][0]} + {numbers[0][1]} = {data[capt_field]}")
+
+                    resp = self.session.post(f"{self.url}{signin_path}", data=data, timeout=30, allow_redirects=True)
+                    final_url = resp.url.lower()
+                    # Check for successful login (not on login/signin page)
+                    if 'signin' not in final_url and 'login' not in final_url:
+                        logger.info(f"Panel [{self.name}]: Login OK via {login_path} -> {resp.url[:60]}")
                         return True
-                except Exception:
+                    if len(self.session.cookies) > 0:
+                        # Even if URL still has 'login', cookies might mean success
+                        # Try accessing a protected page to verify
+                        try:
+                            test = self.session.get(f"{self.url}/{self.login_type}/SMSCDRStats", timeout=15)
+                            if 'login' not in test.url.lower() and test.status_code == 200:
+                                logger.info(f"Panel [{self.name}]: Login OK (verified via SMSCDRStats)")
+                                return True
+                        except Exception:
+                            pass
+                        logger.info(f"Panel [{self.name}]: Login OK (got cookies via {login_path})")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Panel [{self.name}]: Login attempt {login_path} failed: {e}")
                     continue
 
-            logger.warning(f"Panel [{self.name}]: Login FAILED - URL: {resp.url[:80]}")
+            logger.warning(f"Panel [{self.name}]: Login FAILED on all paths")
             return False
         except Exception as e:
             logger.error(f"Panel [{self.name}] login error: {e}")
             return False
 
     def _get_sesskey(self):
-        """Extract sesskey from panel pages using panel-specific config + extended fallbacks."""
+        """Aggressively extract sesskey from panel - searches EVERYTHING."""
         cfg = get_panel_config(self.name)
         patterns = cfg.get("sesskey_patterns", [])
-        # Build page list from config + fallbacks
+        ext_patterns = [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{8,32})',
+            r'sesskey=([a-f0-9]{8,32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{8,32})"',
+            r"sesskey=([a-f0-9]{8,32})",
+            r'session[_-]?key=([a-f0-9]{8,32})',
+            r'token["\s:=]+([a-f0-9]{8,32})',
+            r'csrf[_-]?token["\s:=]+([a-f0-9]{8,32})',
+            r'security[_-]?token["\s:=]+([a-f0-9]{8,32})',
+            r'api[_-]?key["\s:=]+([a-f0-9]{8,32})',
+        ]
+        all_patterns = list(patterns) + [p for p in ext_patterns if p not in patterns]
+
+        # Build page list from config + extensive fallbacks
         page_templates = cfg.get("sesskey_pages", [])
         pages = []
         for tpl in page_templates:
@@ -3018,8 +3037,15 @@ class SMSPanelForwarder:
             f"{self.url}/{self.login_type}/SMSCDRStats",
             f"{self.url}/client/SMSCDRStats",
             f"{self.url}/agent/SMSCDRStats",
+            f"{self.url}/{self.login_type}/SMSDashboard",
+            f"{self.url}/client/SMSDashboard",
+            f"{self.url}/agent/SMSDashboard",
             f"{self.url}/{self.login_type}/dashboard",
             f"{self.url}/dashboard",
+            f"{self.url}/{self.login_type}/home",
+            f"{self.url}/home",
+            f"{self.url}/client/smscdrstats",
+            f"{self.url}/agent/smscdrstats",
         ])
         # Deduplicate
         seen = set()
@@ -3028,35 +3054,97 @@ class SMSPanelForwarder:
             if p not in seen:
                 seen.add(p)
                 unique_pages.append(p)
-        # Extended fallback patterns
-        ext_patterns = [
-            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
-            r'sesskey=([a-f0-9]{32})',
-            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
-            r"sesskey=([a-f0-9]{32})",
-            r'session[_-]?key=([a-f0-9]{32})',
-            r'token["\s:=]+([a-f0-9]{32})',
-        ]
-        all_patterns = list(patterns) + [p for p in ext_patterns if p not in patterns]
 
         try:
             for path in unique_pages:
                 try:
                     resp = self.session.get(path, timeout=30)
                     if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                        logger.debug(f"Panel [{self.name}]: {path} -> redirected to login")
+                        logger.debug(f"Panel [{self.name}]: {path} -> login redirect")
                         continue
+                    html = resp.text
+
+                    # Method 1: Try all configured patterns
                     for pattern in all_patterns:
-                        m = re.search(pattern, resp.text)
+                        m = re.search(pattern, html)
                         if m:
-                            logger.info(f"Panel [{self.name}]: Sesskey found on {path}")
+                            logger.info(f"Panel [{self.name}]: Sesskey FOUND via pattern on {path}: {m.group(1)[:8]}...")
                             return m.group(1)
+
+                    # Method 2: Search ALL inline scripts for sesskey
+                    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+                    for sc in scripts:
+                        for pattern in all_patterns:
+                            m = re.search(pattern, sc)
+                            if m:
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND in script tag: {m.group(1)[:8]}...")
+                                return m.group(1)
+
+                    # Method 3: Search all href/src attributes
+                    urls_in_page = re.findall(r'(?:href|src|action)=["\']([^"\'>]*)', html, re.IGNORECASE)
+                    for u in urls_in_page:
+                        for pattern in [r'sesskey=([a-f0-9]{8,32})', r'token=([a-f0-9]{8,32})']:
+                            m = re.search(pattern, u)
+                            if m:
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND in URL attr: {m.group(1)[:8]}...")
+                                return m.group(1)
+
+                    # Method 4: Search hidden form inputs
+                    hidden_vals = re.findall(r'<input[^>]*type=["\']hidden["\'][^>]*value=["\']([^"\'>]+)', html, re.IGNORECASE)
+                    for val in hidden_vals:
+                        if re.match(r'^[a-f0-9]{8,32}$', val):
+                            logger.info(f"Panel [{self.name}]: Sesskey FOUND in hidden input: {val[:8]}...")
+                            return val
+
+                    # Method 5: Search meta tags
+                    meta_content = re.findall(r'<meta[^>]*content=["\']([^"\'>]*)', html, re.IGNORECASE)
+                    for val in meta_content:
+                        if re.match(r'.*[a-f0-9]{32}.*', val):
+                            hex_m = re.search(r'[a-f0-9]{32}', val)
+                            if hex_m:
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND in meta tag: {hex_m.group()[:8]}...")
+                                return hex_m.group()
+
+                    # Method 6: If no patterns matched, try to get sesskey from data endpoint itself
+                    try:
+                        test_resp = self.session.get(f"{self.url}/{self.login_type}/res/data_smscdr.php", timeout=15)
+                        for pattern in all_patterns:
+                            m = re.search(pattern, test_resp.text)
+                            if m:
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND in data endpoint response: {m.group(1)[:8]}...")
+                                return m.group(1)
+                    except Exception:
+                        pass
+
+                    # Method 7: Last resort - extract ANY 32-char hex from the page
+                    hex32_matches = list(set(re.findall(r'[a-f0-9]{32}', html)))
+                    if hex32_matches:
+                        # Prefer ones that appear near 'sess' or 'key' or 'token' keywords
+                        for h in hex32_matches:
+                            idx = html.find(h)
+                            context = html[max(0,idx-50):idx+len(h)+50].lower()
+                            if any(kw in context for kw in ['sess', 'key', 'token', 'php', 'ajax']):
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND (hex32 in context): {h[:8]}...")
+                                return h
+                        # If no contextual match, return first hex32 found
+                        logger.info(f"Panel [{self.name}]: Sesskey FOUND (first hex32): {hex32_matches[0][:8]}...")
+                        return hex32_matches[0]
+
                 except Exception as e:
-                    logger.debug(f"Panel [{self.name}]: Error fetching {path}: {e}")
+                    logger.debug(f"Panel [{self.name}]: Error on {path}: {e}")
                     continue
+
+            # Method 8: Check cookies for sesskey
+            for cookie in self.session.cookies:
+                val = self.session.cookies[cookie]
+                if re.match(r'^[a-f0-9]{32}$', val):
+                    logger.info(f"Panel [{self.name}]: Sesskey from cookie {cookie}: {val[:8]}...")
+                    return val
+
         except Exception as e:
-            logger.debug(f"Panel [{self.name}] get_sesskey error: {e}")
-        logger.warning(f"Panel [{self.name}]: No sesskey found on any page")
+            logger.error(f"Panel [{self.name}] get_sesskey error: {e}")
+
+        logger.warning(f"Panel [{self.name}]: No sesskey found after exhaustive search")
         return None
 
     def _ensure_session(self):
@@ -3165,6 +3253,7 @@ class SMSPanelForwarder:
             "fgnumber": "", "fgcli": "", "fg": "0", "sesskey": sesskey
         }
         try:
+            self.session.headers["Referer"] = f"{self.url}/{self.login_type}/SMSCDRStats"
             resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
             if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                 logger.warning(f"Panel [{self.name}]: Session expired, re-logging in...")
