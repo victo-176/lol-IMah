@@ -436,9 +436,15 @@ def init_db():
             login_type TEXT DEFAULT 'client',
             username TEXT,
             password TEXT,
+            sesskey TEXT DEFAULT '',
             enabled INTEGER DEFAULT 1,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        # FIXED: Add sesskey column if table existed before without it
+        try:
+            c.execute("ALTER TABLE sms_panels ADD COLUMN sesskey TEXT DEFAULT ''")
+        except Exception:
+            pass  # Column already exists
 
         c.execute('''CREATE TABLE IF NOT EXISTS broadcasts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4628,9 +4634,15 @@ def quick_panel_pass_handler(message):
                     continue
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS sms_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, url TEXT NOT NULL, login_type TEXT DEFAULT 'agent', username TEXT, password TEXT, sesskey TEXT DEFAULT '', enabled INTEGER DEFAULT 1, last_check TIMESTAMP)")
-        c.execute("INSERT OR IGNORE INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, ?, ?, ?, ?)",
-                  (panel_name, panel_url, panel_type, username, password, sesskey))
+        # FIXED: Use existing sms_panels table (no duplicate CREATE TABLE)
+        c.execute("SELECT id FROM sms_panels WHERE name=?", (panel_name,))
+        existing = c.fetchone()
+        if existing:
+            c.execute("UPDATE sms_panels SET url=?, login_type=?, username=?, password=?, sesskey=? WHERE id=?",
+                      (panel_url, panel_type, username, password, sesskey, existing[0]))
+        else:
+            c.execute("INSERT INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, ?, ?, ?, ?)",
+                      (panel_name, panel_url, panel_type, username, password, sesskey))
         conn.commit()
         conn.close()
         sesskey_display = sesskey[:8] + "..." if len(sesskey) > 8 else (sesskey if sesskey else "N/A")
