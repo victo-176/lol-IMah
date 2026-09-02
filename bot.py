@@ -1704,11 +1704,17 @@ def force_sub_check(user_id):
             else:
                 continue
             member = bot.get_chat_member(ch, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
+            status = getattr(member, 'status', None)
+            if status in ["member", "administrator", "creator"]:
+                continue
+            else:
                 return False
         except Exception as e:
-            logger.warning(f"Force sub check error: {e}")
-            return False
+            # FIXED: Don't return False on exception -- bot might not be
+            # admin of the channel, or API rate-limit. Skip this channel
+            # so joined users aren't wrongly blocked.
+            logger.warning(f"Force sub check error for {url}: {e}")
+            continue
     return True
 
 def force_sub_markup():
