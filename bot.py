@@ -2314,6 +2314,622 @@ def start_choice_sms():
 _panel_forwarder_threads = {}  # panel_id -> threading.Thread
 _panel_forwarder_stop = {}     # panel_id -> threading.Event
 
+
+# ======================== PANEL-SPECIFIC CONFIGS ========================
+# Each panel may have different login form fields, sesskey locations, and API endpoints.
+# This registry maps panel names (lowercase) to their specific configs.
+
+PANEL_LOGIN_CONFIGS = {
+    # --- Standard SMSCDRStats panels (most common) ---
+    # These all share: POST {url}/signin, field names: username/password/capt
+    # Sesskey on: /{type}/SMSCDRStats page, API: /client/res/data_smscdr.php
+    # But some use different field names or login URLs.
+
+    "choice sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "astra sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "bolt": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "core sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "emo sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "evs sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "firesms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "flex sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "fly sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "flyn sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "gaza iprn": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "goat sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "green sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "hadi": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "km sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "lamix": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "link sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "markoitech": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "meteorite": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "msi": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "proof sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "proton": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "rexo sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "rez sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "rsayel": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "seven1tel": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "shark": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "sniper sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "squad sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "star sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "target sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "voicegate": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "wolf": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "xap": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "zento": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "zyron sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+
+    # --- Panels with /sms path instead of /ints ---
+    "purple": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "zone sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+
+    # --- Panels with /roxy path ---
+    "roxy": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+
+    # --- Panels with /sms path ---
+    "pscall": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+
+    # --- Panels with no /ints suffix (just base URL) ---
+    "hi sms": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+    "number panel": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    },
+
+    # --- Special panels (different formats) ---
+    "ivasms": {
+        "type": "websocket",
+        "note": "Uses WebSocket, not HTTP. Handled by ChoiceSMSForwarder.",
+    },
+    "ims sms": {
+        "type": "custom",
+        "note": "Custom API format. Add manually.",
+    },
+    "konekta": {
+        "type": "custom",
+        "note": "Custom API format. Add manually.",
+    },
+    "thirdwave": {
+        "type": "custom",
+        "note": "REST API format at /api/v1/traffic. Add manually.",
+    },
+    "time": {
+        "type": "custom",
+        "note": "Custom format. Add manually.",
+    },
+    "xisora": {
+        "type": "custom",
+        "note": "Custom format at portal.xisoranetworks.com. Add manually.",
+    },
+}
+
+
+def get_panel_config(panel_name):
+    """Get the login config for a specific panel. Falls back to default SMSCDRStats config."""
+    key = panel_name.strip().lower()
+    if key in PANEL_LOGIN_CONFIGS:
+        return PANEL_LOGIN_CONFIGS[key]
+    # Default SMSCDRStats config for panels not explicitly listed
+    return {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "sesskey_pages": ["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"],
+        "sesskey_patterns": [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+            r"sesskey=([a-f0-9]{32})",
+            r'session[_-]?key=([a-f0-9]{32})',
+        ],
+        "otp_endpoint": "/client/res/data_smscdr.php",
+        "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
+    }
+
 class SMSPanelForwarder:
     """Generic forwarder for any SMS panel added via admin panel."""
 
@@ -2334,22 +2950,55 @@ class SMSPanelForwarder:
         self.stop_event = threading.Event()
 
     def _do_login(self):
-        """Login to panel with captcha solving. Returns True if successful."""
+        """Login to panel with captcha solving using panel-specific config. Returns True if successful."""
+        cfg = get_panel_config(self.name)
+        # Skip custom/websocket panels
+        if cfg.get("type") in ("websocket", "custom"):
+            logger.warning(f"Panel [{self.name}]: Custom type, skipping login")
+            return False
         try:
-            resp = self.session.get(f"{self.url}/login", timeout=30)
-            numbers = re.findall(r'(\d+)\s*\+\s*(\d+)', resp.text)
-            data = {'username': self.username, 'password': self.password}
+            login_path = cfg.get("login_url", "/login")
+            signin_path = cfg.get("signin_url", "/signin")
+            fields = cfg.get("login_fields", {})
+            captcha_pat = cfg.get("captcha_pattern", r'(\d+)\s*\+\s*(\d+)')
+
+            resp = self.session.get(f"{self.url}{login_path}", timeout=30)
+            numbers = re.findall(captcha_pat, resp.text)
+
+            data = {
+                fields.get("username", "username"): self.username,
+                fields.get("password", "password"): self.password,
+            }
             if numbers:
-                data['capt'] = str(int(numbers[0][0]) + int(numbers[0][1]))
-                logger.info(f"Panel [{self.name}]: Captcha {numbers[0][0]} + {numbers[0][1]} = {data['capt']}")
-            resp = self.session.post(f"{self.url}/signin", data=data, timeout=30, allow_redirects=True)
+                captcha_field = fields.get("captcha", "capt")
+                captcha_val = str(int(numbers[0][0]) + int(numbers[0][1]))
+                data[captcha_field] = captcha_val
+                logger.info(f"Panel [{self.name}]: Captcha {numbers[0][0]} + {numbers[0][1]} = {captcha_val}")
+
+            resp = self.session.post(f"{self.url}{signin_path}", data=data, timeout=30, allow_redirects=True)
             final_url = resp.url.lower()
             if 'signin' not in final_url and 'login' not in final_url:
-                logger.info(f"Panel [{self.name}]: Login OK (redirected)")
+                logger.info(f"Panel [{self.name}]: Login OK (redirected to {resp.url[:60]})")
                 return True
             if len(self.session.cookies) > 0:
                 logger.info(f"Panel [{self.name}]: Login OK (got cookies)")
                 return True
+
+            # Fallback: try alternate login paths if standard failed
+            for alt_login, alt_signin in [("/signin", "/login"), ("/auth/login", "/auth/signin")]:
+                try:
+                    resp2 = self.session.get(f"{self.url}{alt_login}", timeout=30)
+                    nums2 = re.findall(captcha_pat, resp2.text)
+                    data2 = {fields.get("username", "username"): self.username, fields.get("password", "password"): self.password}
+                    if nums2:
+                        data2[fields.get("captcha", "capt")] = str(int(nums2[0][0]) + int(nums2[0][1]))
+                    resp2 = self.session.post(f"{self.url}{alt_signin}", data=data2, timeout=30, allow_redirects=True)
+                    if 'login' not in resp2.url.lower() and 'signin' not in resp2.url.lower():
+                        logger.info(f"Panel [{self.name}]: Login OK via alternate path {alt_login}")
+                        return True
+                except Exception:
+                    continue
+
             logger.warning(f"Panel [{self.name}]: Login FAILED - URL: {resp.url[:80]}")
             return False
         except Exception as e:
@@ -2357,38 +3006,57 @@ class SMSPanelForwarder:
             return False
 
     def _get_sesskey(self):
-        """Extract sesskey from panel pages - tries 5 patterns + fallback pages."""
+        """Extract sesskey from panel pages using panel-specific config + extended fallbacks."""
+        cfg = get_panel_config(self.name)
+        patterns = cfg.get("sesskey_patterns", [])
+        # Build page list from config + fallbacks
+        page_templates = cfg.get("sesskey_pages", [])
+        pages = []
+        for tpl in page_templates:
+            pages.append(f"{self.url}{tpl.replace('{type}', self.login_type)}")
+        pages.extend([
+            f"{self.url}/{self.login_type}/SMSCDRStats",
+            f"{self.url}/client/SMSCDRStats",
+            f"{self.url}/agent/SMSCDRStats",
+            f"{self.url}/{self.login_type}/dashboard",
+            f"{self.url}/dashboard",
+        ])
+        # Deduplicate
+        seen = set()
+        unique_pages = []
+        for p in pages:
+            if p not in seen:
+                seen.add(p)
+                unique_pages.append(p)
+        # Extended fallback patterns
+        ext_patterns = [
+            r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+            r'sesskey=([a-f0-9]{32})',
+            r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+            r"sesskey=([a-f0-9]{32})",
+            r'session[_-]?key=([a-f0-9]{32})',
+            r'token["\s:=]+([a-f0-9]{32})',
+        ]
+        all_patterns = list(patterns) + [p for p in ext_patterns if p not in patterns]
+
         try:
-            # Try both agent and client paths
-            for path in [f"{self.url}/{self.login_type}/SMSCDRStats", f"{self.url}/client/SMSCDRStats", f"{self.url}/agent/SMSCDRStats"]:
+            for path in unique_pages:
                 try:
                     resp = self.session.get(path, timeout=30)
                     if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                        logger.debug(f"Panel [{self.name}]: {path} -> redirected to login")
                         continue
-                    for pattern in [
-                        r'data_smscdr\.php\?[^"]*sesskey=([a-f0-9]{32})',
-                        r'sesskey=([a-f0-9]{32})',
-                        r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
-                        r"sesskey=([a-f0-9]{32})",
-                        r'session[_-]?key=([a-f0-9]{32})',
-                    ]:
+                    for pattern in all_patterns:
                         m = re.search(pattern, resp.text)
                         if m:
+                            logger.info(f"Panel [{self.name}]: Sesskey found on {path}")
                             return m.group(1)
-                except Exception:
-                    continue
-            # FIXED: Try dashboard as last resort
-            for dash_path in [f"{self.url}/{self.login_type}/dashboard", f"{self.url}/dashboard"]:
-                try:
-                    resp = self.session.get(dash_path, timeout=30)
-                    if 'login' not in resp.url.lower():
-                        m = re.search(r'sesskey=([a-f0-9]{32})', resp.text)
-                        if m:
-                            return m.group(1)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Panel [{self.name}]: Error fetching {path}: {e}")
                     continue
         except Exception as e:
             logger.debug(f"Panel [{self.name}] get_sesskey error: {e}")
+        logger.warning(f"Panel [{self.name}]: No sesskey found on any page")
         return None
 
     def _ensure_session(self):
@@ -2480,10 +3148,12 @@ class SMSPanelForwarder:
         return groups if groups else []
 
     def fetch_otps(self):
-        """Fetch OTPs from the panel API."""
+        """Fetch OTPs from the panel API using panel-specific endpoint."""
         sesskey = self._ensure_session()
         if not sesskey:
             return []
+        cfg = get_panel_config(self.name)
+        otp_ep = cfg.get("otp_endpoint", "/client/res/data_smscdr.php")
         today = datetime.now().strftime("%Y-%m-%d")
         params = {
             "draw": "1", "start": "0", "length": "100",
@@ -2495,14 +3165,14 @@ class SMSPanelForwarder:
             "fgnumber": "", "fgcli": "", "fg": "0", "sesskey": sesskey
         }
         try:
-            resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+            resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
             if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                 logger.warning(f"Panel [{self.name}]: Session expired, re-logging in...")
                 self._cached_sesskey = None
                 new_sk = self._ensure_session()
                 if new_sk:
                     params["sesskey"] = new_sk
-                    resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+                    resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
                     if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
                         return []
             if resp.status_code == 503:
@@ -2510,7 +3180,7 @@ class SMSPanelForwarder:
                 new_sk = self._ensure_session()
                 if new_sk:
                     params["sesskey"] = new_sk
-                    resp = self.session.get(f"{self.url}/client/res/data_smscdr.php", params=params, timeout=30)
+                    resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
             if resp.status_code != 200:
                 return []
             data = resp.json()
@@ -4300,29 +4970,47 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.answer_callback_query(call.id, "Testing connection...", show_alert=False)
         try:
             import requests as _req
+            cfg = get_panel_config(name)
             sess = _req.Session()
             sess.verify = False
-            login_url = url.rstrip("/") + "/login"
-            resp = sess.get(login_url, timeout=15)
-            nums = re.findall(r"(\d+)\s*\+\s*(\d+)", resp.text)
-            data_dict = {"username": username, "password": password}
+            sess.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+            login_path = cfg.get("login_url", "/login")
+            signin_path = cfg.get("signin_url", "/signin")
+            fields = cfg.get("login_fields", {})
+            captcha_pat = cfg.get("captcha_pattern", r'(\d+)\s*\+\s*(\d+)')
+            resp = sess.get(url.rstrip("/") + login_path, timeout=15)
+            nums = re.findall(captcha_pat, resp.text)
+            data_dict = {fields.get("username", "username"): username, fields.get("password", "password"): password}
             if nums:
-                data_dict["capt"] = str(int(nums[0][0]) + int(nums[0][1]))
-            resp2 = sess.post(url.rstrip("/") + "/signin", data=data_dict, timeout=15, allow_redirects=True)
+                data_dict[fields.get("captcha", "capt")] = str(int(nums[0][0]) + int(nums[0][1]))
+            resp2 = sess.post(url.rstrip("/") + signin_path, data=data_dict, timeout=15, allow_redirects=True)
             if "signin" not in resp2.url.lower() and "login" not in resp2.url.lower():
-                stats_resp = sess.get(url.rstrip("/") + "/client/SMSCDRStats", timeout=15)
-                sk_match = None
-                for sk_pattern in [
+                page_templates = cfg.get("sesskey_pages", ["/{type}/SMSCDRStats"])
+                sesskey_patterns = cfg.get("sesskey_patterns", [])
+                ext_patterns = [
                     r'data_smscdr\.php\?[^"]*sesskey=([a-f0-9]{32})',
                     r'sesskey=([a-f0-9]{32})',
                     r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
                     r"sesskey=([a-f0-9]{32})",
                     r'session[_-]?key=([a-f0-9]{32})',
-                ]:
-                    sk_match = re.search(sk_pattern, stats_resp.text)
-                    if sk_match:
-                        break
-                sesskey = sk_match.group(1) if sk_match else "N/A"
+                ]
+                all_pats = sesskey_patterns + [p for p in ext_patterns if p not in sesskey_patterns]
+                sesskey = "N/A"
+                for tpl in page_templates:
+                    page_url = url.rstrip("/") + tpl.replace("{type}", login_type)
+                    try:
+                        stats_resp = sess.get(page_url, timeout=15)
+                        if 'login' in stats_resp.url.lower():
+                            continue
+                        for sk_pattern in all_pats:
+                            sk_match = re.search(sk_pattern, stats_resp.text)
+                            if sk_match:
+                                sesskey = sk_match.group(1)
+                                break
+                        if sesskey != "N/A":
+                            break
+                    except Exception:
+                        continue
                 bot.answer_callback_query(call.id, "Connected! Sesskey: " + sesskey[:8] + "...", show_alert=True)
             else:
                 bot.answer_callback_query(call.id, "Login failed - check credentials.", show_alert=True)
