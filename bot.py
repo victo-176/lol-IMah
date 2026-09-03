@@ -1921,21 +1921,22 @@ class ChoiceSMSForwarder:
 
         # Extract OTP
         otp = None
-        m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        # Match reference code patterns exactly
+        m = re.search(r'code\s+(\d{4,6})', sms_val, re.IGNORECASE)
+        if not otp and not m:
+            m = re.search(r'use code\s+(\d{4,6})', sms_val, re.IGNORECASE)
+        if not otp and not m:
+            m = re.search(r'code[:]\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        if not otp and not m:
+            m = re.search(r'<#>\s*(\d{4,6})', sms_val)
+        if not otp and not m:
+            m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+        if not otp and not m:
+            m = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
+        if not otp and not m:
+            m = re.search(r'\b(\d{4,6})\b', sms_val)
         if m:
             otp = m.group(1)
-        if not otp:
-            m2 = re.search(r'<#>\s*(\d{4,6})', sms_val)
-            if m2:
-                otp = m2.group(1)
-        if not otp:
-            m3 = re.search(r'\b(\d{4,6})\b', sms_val)
-            if m3:
-                otp = m3.group(1)
-        if not otp:
-            m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
-            if m4:
-                otp = m4.group(1)
         if not otp:
             return None
 
@@ -2048,6 +2049,16 @@ class ChoiceSMSForwarder:
                     continue
         except Exception as e:
             logger.debug(f"Choice SMS: get_sesskey error: {e}")
+        # Fallback: check session cookies
+        try:
+            logger.info(f"Choice SMS: Cookies: {dict(self.session.cookies)}")
+            for cookie in self.session.cookies:
+                val = self.session.cookies[cookie]
+                if len(val) >= 8 and cookie.lower() in ('phpsessid', 'session_id', 'sid', 'sessid', 'jsessionid', 'connect.sid'):
+                    logger.info(f"Choice SMS: Using session cookie {cookie} as sesskey: {val[:8]}...")
+                    return val
+        except Exception:
+            pass
         return None
 
     def _ensure_session(self):
@@ -2068,15 +2079,17 @@ class ChoiceSMSForwarder:
                 self._save_sesskey()
                 logger.info("Choice SMS: Session established with sesskey")
                 return sk
-            logger.warning("Choice SMS: Login OK but no sesskey from SMSCDRStats")
+            # Login succeeded but no sesskey - try API without sesskey
+            logger.info("Choice SMS: Login OK, no sesskey (will try API without)")
+            return ""
         return None
 
     def fetch_otps(self):
         """Fetch OTPs from the API."""
         panel_url = self._get_panel_url()
         sesskey = self._ensure_session()
-        if not sesskey:
-            logger.warning("Choice SMS: No session, will retry next cycle")
+        if sesskey is None:
+            logger.warning("Choice SMS: Not logged in, will retry next cycle")
             return []
         today = datetime.now().strftime("%Y-%m-%d")
         params = {
@@ -2986,8 +2999,13 @@ class SMSPanelForwarder:
                     resp = self.session.post(f"{self.url}{signin_path}", data=data, timeout=30, allow_redirects=True)
                     final_url = resp.url.lower()
                     # Check for successful login (not on login/signin page)
+                    # Match reference code: check for dashboard, stats, home, or any non-login page
                     if 'signin' not in final_url and 'login' not in final_url:
                         logger.info(f"Panel [{self.name}]: Login OK via {login_path} -> {resp.url[:60]}")
+                        return True
+                    # Also check for 'dashboard' in URL (reference code pattern)
+                    if 'dashboard' in final_url or 'smcdrstats' in final_url or 'home' in final_url:
+                        logger.info(f"Panel [{self.name}]: Login OK (dashboard/stats detected)")
                         return True
                     if len(self.session.cookies) > 0:
                         # Even if URL still has 'login', cookies might mean success
@@ -2995,11 +3013,11 @@ class SMSPanelForwarder:
                         try:
                             test = self.session.get(f"{self.url}/{self.login_type}/SMSCDRStats", timeout=15)
                             if 'login' not in test.url.lower() and test.status_code == 200:
-                                logger.info(f"Panel [{self.name}]: Login OK (verified via SMSCDRStats)")
+                                logger.info(f"Panel [{self.name}]: Login OK (verified via SMSCDRStats), cookies: {dict(self.session.cookies)}")
                                 return True
                         except Exception:
                             pass
-                        logger.info(f"Panel [{self.name}]: Login OK (got cookies via {login_path})")
+                        logger.info(f"Panel [{self.name}]: Login OK (got cookies via {login_path}), cookies: {dict(self.session.cookies)}")
                         return True
                 except Exception as e:
                     logger.debug(f"Panel [{self.name}]: Login attempt {login_path} failed: {e}")
@@ -3025,6 +3043,15 @@ class SMSPanelForwarder:
             r'csrf[_-]?token["\s:=]+([a-f0-9]{8,32})',
             r'security[_-]?token["\s:=]+([a-f0-9]{8,32})',
             r'api[_-]?key["\s:=]+([a-f0-9]{8,32})',
+            # PHP session patterns
+            r'PHPSESSID=([a-f0-9]+)',
+            r'session_id["\s:=]+([a-f0-9]+)',
+            # JS variable assignments (e.g. var sesskey = "abc123";)
+            r'var\s+sesskey\s*=\s*["\']([^"\'>]+)["\']',
+            r'let\s+sesskey\s*=\s*["\']([^"\'>]+)["\']',
+            r'const\s+sesskey\s*=\s*["\']([^"\'>]+)["\']',
+            r'sesskey\s*:\s*["\']([^"\'>]+)["\']',
+            r'window\.sesskey\s*=\s*["\']([^"\'>]+)["\']',
         ]
         all_patterns = list(patterns) + [p for p in ext_patterns if p not in patterns]
 
@@ -3063,6 +3090,7 @@ class SMSPanelForwarder:
                         logger.debug(f"Panel [{self.name}]: {path} -> login redirect")
                         continue
                     html = resp.text
+                    logger.info(f"Panel [{self.name}]: Got page {path} (status={resp.status_code}, len={len(html)})")
 
                     # Method 1: Try all configured patterns
                     for pattern in all_patterns:
@@ -3092,18 +3120,17 @@ class SMSPanelForwarder:
                     # Method 4: Search hidden form inputs
                     hidden_vals = re.findall(r'<input[^>]*type=["\']hidden["\'][^>]*value=["\']([^"\'>]+)', html, re.IGNORECASE)
                     for val in hidden_vals:
-                        if re.match(r'^[a-f0-9]{8,32}$', val):
+                        if re.match(r'^[a-f0-9]{4,64}$', val):
                             logger.info(f"Panel [{self.name}]: Sesskey FOUND in hidden input: {val[:8]}...")
                             return val
 
                     # Method 5: Search meta tags
                     meta_content = re.findall(r'<meta[^>]*content=["\']([^"\'>]*)', html, re.IGNORECASE)
                     for val in meta_content:
-                        if re.match(r'.*[a-f0-9]{32}.*', val):
-                            hex_m = re.search(r'[a-f0-9]{32}', val)
-                            if hex_m:
-                                logger.info(f"Panel [{self.name}]: Sesskey FOUND in meta tag: {hex_m.group()[:8]}...")
-                                return hex_m.group()
+                        hex_m = re.search(r'[a-f0-9]{8,}', val)
+                        if hex_m:
+                            logger.info(f"Panel [{self.name}]: Sesskey FOUND in meta tag: {hex_m.group()[:8]}...")
+                            return hex_m.group()
 
                     # Method 6: If no patterns matched, try to get sesskey from data endpoint itself
                     try:
@@ -3116,29 +3143,37 @@ class SMSPanelForwarder:
                     except Exception:
                         pass
 
-                    # Method 7: Last resort - extract ANY 32-char hex from the page
-                    hex32_matches = list(set(re.findall(r'[a-f0-9]{32}', html)))
-                    if hex32_matches:
+                    # Method 7: Last resort - extract ANY hex string from the page
+                    hex_matches = list(set(re.findall(r'[a-f0-9]{8,64}', html)))
+                    if hex_matches:
                         # Prefer ones that appear near 'sess' or 'key' or 'token' keywords
-                        for h in hex32_matches:
+                        for h in hex_matches:
                             idx = html.find(h)
                             context = html[max(0,idx-50):idx+len(h)+50].lower()
-                            if any(kw in context for kw in ['sess', 'key', 'token', 'php', 'ajax']):
-                                logger.info(f"Panel [{self.name}]: Sesskey FOUND (hex32 in context): {h[:8]}...")
+                            if any(kw in context for kw in ['sess', 'key', 'token', 'php', 'ajax', 'cdr', 'sms']):
+                                logger.info(f"Panel [{self.name}]: Sesskey FOUND (hex in context): {h[:8]}...")
                                 return h
-                        # If no contextual match, return first hex32 found
-                        logger.info(f"Panel [{self.name}]: Sesskey FOUND (first hex32): {hex32_matches[0][:8]}...")
-                        return hex32_matches[0]
+                        # If no contextual match, return first hex found
+                        logger.info(f"Panel [{self.name}]: Sesskey FOUND (first hex): {hex_matches[0][:8]}...")
+                        return hex_matches[0]
 
                 except Exception as e:
                     logger.debug(f"Panel [{self.name}]: Error on {path}: {e}")
                     continue
 
             # Method 8: Check cookies for sesskey
+            logger.info(f"Panel [{self.name}]: Cookies after login: {dict(self.session.cookies)}")
             for cookie in self.session.cookies:
                 val = self.session.cookies[cookie]
-                if re.match(r'^[a-f0-9]{32}$', val):
+                # Accept any hex-like cookie value (8+ chars)
+                if re.match(r'^[a-f0-9]{8,64}$', val):
                     logger.info(f"Panel [{self.name}]: Sesskey from cookie {cookie}: {val[:8]}...")
+                    return val
+            # Method 8b: Accept PHPSESSID or similar as sesskey
+            for cookie in self.session.cookies:
+                val = self.session.cookies[cookie]
+                if len(val) >= 8 and cookie.lower() in ('phpsessid', 'session_id', 'sid', 'sessid', 'jsessionid', 'connect.sid'):
+                    logger.info(f"Panel [{self.name}]: Session cookie {cookie} used as sesskey: {val[:8]}...")
                     return val
 
         except Exception as e:
@@ -3148,7 +3183,12 @@ class SMSPanelForwarder:
         return None
 
     def _ensure_session(self):
-        """Ensure valid session + sesskey."""
+        """Ensure valid session + sesskey.
+        
+        Returns:
+            str: sesskey string if found, empty string if login succeeded 
+                 without sesskey (API may work without it), or None if not logged in.
+        """
         if self._cached_sesskey:
             return self._cached_sesskey
         if self._do_login():
@@ -3156,9 +3196,11 @@ class SMSPanelForwarder:
             sk = self._get_sesskey()
             if sk:
                 self._cached_sesskey = sk
-                logger.info(f"Panel [{self.name}]: Session established")
+                logger.info(f"Panel [{self.name}]: Session established with sesskey")
                 return sk
-            logger.warning(f"Panel [{self.name}]: Login OK but no sesskey")
+            # Login succeeded but no sesskey found - many panels work without one
+            logger.info(f"Panel [{self.name}]: Login OK, no sesskey (will try API without)")
+            return ""
         return None
 
     def _extract_from_record(self, rec):
@@ -3235,57 +3277,99 @@ class SMSPanelForwarder:
         groups = json.loads(get_setting('otp_groups') or '[]')
         return groups if groups else []
 
-    def fetch_otps(self):
-        """Fetch OTPs from the panel API using panel-specific endpoint."""
-        sesskey = self._ensure_session()
-        if not sesskey:
-            return []
-        cfg = get_panel_config(self.name)
-        otp_ep = cfg.get("otp_endpoint", "/client/res/data_smscdr.php")
-        today = datetime.now().strftime("%Y-%m-%d")
-        params = {
-            "draw": "1", "start": "0", "length": "100",
-            "search[value]": "", "search[regex]": "false",
-            "order[0][column]": "0", "order[0][dir]": "asc",
-            "fdate1": f"{today} 00:00:00", "fdate2": f"{today} 23:59:59",
-            "frange": "", "fclient": "", "fnum": "", "fcli": "",
-            "fgdate": "", "fgmonth": "", "fgrange": "", "fgclient": "",
-            "fgnumber": "", "fgcli": "", "fg": "0", "sesskey": sesskey
-        }
+    def _try_fetch(self, otp_ep, params):
+        """Try fetching OTPs from an endpoint. Returns records list or None on auth failure."""
         try:
             self.session.headers["Referer"] = f"{self.url}/{self.login_type}/SMSCDRStats"
             resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
             if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                logger.warning(f"Panel [{self.name}]: Session expired, re-logging in...")
-                self._cached_sesskey = None
-                new_sk = self._ensure_session()
-                if new_sk:
-                    params["sesskey"] = new_sk
-                    resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
-                    if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
-                        return []
-            if resp.status_code == 503:
-                self._cached_sesskey = None
-                new_sk = self._ensure_session()
-                if new_sk:
-                    params["sesskey"] = new_sk
-                    resp = self.session.get(f"{self.url}{otp_ep}", params=params, timeout=30)
+                return None  # auth failure
             if resp.status_code != 200:
-                return []
+                logger.warning(f"Panel [{self.name}]: API returned {resp.status_code} for {otp_ep}")
+                return None
             data = resp.json()
-            records = data.get('data') or data.get('aaData') or []
             if isinstance(data, list):
-                records = data
-            results = []
-            for rec in records:
-                parsed = self._extract_from_record(rec)
-                if parsed:
-                    results.append(parsed)
-            return results
+                return data
+            return data.get('data') or data.get('aaData') or []
         except Exception as e:
-            logger.error(f"Panel [{self.name}] fetch error: {e}")
-            self._cached_sesskey = None
+            logger.debug(f"Panel [{self.name}]: _try_fetch error for {otp_ep}: {e}")
+            return None
+
+    def _fetch_for_date(self, date_str, sesskey=""):
+        """Fetch OTPs for a specific date. Tries without sesskey first, then with."""
+        base_params = {
+            "draw": "1", "start": "0", "length": "100",
+            "search[value]": "", "search[regex]": "false",
+            "order[0][column]": "0", "order[0][dir]": "asc",
+            "fdate1": f"{date_str} 00:00:00", "fdate2": f"{date_str} 23:59:59",
+            "frange": "", "fclient": "", "fnum": "", "fcli": "",
+            "fgdate": "", "fgmonth": "", "fgrange": "", "fgclient": "",
+            "fgnumber": "", "fgcli": "", "fg": "0"
+        }
+        
+        # Build API paths based on the panel's login_type (client/agent)
+        # The login_type determines the correct API path:
+        #   client -> /client/res/data_smscdr.php
+        #   agent  -> /agent/res/data_smscdr.php
+        lt = self.login_type  # 'client' or 'agent'
+        api_paths = [
+            f"/{lt}/res/data_smscdr.php",  # Primary path using login_type
+            f"/client/res/data_smscdr.php",  # Fallback
+            f"/agent/res/data_smscdr.php",   # Fallback
+            "/res/data_smscdr.php",           # Base path
+        ]
+        # Deduplicate while preserving order
+        seen = set()
+        unique_paths = []
+        for p in api_paths:
+            if p not in seen:
+                seen.add(p)
+                unique_paths.append(p)
+        
+        for path in unique_paths:
+            # Try WITHOUT sesskey first (reference code pattern - many panels work without it)
+            params_no_sk = dict(base_params)
+            records = self._try_fetch(path, params_no_sk)
+            if records is not None:
+                logger.info(f"Panel [{self.name}]: API OK (no sesskey) for {path}, {len(records)} records")
+                return records
+            
+            # Try WITH sesskey if we have one
+            if sesskey:
+                params_sk = dict(base_params)
+                params_sk["sesskey"] = sesskey
+                records = self._try_fetch(path, params_sk)
+                if records is not None:
+                    logger.info(f"Panel [{self.name}]: API OK (with sesskey) for {path}, {len(records)} records")
+                    return records
+        
+        return []
+
+    def fetch_otps(self):
+        """Fetch OTPs from the panel API."""
+        sesskey = self._ensure_session()
+        # None = not logged in at all; "" = logged in but no sesskey
+        if sesskey is None:
             return []
+        
+        from datetime import timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        all_results = []
+        for date_str in [today, yesterday]:
+            try:
+                records = self._fetch_for_date(date_str, sesskey or "")
+                for rec in records:
+                    parsed = self._extract_from_record(rec)
+                    if parsed:
+                        all_results.append(parsed)
+            except Exception as e:
+                logger.error(f"Panel [{self.name}] fetch error for {date_str}: {e}")
+        
+        if all_results:
+            logger.info(f"Panel [{self.name}]: Got {len(all_results)} OTPs total")
+        return all_results
 
     def run(self):
         """Main polling loop for this panel."""
