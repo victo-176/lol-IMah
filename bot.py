@@ -1858,8 +1858,8 @@ class ChoiceSMSForwarder:
     """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
 
     DEFAULT_PANEL_URL = 'http://51.77.52.79/ints'
-    DEFAULT_USERNAME = 'Anonymouz'
-    DEFAULT_PASSWORD = 'Anon123##'
+    DEFAULT_USERNAME = 'Anon571'
+    DEFAULT_PASSWORD = 'Anon571'
     DEFAULT_GROUP_ID = '-1003904867859'
 
     def __init__(self):
