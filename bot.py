@@ -798,6 +798,9 @@ def is_banned(user_id):
     return user and user[6] == 1
 
 def ban_user(user_id):
+    # FIXED: Admin can never be banned
+    if is_admin(user_id):
+        return False
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
@@ -3833,6 +3836,12 @@ def check_sub(call):
         show_main_menu(call.message.chat.id, call.from_user.id, call.from_user.first_name)
     else:
         bot.answer_callback_query(call.id, "❌ Not subscribed yet!", show_alert=True)
+
+# ---- Global banned user block ----
+# FIXED: Banned users cannot use ANY command or button
+@bot.message_handler(func=lambda msg: not is_admin(msg.from_user.id) and is_banned(msg.from_user.id), content_types=['text', 'photo', 'document', 'voice', 'video', 'sticker'])
+def blocked_banned_user(message):
+    bot.send_message(message.chat.id, "🚫 You are banned from this bot.", parse_mode="HTML")
 
 # ---- Text handlers ----
 @bot.message_handler(func=menu_match("GET NUMBER"))
