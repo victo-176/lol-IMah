@@ -1884,6 +1884,7 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
         f"{flag_html} <b>{service_name}</b> 🟢\n"
         f"📱 <code>{masked}</code>\n"
         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+        f"📩 <b>Message:</b> <code>{msg_text[:200]}</code>\n"
         f"⏰ {date_str}\n"
         f"━━━━━━━━━━━━━━━"
     )
@@ -2275,6 +2276,7 @@ class ChoiceSMSForwarder:
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
                         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
@@ -3508,6 +3510,7 @@ class SMSPanelForwarder:
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
                         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
