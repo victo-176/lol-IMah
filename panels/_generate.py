@@ -117,7 +117,7 @@ PANEL_NAME = "{display_name}"
 DEFAULT_LOGIN_TYPE = "{default_login_type}"
 
 DB_PATH = os.environ.get("DB_PATH", "data/ivasms_bot.db")
-POLL_INTERVAL = 15
+POLL_INTERVAL = 3
 
 # =========================== DATABASE HELPERS ===========================
 def _db():
