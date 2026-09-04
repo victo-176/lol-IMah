@@ -4866,18 +4866,18 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         except Exception as e:
             logger.warning(f"admin_list_users edit failed: {e}")
-            bot.answer_callback_query(callback_query_id, "Error loading users")
+            bot.answer_callback_query(call.id, "Error loading users")
         return
 
     if data.startswith("admin_user_detail"):
         try:
             uid = int(data.split("|")[1])
         except (ValueError, IndexError):
-            bot.answer_callback_query(callback_query_id, "Invalid user")
+            bot.answer_callback_query(call.id, "Invalid user")
             return
         user = get_user(uid)
         if not user:
-            bot.answer_callback_query(callback_query_id, "User not found")
+            bot.answer_callback_query(call.id, "User not found")
             return
         try:
             # Extract fields safely
@@ -4966,8 +4966,8 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             try:
                 bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
             except Exception:
-                bot.answer_callback_query(callback_query_id, "Error displaying user detail")
-        bot.answer_callback_query(callback_query_id)
+                bot.answer_callback_query(call.id, "Error displaying user detail")
+        bot.answer_callback_query(call.id)
         return
 
     if data.startswith("admin_quick_add_bal"):
@@ -5002,7 +5002,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         try:
             uid = int(data.split("|")[1])
             ban_user(uid)
-            bot.answer_callback_query(callback_query_id, f"User {uid} banned!")
+            bot.answer_callback_query(call.id, f"User {uid} banned!")
             # Refresh detail view
             data = f"admin_user_detail|{uid}"
         except (ValueError, IndexError):
@@ -5013,7 +5013,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         try:
             uid = int(data.split("|")[1])
             unban_user(uid)
-            bot.answer_callback_query(callback_query_id, f"User {uid} unbanned!")
+            bot.answer_callback_query(call.id, f"User {uid} unbanned!")
             data = f"admin_user_detail|{uid}"
         except (ValueError, IndexError):
             pass
