@@ -1884,7 +1884,6 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
         f"{flag_html} <b>{service_name}</b> 🟢\n"
         f"📱 <code>{masked}</code>\n"
         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-        f"📩 <b>Message:</b> <code>{msg_text[:200]}</code>\n"
         f"⏰ {date_str}\n"
         f"━━━━━━━━━━━━━━━"
     )
@@ -1983,6 +1982,9 @@ class ChoiceSMSForwarder:
 
     def _extract_from_record(self, rec):
         """Extract OTP, service, phone, country, timestamp from a DataTables record array."""
+        # Skip DataTables totals/summary rows (e.g. ["$0.15", "$0.15", "$0.15", "18"])
+        if isinstance(rec, list) and len(rec) >= 1 and isinstance(rec[0], str) and rec[0].startswith('$'):
+            return None
         if isinstance(rec, dict):
             date_val = str(rec.get('Date', rec.get('date', '')))
             range_val = str(rec.get('Range', rec.get('range', '')))
@@ -1994,27 +1996,37 @@ class ChoiceSMSForwarder:
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[5] if len(rec) > 5 and rec[5] else (rec[4] if len(rec) > 4 else ""))
+            sms_val = str(rec[4]) if len(rec) > 4 and rec[4] else ""
+            if not sms_val:
+                # rec[4] is the SMS text; rec[5]+ are currency/payout - only scan
+                # those as fallback, skipping currency-like cells (EUR 0.01, $0.15)
+                for cell in (rec[5:] if len(rec) > 5 else []):
+                    cell_str = str(cell or "").strip()
+                    if cell_str and not re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', cell_str):
+                        sms_val = cell_str
+                        break
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 
         # Extract OTP - try multiple patterns matching the reference code
         otp = None
-        m = re.search(r'code\s+(\d{4,6})', sms_val, re.IGNORECASE)
-        if not otp and not m:
-            m = re.search(r'use code\s+(\d{4,6})', sms_val, re.IGNORECASE)
-        if not otp and not m:
-            m = re.search(r'code[:]\s*(\d{4,6})', sms_val, re.IGNORECASE)
-        if not otp and not m:
-            m = re.search(r'<#>\s*(\d{4,6})', sms_val)
-        if not otp and not m:
-            m = re.search(r'code\s*[:]?\s*(\d{4,6})', sms_val, re.IGNORECASE)
-        if not otp and not m:
-            m = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
-        if not otp and not m:
-            m = re.search(r'\b(\d{4,6})\b', sms_val)
+        # Dashed code like "451-025" -> join to 451025
+        dash_m = re.search(r'(?<!\d)(\d{3})[- ](\d{3})(?!\d)', sms_val)
+        m = (
+            re.search(r'code\s*[:\s]+(\d{4,6})', sms_val, re.IGNORECASE)
+            or re.search(r'\b(?:otp|pin|passcode|verification code)\s*(?:is|:)?\s*(\d{4,6})', sms_val, re.IGNORECASE)
+            or re.search(r'<#>\s*(\d{4,6})', sms_val)
+            or (dash_m and dash_m)
+            or re.search(r'(?<![\d.-])(\d{4,6})(?!\.?\d)', sms_val)
+        )
+        if not m:
+            # Last resort: search the whole record (in case SMS was in another column)
+            m = re.search(r'code\s*[:\s]+(\d{4,6})', str(rec), re.IGNORECASE)
         if m:
-            otp = m.group(1)
+            if dash_m and m is dash_m:
+                otp = dash_m.group(1) + dash_m.group(2)
+            else:
+                otp = m.group(1)
         if not otp:
             return None
 
@@ -2263,7 +2275,6 @@ class ChoiceSMSForwarder:
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
                         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
@@ -3497,7 +3508,6 @@ class SMSPanelForwarder:
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
                         f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
