@@ -4782,25 +4782,183 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.edit_message_text("👥 <b>User Management</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
-    if data == "admin_list_users":
+    if data.startswith("admin_list_users"):
+        # Support pagination: admin_list_users or admin_list_users|PAGE
+        page = 0
+        if "|" in data:
+            try:
+                page = int(data.split("|")[1])
+            except (ValueError, IndexError):
+                page = 0
         users = get_all_users()
-        text = "👥 <b>Users</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        per_page = 8
+        total = len(users)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        if page >= total_pages:
+            page = total_pages - 1
+        if page < 0:
+            page = 0
+        start = page * per_page
+        end = start + per_page
+        page_users = users[start:end]
+        text = pe("people", "👥") + f" <b>Users</b> ({total} total)\n"
+        text += f"━━━━━━━━━━━━━━━━━━━━━\n"
         if not users:
-            text += "No users."
+            text += "No users yet."
         else:
-            for i, uid in enumerate(users[:20], 1):
+            text += f"📄 Page {page+1}/{total_pages}\n\n"
+            for i, uid in enumerate(page_users, start + 1):
                 try:
                     u = bot.get_chat(uid)
                     name = u.first_name or "User"
-                except:
+                    uname = f" @{u.username}" if u.username else ""
+                except Exception:
                     name = "User"
-                text += f"{i}. <code>{uid}</code> — {name}\n"
-            if len(users) > 20:
-                text += f"... and {len(users)-20} more"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(ibtn("Back", callback_data="admin_users", style="primary", icon="back"))
+                    uname = ""
+                text += f"<b>{i}.</b> <code>{uid}</code> — {name}{uname}\n"
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        nav_row = []
+        if page > 0:
+            nav_row.append(ibtn(pe("back", "⬅") + " Prev", callback_data=f"admin_list_users|{page-1}", style="primary", icon="back"))
+        if page < total_pages - 1:
+            nav_row.append(ibtn(pe("strelka_right", "➡") + " Next", callback_data=f"admin_list_users|{page+1}", style="primary", icon="strelka_right"))
+        if nav_row:
+            markup.add(*nav_row)
+        # Add clickable user buttons
+        for uid in page_users:
+            try:
+                u = bot.get_chat(uid)
+                name = u.first_name or "User"
+            except Exception:
+                name = "User"
+            markup.add(ibtn(pe("profile", "👤") + f" {name} ({uid})", callback_data=f"admin_user_detail|{uid}", style="primary", icon="profile"))
+        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_users", style="primary", icon="back"))
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
+
+    if data.startswith("admin_user_detail"):
+        try:
+            uid = int(data.split("|")[1])
+        except (ValueError, IndexError):
+            bot.answer_callback_query(callback_query_id, "Invalid user")
+            return
+        user = get_user(uid)
+        if not user:
+            bot.answer_callback_query(callback_query_id, "User not found")
+            return
+        # Extract fields: 0=user_id,1=username,2=first_name,3=last_name,
+        # 4=country_code,5=assigned_number,6=is_banned,7=private_combo_country,
+        # 8=join_date,9=last_active,10=balance,11=remove_cc
+        username = user[1] or ""
+        first_name = user[2] or ""
+        last_name = user[3] or ""
+        country_code = user[4] or "N/A"
+        assigned_number = user[5] or "None"
+        is_banned = "Yes" if user[6] else "No"
+        join_date = user[8] or "N/A"
+        last_active = user[9] or "N/A"
+        balance = user[10] if user[10] is not None else 0.0
+        otp_count = get_otp_count_for_user(uid)
+        display_name = first_name if first_name else (f"@{username}" if username else str(uid))
+        username_display = f"@{username}" if username else "N/A"
+        full_name = f"{first_name} {last_name}".strip() if last_name else first_name or "N/A"
+        # Build user info text
+        text = (
+            f"{pe('profile', '👤')} <b>User Detail</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{pe('id', '🆔')} <b>ID:</b> <code>{uid}</code>\n"
+            f"{pe('info_bw', '📛')} <b>Name:</b> {display_name}\n"
+            f"{pe('info_bw', '📝')} <b>Full Name:</b> {full_name}\n"
+            f"{pe('info_bw', '👤')} <b>Username:</b> {username_display}\n"
+            f"{pe('earth', '🌍')} <b>Country:</b> {country_code}\n"
+            f"{pe('phone', '📱')} <b>Number:</b> <code>{assigned_number}</code>\n"
+            f"{pe('wallet', '💰')} <b>Balance:</b> ${balance:.2f}\n"
+            f"{pe('star', '📊')} <b>OTPs Received:</b> {otp_count}\n"
+            f"{pe('ban', '🚫')} <b>Banned:</b> {is_banned}\n"
+            f"{pe('calendar', '📅')} <b>Joined:</b> {join_date}\n"
+            f"{pe('clock', '🕐')} <b>Last Active:</b> {last_active}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        # Activity logs
+        activity = get_user_activity_logs(uid, limit=15)
+        if activity:
+            text += f"{pe('list', '📋')} <b>Recent Activity:</b>\n"
+            for action, details, ts in activity:
+                detail_short = (details[:60] + "...") if details and len(details) > 60 else (details or "")
+                text += f"  • <code>{ts}</code> — <b>{action}</b>"
+                if detail_short:
+                    text += f" ({detail_short})"
+                text += "\n"
+        else:
+            text += f"{pe('info_bw', 'ℹ')} No activity logs yet.\n"
+        # OTP logs
+        otp_logs = get_user_otp_logs(uid, limit=10)
+        if otp_logs:
+            text += f"\n{pe('key', '🔑')} <b>Recent OTPs:</b>\n"
+            for ts, number, otp_code, service in otp_logs:
+                text += f"  • <code>{ts}</code> — {service or 'Unknown'} — <code>{otp_code}</code>\n"
+        # Action buttons
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            ibtn(pe('plus', '➕') + " Add Balance", callback_data=f"admin_quick_add_bal|{uid}", style="success", icon="plus"),
+            ibtn(pe('minus', '➖') + " Deduct", callback_data=f"admin_quick_deduct|{uid}", style="danger", icon="minus"),
+        )
+        if user[6]:
+            markup.add(ibtn(pe('checkmark', '✅') + " Unban", callback_data=f"admin_quick_unban|{uid}", style="success", icon="checkmark"))
+        else:
+            markup.add(ibtn(pe('ban', '🚫') + " Ban", callback_data=f"admin_quick_ban|{uid}", style="danger", icon="ban"))
+        markup.add(ibtn(pe('back', '⬅') + " Back to Users", callback_data="admin_list_users", style="primary", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.answer_callback_query(callback_query_id)
+        return
+
+    if data.startswith("admin_quick_add_bal"):
+        try:
+            uid = int(data.split("|")[1])
+            set_state(chat_id, f"admin_add_bal_to|{uid}")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data=f"admin_user_detail|{uid}", style="danger", icon="back"))
+            bot.edit_message_text(
+                f"{pe('plus', '➕')} Send amount to add to <code>{uid}</code>:", 
+                chat_id, msg_id, parse_mode="HTML", reply_markup=markup
+            )
+        except (ValueError, IndexError):
+            pass
+        return
+
+    if data.startswith("admin_quick_deduct"):
+        try:
+            uid = int(data.split("|")[1])
+            set_state(chat_id, f"admin_deduct_from|{uid}")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data=f"admin_user_detail|{uid}", style="danger", icon="back"))
+            bot.edit_message_text(
+                f"{pe('minus', '➖')} Send amount to deduct from <code>{uid}</code>:", 
+                chat_id, msg_id, parse_mode="HTML", reply_markup=markup
+            )
+        except (ValueError, IndexError):
+            pass
+        return
+
+    if data.startswith("admin_quick_ban"):
+        try:
+            uid = int(data.split("|")[1])
+            ban_user(uid)
+            bot.answer_callback_query(callback_query_id, f"User {uid} banned!")
+            # Refresh detail view
+            data = f"admin_user_detail|{uid}"
+        except (ValueError, IndexError):
+            pass
+        # Fall through to refresh detail view
+
+    if data.startswith("admin_quick_unban"):
+        try:
+            uid = int(data.split("|")[1])
+            unban_user(uid)
+            bot.answer_callback_query(callback_query_id, f"User {uid} unbanned!")
+            data = f"admin_user_detail|{uid}"
+        except (ValueError, IndexError):
+            pass
 
     if data == "admin_ban_unban":
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -5674,6 +5832,59 @@ def unban_user_handler(message):
         bot.reply_to(message, "❌ Invalid ID.", parse_mode="HTML")
     clear_state(message)
 
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), str) and get_state(msg).startswith("admin_add_bal_to|") and is_admin(msg.from_user.id))
+def admin_quick_add_bal_handler(message):
+    """Quick add balance from user detail view."""
+    try:
+        uid = int(get_state(message).split("|")[1])
+        amt = float(message.text.strip())
+        user = get_user(uid)
+        if not user:
+            bot.reply_to(message, "❌ User not found.", parse_mode="HTML")
+            clear_state(message)
+            return
+        new_bal = (user[10] if len(user) > 10 else 0.0) + amt
+        save_user(uid, balance=new_bal)
+        clear_state(message)
+        bot.reply_to(message, f"✅ Added ${amt:.2f} to <code>{uid}</code>. New balance: ${new_bal:.2f}", parse_mode="HTML")
+        try:
+            bot.send_message(uid, f"{pe('wallet', '💰')} <b>Balance Updated</b>\n+${amt:.2f}\nNew balance: ${new_bal:.2f}", parse_mode="HTML")
+        except Exception:
+            pass
+    except (ValueError, IndexError):
+        bot.reply_to(message, "❌ Send a valid number (e.g. 10)", parse_mode="HTML")
+        clear_state(message)
+
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), str) and get_state(msg).startswith("admin_deduct_from|") and is_admin(msg.from_user.id))
+def admin_quick_deduct_handler(message):
+    """Quick deduct balance from user detail view."""
+    try:
+        uid = int(get_state(message).split("|")[1])
+        amt = float(message.text.strip())
+        user = get_user(uid)
+        if not user:
+            bot.reply_to(message, "❌ User not found.", parse_mode="HTML")
+            clear_state(message)
+            return
+        current = user[10] if user[10] is not None else 0.0
+        if amt > current:
+            bot.reply_to(message, f"❌ User has only ${current:.2f}.", parse_mode="HTML")
+            clear_state(message)
+            return
+        new_bal = current - amt
+        save_user(uid, balance=new_bal)
+        clear_state(message)
+        bot.reply_to(message, f"✅ Deducted ${amt:.2f} from <code>{uid}</code>. New balance: ${new_bal:.2f}", parse_mode="HTML")
+        try:
+            bot.send_message(uid, f"{pe('wallet', '💰')} <b>Balance Updated</b>\n-${amt:.2f}\nNew balance: ${new_bal:.2f}", parse_mode="HTML")
+        except Exception:
+            pass
+    except (ValueError, IndexError):
+        bot.reply_to(message, "❌ Send a valid number (e.g. 10)", parse_mode="HTML")
+        clear_state(message)
+
+
 @bot.message_handler(func=lambda msg: get_state(msg) == "add_balance" and is_admin(msg.from_user.id))
 def add_balance_handler(message):
     parts = message.text.strip().split()
@@ -5925,6 +6136,40 @@ def get_otp_count_for_user(user_id):
     count = c.fetchone()[0] or 0
     conn.close()
     return count
+
+
+def get_user_activity_logs(user_id, limit=20):
+    """Fetch recent activity logs for a user."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT action, details, timestamp FROM user_activity WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.warning(f"get_user_activity_logs error: {e}")
+        return []
+
+
+def get_user_otp_logs(user_id, limit=10):
+    """Fetch recent OTP logs for a user."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT timestamp, number, otp_code, service FROM otp_logs WHERE assigned_to=? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.warning(f"get_user_otp_logs error: {e}")
+        return []
 
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().lower().startswith('/checkuser') and is_admin(msg.from_user.id))
