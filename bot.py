@@ -47,11 +47,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8779205330:AAE9hAye3DIqmNIdEphJSZ52l89-6DEyI
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8921746989"))
 EXTRA_ADMINS = []
 
-WSS_URL = "wss://ivasms.qzz.io:2087/socket.io/?token=eyJpdiI6InlUVmNva1RlSU8vMWZaVm1zTTB1QUE9PSIsInZhbHVlIjoicDZMSXNxWmJGZC81Qy9BbzhBUVR3N0hLTXpiU0xXdDUrZXBmNjd0MmZsS295ZGZ4ay9qcktSQ1p4cDFZVlJTYlQ4dFFBcUo1TzZaMHdEUXZxVy8xTXFKQng4ekoyU0FzL2VkRkhDRkQ2Wkdxc0s2TmpoSi9acGlydi9sN0FhMVJISHQ3TUJOSXNFamNndTlrVWRMeFpLTU83VkZROEtLUGtQbld0aU5JcGRLQ2lPL3dHdzk1ZXlXc3pYMy84VkduU3Z1dmllSlBDQ3RKVElEc215QTBvRVkyVkVHclQ0Z3ExOFVWNFpkb3lMdWpHeDhWTG1yWllUbEgwemtQYTNyL2ROQmZuRlp3M1VDbjc3RWdNK1JKRU5abGRHNFR0d1VWZE13K2tOdjVxSEE0clpWbUxPZDFvaXdJUjhtS3AvTllKY2dDNCs3b0N6QWptck9zN3Z0MDFqaUh0bVFZOUNMdTNITEVKWnMwdHJ3aHc5V29HL2s5OGZqN3NINmg1VEpyTHQwdXllV1NXR2hDZzVKSXpIblJUcUFZVlZ0NDhTNm1aeEhscXlyVVZDRVNlRFQvUngxQmNTL0FiZCtUOVB4SllwVmc4RjBtUDZLZDBKblh6WERjVWFXdk91Vk1aNVJwcGVFTGhxN3QrWmF5VVNRSTZWUG1PTXowNEptTmk1bE16TGZtRWZPZGN6aGUxSk5MWUtsSzJnPT0iLCJtYWMiOiI5YzdiYTE3M2E3OTViMDlmMmU4Yjc1N2FlZmMwNmUzOWU5NDE1ZDIyMWY0Yzk4ZjgzNGU4MDU3Yjg2YzMxZjY3IiwidGFnIjoiIn0%3D&user=81d1d9839bdd2141f706d3cf6ee686ef"
+WSS_URL = "wss://ivasms.com:2087/livesms?token=eyJpdiI6InlUVmNva1RlSU8vMWZaVm1zTTB1QUE9PSIsInZhbHVlIjoicDZMSXNxWmJGZC81Qy9BbzhBUVR3N0hLTXpiU0xXdDUrZXBmNjd0MmZsS295ZGZ4ay9qcktSQ1p4cDFZVlJTYlQ4dFFBcUo1TzZaMHdEUXZxVy8xTXFKQng4ekoyU0FzL2VkRkhDRkQ2Wkdxc0s2TmpoSi9acGlydi9sN0FhMVJISHQ3TUJOSXNFamNndTlrVWRMeFpLTU83VkZROEtLUGtQbld0aU5JcGRLQ2lPL3dHdzk1ZXlXc3pYMy84VkduU3Z1dmllSlBDQ3RKVElEc215QTBvRVkyVkVHclQ0Z3ExOFVWNFpkb3lMdWpHeDhWTG1yWllUbEgwemtQYTNyL2ROQmZuRlp3M1VDbjc3RWdNK1JKRU5abGRHNFR0d1VWZE13K2tOdjVxSEE0clpWbUxPZDFvaXdJUjhtS3AvTllKY2dDNCs3b0N6QWptck9zN3Z0MDFqaUh0bVFZOUNMdTNITEVKWnMwdHJ3aHc5V29HL2s5OGZqN3NINmg1VEpyTHQwdXllV1NXR2hDZzVKSXpIblJUcUFZVlZ0NDhTNm1aeEhscXlyVVZDRVNlRFQvUngxQmNTL0FiZCtUOVB4SllwVmc4RjBtUDZLZDBKblh6WERjVWFXdk91Vk1aNVJwcGVFTGhxN3QrWmF5VVNRSTZWUG1PTXowNEptTmk1bE16TGZtRWZPZGN6aGUxSk5MWUtsSzJnPT0iLCJtYWMiOiI5YzdiYTE3M2E3OTViMDlmMmU4Yjc1N2FlZmMwNmUzOWU5NDE1ZDIyMWY0Yzk4ZjgzNGU4MDU3Yjg2YzMxZjY3IiwidGFnIjoiIn0%3D&user=81d1d9839bdd2141f706d3cf6ee686ef"
 WSS_HEADERS = {
-    "Origin": "https://ivasms.qzz.io",
+    "Origin": "https://ivasms.com",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://ivasms.qzz.io/",
+    "Referer": "https://www.ivasms.com/",
 }
 
 ALLOWED_SERVICES = {
@@ -1742,11 +1742,13 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     service = app_name if app_name else detect_service(sms)
     app_emoji = app_emoji_html(service)
 
-    # FIXED: Only filter by detect_service results, NOT by admin-assigned app names
-    # App names from combos table should always be allowed through
+    # FIXED: Only filter by detect_service results, NOT by app names from
+    # Ivasms originator, combos table, or admin-assigned apps
     if not app_name and ALLOWED_SERVICES and service.lower() not in ALLOWED_SERVICES:
         logger.info(f"Filtered by service detection: {service}")
         return
+    # Log the service being used for debugging
+    logger.info(f"[OTP] Processing: number={number}, service={service}, app_name={app_name}")
 
     user_id = get_user_by_number(number)
     logger.info(f"IVASMS: get_user_by_number('{number}') => {user_id}")
@@ -3599,24 +3601,32 @@ if SOCKETIO_AVAILABLE:
         def handle_message(self, data):
             try:
                 # FIXED: Log raw data for debugging Ivasms field names
-                logger.info(f"[IVASMS RAW] type={type(data).__name__}, data={str(data)[:500]}")
+                logger.info(f"[IVASMS RAW] type={type(data).__name__}, data={str(data)[:800]}")
                 number = None
                 sms = None
-                # Try multiple field name variations for Ivasms data format
+                originator = None  # FIXED: Ivasms sends originator (service name like "megapari")
+                # Ivasms data format from the /livesms WebSocket:
+                # {recipient: "2348024126325", originator: "megapari", message: "Do not share...", range: "NIGERIA 40968", country_iso: "NG"}
                 if isinstance(data, dict):
-                    number = (data.get("number") or data.get("num") or data.get("phone")
-                              or data.get("recipient") or data.get("msisdn") or data.get("to")
+                    # Ivasms uses 'recipient' for phone number, 'originator' for service name
+                    number = (data.get("recipient") or data.get("number") or data.get("num")
+                              or data.get("phone") or data.get("msisdn") or data.get("to")
                               or data.get("Number") or data.get("NUM") or data.get("Phone"))
                     sms = (data.get("message") or data.get("text") or data.get("sms")
                            or data.get("content") or data.get("body") or data.get("sms_content")
                            or data.get("Message") or data.get("SMS") or data.get("Content"))
+                    # FIXED: Capture originator (service name from Ivasms)
+                    originator = (data.get("originator") or data.get("sid") or data.get("SID")
+                                  or data.get("sender") or data.get("service"))
                     # Ivasms may nest data under 'data' key
                     if not number and not sms and isinstance(data.get("data"), dict):
                         nested = data["data"]
-                        number = (nested.get("number") or nested.get("num") or nested.get("phone")
-                                  or nested.get("recipient") or nested.get("msisdn"))
+                        number = (nested.get("recipient") or nested.get("number") or nested.get("num")
+                                  or nested.get("phone") or nested.get("msisdn"))
                         sms = (nested.get("message") or nested.get("text") or nested.get("sms")
                                or nested.get("content") or nested.get("body"))
+                        originator = (nested.get("originator") or nested.get("sid")
+                                      or nested.get("sender") or nested.get("service"))
                 elif isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
                     payload = data[1]
                     number = (payload.get("number") or payload.get("num") or payload.get("phone")
@@ -3634,11 +3644,13 @@ if SOCKETIO_AVAILABLE:
                 if number and sms:
                     number_clean = clean_number(str(number))
                     if number_clean and len(number_clean) >= 5:
-                        logger.info(f"[IVASMS] SMS received: number={number_clean}, sms={sms[:100]}")
-                        assigned_app = get_app_for_number(number_clean)
+                        logger.info(f"[IVASMS] SMS received: number={number_clean}, originator={originator}, sms={sms[:100]}")
+                        # FIXED: Use Ivasms originator as app_name if available,
+                        # otherwise fall back to get_app_for_number lookup
+                        app_name = originator if originator else get_app_for_number(number_clean)
                         send_otp_to_user_and_group(
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            number_clean, sms, app_name=assigned_app
+                            number_clean, sms, app_name=app_name
                         )
                     else:
                         logger.warning(f"[IVASMS] Number too short after clean: {number_clean}")
