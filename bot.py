@@ -804,6 +804,16 @@ def ban_user(user_id):
     conn.commit()
     conn.close()
     log_user_activity(user_id, "user_banned", "User banned by admin")
+    # FIXED: Notify the user they've been banned from the bot
+    try:
+        bot.send_message(user_id,
+            "🚫 <b>You have been banned</b>\n\n"
+            "You can no longer use this bot.\n"
+            "Contact support if you believe this is a mistake.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass  # User may have blocked the bot
     return True
 
 def unban_user(user_id):
@@ -813,6 +823,16 @@ def unban_user(user_id):
     conn.commit()
     conn.close()
     log_user_activity(user_id, "user_unbanned", "User unbanned by admin")
+    # FIXED: Notify the user they've been unbanned
+    try:
+        bot.send_message(user_id,
+            "✅ <b>You have been unbanned</b>\n\n"
+            "You can now use the bot again.\n"
+            "Use /start to continue.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass  # User may have blocked the bot
     return True
 
 def get_all_users():
@@ -4044,6 +4064,11 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.answer_callback_query(call.id, "❌ Bot is under maintenance.", show_alert=True)
             return
         # For close_menu/check_sub, let them pass through silently
+
+    # FIXED: Block ALL callbacks for banned users (except close_menu)
+    if is_banned(user_id) and data != "close_menu":
+        bot.answer_callback_query(call.id, "🚫 You are banned from this bot.", show_alert=True)
+        return
 
     if data == "close_menu":
         try:
