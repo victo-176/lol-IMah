@@ -1994,13 +1994,12 @@ class ChoiceSMSForwarder:
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[4]) if len(rec) > 4 else ""
+            sms_val = str(rec[5] if len(rec) > 5 and rec[5] else (rec[4] if len(rec) > 4 else ""))
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 
-        # Extract OTP
+        # Extract OTP - try multiple patterns matching the reference code
         otp = None
-        # Match reference code patterns exactly
         m = re.search(r'code\s+(\d{4,6})', sms_val, re.IGNORECASE)
         if not otp and not m:
             m = re.search(r'use code\s+(\d{4,6})', sms_val, re.IGNORECASE)
@@ -2369,7 +2368,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized, skipping {startup_count} existing OTPs (marked as seen in DB)")
                     first_run = False
-                time.sleep(2)
+                time.sleep(15)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
@@ -3077,25 +3076,32 @@ class SMSPanelForwarder:
 
                     resp = self.session.post(f"{self.url}{signin_path}", data=data, timeout=30, allow_redirects=True)
                     final_url = resp.url.lower()
+                    resp_html = resp.text.lower()
                     # Check for successful login (not on login/signin page)
-                    # Match reference code: check for dashboard, stats, home, or any non-login page
                     if 'signin' not in final_url and 'login' not in final_url:
                         logger.info(f"Panel [{self.name}]: Login OK via {login_path} -> {resp.url[:60]}")
                         return True
-                    # Also check for 'dashboard' in URL (reference code pattern)
                     if 'dashboard' in final_url or 'smcdrstats' in final_url or 'home' in final_url:
-                        logger.info(f"Panel [{self.name}]: Login OK (dashboard/stats detected)")
+                        logger.info(f"Panel [{self.name}]: Login OK (dashboard/stats detected in URL)")
+                        return True
+                    # EVS-style panels: URL may still say 'login' but body has dashboard content
+                    has_login_form = 'type=\"password\"' in resp_html
+                    has_dashboard = 'smcdrstats' in resp_html or 'sms reports' in resp_html or 'side-nav' in resp_html
+                    if not has_login_form and has_dashboard:
+                        logger.info(f"Panel [{self.name}]: Login OK (dashboard content in response body)")
                         return True
                     if len(self.session.cookies) > 0:
                         # Even if URL still has 'login', cookies might mean success
                         # Try accessing a protected page to verify
-                        try:
-                            test = self.session.get(f"{self.url}/{self.login_type}/SMSCDRStats", timeout=15)
-                            if 'login' not in test.url.lower() and test.status_code == 200:
-                                logger.info(f"Panel [{self.name}]: Login OK (verified via SMSCDRStats), cookies: {dict(self.session.cookies)}")
-                                return True
-                        except Exception:
-                            pass
+                        # Try both /client/ and /agent/ SMSCDRStats pages
+                        for smc_page in ['/client/SMSCDRStats', '/agent/SMSCDRStats', f'/{self.login_type}/SMSCDRStats']:
+                            try:
+                                test = self.session.get(f"{self.url}{smc_page}", timeout=15)
+                                if 'login' not in test.url.lower() and test.status_code == 200:
+                                    logger.info(f"Panel [{self.name}]: Login OK (verified via {smc_page})")
+                                    return True
+                            except Exception:
+                                continue
                         logger.info(f"Panel [{self.name}]: Login OK (got cookies via {login_path}), cookies: {dict(self.session.cookies)}")
                         return True
                 except Exception as e:
@@ -3109,7 +3115,10 @@ class SMSPanelForwarder:
             return False
 
     def _get_sesskey(self):
-        """Aggressively extract sesskey from panel - searches EVERYTHING."""
+        """Aggressively extract sesskey from panel. Returns None if not found."""
+        # If we already know this panel has no sesskey, skip expensive search
+        if hasattr(self, '_no_sesskey') and self._no_sesskey:
+            return None
         cfg = get_panel_config(self.name)
         patterns = cfg.get("sesskey_patterns", [])
         ext_patterns = [
@@ -3258,7 +3267,8 @@ class SMSPanelForwarder:
         except Exception as e:
             logger.error(f"Panel [{self.name}] get_sesskey error: {e}")
 
-        logger.warning(f"Panel [{self.name}]: No sesskey found after exhaustive search")
+        logger.warning(f"Panel [{self.name}]: No sesskey found (panel uses session cookies)")
+        self._no_sesskey = True
         return None
 
     def _ensure_session(self):
@@ -3277,8 +3287,9 @@ class SMSPanelForwarder:
                 self._cached_sesskey = sk
                 logger.info(f"Panel [{self.name}]: Session established with sesskey")
                 return sk
-            # Login succeeded but no sesskey found - many panels work without one
-            logger.info(f"Panel [{self.name}]: Login OK, no sesskey (will try API without)")
+            # Login succeeded but no sesskey - these panels use PHP session cookies only
+            logger.info(f"Panel [{self.name}]: Login OK, using session cookie auth (no sesskey needed)")
+            self._no_sesskey = True
             return ""
         return None
 
@@ -3291,6 +3302,9 @@ class SMSPanelForwarder:
             cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
             sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
         elif isinstance(rec, list):
+            # Skip DataTables totals/summary rows (last row in EVS panels)
+            if len(rec) >= 1 and isinstance(rec[0], str) and rec[0].startswith('$'):
+                return None
             date_val = str(rec[0]) if len(rec) > 0 else ""
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
@@ -3568,7 +3582,7 @@ class SMSPanelForwarder:
                 if first_run:
                     logger.info(f"Panel [{self.name}]: Initialized, skipping {startup_count} existing OTPs")
                     first_run = False
-                time.sleep(2)
+                time.sleep(15)
             except Exception as e:
                 logger.error(f"Panel [{self.name}] error: {e}")
                 self._cached_sesskey = None
@@ -5952,8 +5966,18 @@ def quick_panel_pass_handler(message):
             c.execute("INSERT INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, ?, ?, ?, ?)",
                       (panel_name, panel_url, panel_type, username, password, sesskey))
         conn.commit()
+        # Auto-start forwarder for this panel (after commit so DB is readable)
+        try:
+            c2 = conn.cursor()
+            c2.execute("SELECT id FROM sms_panels WHERE name=?", (panel_name,))
+            row = c2.fetchone()
+            if row:
+                start_panel_forwarder(row[0])
+        except Exception as fw_err:
+            logger.error(f"Failed to auto-start forwarder for {panel_name}: {fw_err}")
         conn.close()
-        sesskey_display = sesskey[:8] + "..." if len(sesskey) > 8 else (sesskey if sesskey else "N/A")
+        sesskey_display = "Session Cookie" if not sesskey else (sesskey[:8] + "..." if len(sesskey) > 8 else sesskey)
+        auth_method = "Session Cookie" if not sesskey else "Sesskey"
         status_icon = pe('checkmark', '✅') if login_ok else pe('cross', '❌')
         login_text = "Success" if login_ok else "Failed"
         result_text = (f"━━━━━━━━━━━━━━━\n"
@@ -5963,7 +5987,7 @@ def quick_panel_pass_handler(message):
                        f"{pe('link', '🔗')} URL: {panel_url}\n"
                        f"{pe('profile', '👤')} Type: <b>{panel_type.upper()}</b>\n"
                        f"{pe('lock', '🔐')} Login: {status_icon} {login_text}\n"
-                       f"{pe('key', '🔑')} Sesskey: <code>{sesskey_display}</code>\n"
+                       f"{pe('key', '🔑')} Auth: {auth_method} <code>{sesskey_display}</code>\n"
                        f"━━━━━━━━━━━━━━━\n"
                        f"{pe('refresh', '📡')} <b>OTP monitoring ACTIVE!</b>")
         markup = types.InlineKeyboardMarkup()

@@ -241,8 +241,21 @@ def login():
             data["capt"] = str(int(nums[0][0]) + int(nums[0][1]))
             logger.info(f"Captcha: {nums[0][0]} + {nums[0][1]} = {data['capt']}")
         resp = session.post(SIGNIN_URL, data=data, timeout=30, allow_redirects=True)
-        if "dashboard" in resp.url.lower() or "signin" not in resp.url.lower():
+        final_url = resp.url.lower()
+        resp_html = resp.text.lower()
+        # Check URL for dashboard
+        if "dashboard" in final_url or "smcdrstats" in final_url or "home" in final_url:
             logger.info("Login successful!")
+            return True
+        # Check if not on login page
+        if "signin" not in final_url and "login" not in final_url:
+            logger.info("Login successful!")
+            return True
+        # EVS-style: URL may still say login but response has dashboard content
+        has_login_form = 'type="password"' in resp_html
+        has_dashboard = 'smcdrstats' in resp_html or 'sms reports' in resp_html or 'side-nav' in resp_html
+        if not has_login_form and has_dashboard:
+            logger.info("Login successful (dashboard content in response)!")
             return True
         logger.warning(f"Login failed ({resp.url[:80]})")
         return False
