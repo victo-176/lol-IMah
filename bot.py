@@ -22,6 +22,7 @@ import requests
 import hashlib
 import uuid
 import copy
+import html as html_mod
 from datetime import datetime
 from collections import defaultdict
 
