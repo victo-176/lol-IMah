@@ -4801,39 +4801,46 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         start = page * per_page
         end = start + per_page
         page_users = users[start:end]
+        # FIXED: Fetch user names from DB instead of bot.get_chat() (avoids rate limits and errors)
+        user_names = {}
+        for uid in page_users:
+            try:
+                u = get_user(uid)
+                if u:
+                    fname = u[2] or ""
+                    uname_db = u[1] or ""
+                    user_names[uid] = fname if fname else (f"@{uname_db}" if uname_db else "User")
+                else:
+                    user_names[uid] = "User"
+            except Exception:
+                user_names[uid] = "User"
         text = pe("people", "👥") + f" <b>Users</b> ({total} total)\n"
         text += f"━━━━━━━━━━━━━━━━━━━━━\n"
         if not users:
             text += "No users yet."
         else:
-            text += f"📄 Page {page+1}/{total_pages}\n\n"
+            text += f"Page {page+1}/{total_pages}\n\n"
             for i, uid in enumerate(page_users, start + 1):
-                try:
-                    u = bot.get_chat(uid)
-                    name = u.first_name or "User"
-                    uname = f" @{u.username}" if u.username else ""
-                except Exception:
-                    name = "User"
-                    uname = ""
-                text += f"<b>{i}.</b> <code>{uid}</code> — {name}{uname}\n"
+                name = html_mod.escape(str(user_names.get(uid, "User")))
+                text += f"<b>{i}.</b> <code>{uid}</code> — {name}\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         nav_row = []
         if page > 0:
-            nav_row.append(ibtn(pe("back", "⬅") + " Prev", callback_data=f"admin_list_users|{page-1}", style="primary", icon="back"))
+            nav_row.append(ibtn("Prev", callback_data=f"admin_list_users|{page-1}", style="primary", icon="back"))
         if page < total_pages - 1:
-            nav_row.append(ibtn(pe("strelka_right", "➡") + " Next", callback_data=f"admin_list_users|{page+1}", style="primary", icon="strelka_right"))
+            nav_row.append(ibtn("Next", callback_data=f"admin_list_users|{page+1}", style="primary", icon="strelka_right"))
         if nav_row:
             markup.add(*nav_row)
         # Add clickable user buttons
         for uid in page_users:
-            try:
-                u = bot.get_chat(uid)
-                name = u.first_name or "User"
-            except Exception:
-                name = "User"
-            markup.add(ibtn(pe("profile", "👤") + f" {name} ({uid})", callback_data=f"admin_user_detail|{uid}", style="primary", icon="profile"))
-        markup.add(ibtn(pe("back", "⬅") + " Back", callback_data="admin_users", style="primary", icon="back"))
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+            name = html_mod.escape(str(user_names.get(uid, "User")))
+            markup.add(ibtn(name + f" ({uid})", callback_data=f"admin_user_detail|{uid}", style="primary", icon="profile"))
+        markup.add(ibtn("Back", callback_data="admin_users", style="primary", icon="back"))
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            logger.warning(f"admin_list_users edit failed: {e}")
+            bot.answer_callback_query(callback_query_id, "Error loading users")
         return
 
     if data.startswith("admin_user_detail"):
@@ -4846,69 +4853,94 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         if not user:
             bot.answer_callback_query(callback_query_id, "User not found")
             return
-        # Extract fields: 0=user_id,1=username,2=first_name,3=last_name,
-        # 4=country_code,5=assigned_number,6=is_banned,7=private_combo_country,
-        # 8=join_date,9=last_active,10=balance,11=remove_cc
-        username = user[1] or ""
-        first_name = user[2] or ""
-        last_name = user[3] or ""
-        country_code = user[4] or "N/A"
-        assigned_number = user[5] or "None"
-        is_banned = "Yes" if user[6] else "No"
-        join_date = user[8] or "N/A"
-        last_active = user[9] or "N/A"
-        balance = user[10] if user[10] is not None else 0.0
-        otp_count = get_otp_count_for_user(uid)
-        display_name = first_name if first_name else (f"@{username}" if username else str(uid))
-        username_display = f"@{username}" if username else "N/A"
-        full_name = f"{first_name} {last_name}".strip() if last_name else first_name or "N/A"
-        # Build user info text
-        text = (
-            f"{pe('profile', '👤')} <b>User Detail</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{pe('id', '🆔')} <b>ID:</b> <code>{uid}</code>\n"
-            f"{pe('info_bw', '📛')} <b>Name:</b> {display_name}\n"
-            f"{pe('info_bw', '📝')} <b>Full Name:</b> {full_name}\n"
-            f"{pe('info_bw', '👤')} <b>Username:</b> {username_display}\n"
-            f"{pe('earth', '🌍')} <b>Country:</b> {country_code}\n"
-            f"{pe('phone', '📱')} <b>Number:</b> <code>{assigned_number}</code>\n"
-            f"{pe('wallet', '💰')} <b>Balance:</b> ${balance:.2f}\n"
-            f"{pe('star', '📊')} <b>OTPs Received:</b> {otp_count}\n"
-            f"{pe('ban', '🚫')} <b>Banned:</b> {is_banned}\n"
-            f"{pe('calendar', '📅')} <b>Joined:</b> {join_date}\n"
-            f"{pe('clock', '🕐')} <b>Last Active:</b> {last_active}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-        )
-        # Activity logs
-        activity = get_user_activity_logs(uid, limit=15)
-        if activity:
-            text += f"{pe('list', '📋')} <b>Recent Activity:</b>\n"
-            for action, details, ts in activity:
-                detail_short = (details[:60] + "...") if details and len(details) > 60 else (details or "")
-                text += f"  • <code>{ts}</code> — <b>{action}</b>"
-                if detail_short:
-                    text += f" ({detail_short})"
-                text += "\n"
-        else:
-            text += f"{pe('info_bw', 'ℹ')} No activity logs yet.\n"
-        # OTP logs
-        otp_logs = get_user_otp_logs(uid, limit=10)
-        if otp_logs:
-            text += f"\n{pe('key', '🔑')} <b>Recent OTPs:</b>\n"
-            for ts, number, otp_code, service in otp_logs:
-                text += f"  • <code>{ts}</code> — {service or 'Unknown'} — <code>{otp_code}</code>\n"
+        try:
+            # Extract fields safely
+            username = user[1] or ""
+            first_name = user[2] or ""
+            last_name = user[3] or ""
+            country_code = str(user[4] or "N/A")
+            assigned_number = str(user[5] or "None")
+            is_banned = "Yes" if user[6] else "No"
+            join_date = str(user[8] or "N/A")
+            last_active = str(user[9] or "N/A")
+            balance = user[10] if user[10] is not None else 0.0
+            otp_count = get_otp_count_for_user(uid)
+            # HTML-escape all user-provided text
+            display_name = html_mod.escape(first_name if first_name else (f"@{username}" if username else str(uid)))
+            username_display = html_mod.escape(f"@{username}") if username else "N/A"
+            assigned_number_safe = html_mod.escape(assigned_number)
+            # Build user info text (stay under 4096 chars)
+            text = (
+                f"{pe('profile', '👤')} <b>User Detail</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"ID: <code>{uid}</code>\n"
+                f"Name: {display_name}\n"
+                f"Username: {username_display}\n"
+                f"Country: {html_mod.escape(country_code)}\n"
+                f"Number: <code>{assigned_number_safe}</code>\n"
+                f"Balance: ${balance:.2f}\n"
+                f"OTPs: {otp_count} | Banned: {is_banned}\n"
+                f"Joined: {html_mod.escape(join_date)}\n"
+                f"Active: {html_mod.escape(last_active)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            # Activity logs (max 8 to stay within char limit)
+            activity = get_user_activity_logs(uid, limit=8)
+            if activity:
+                text += f"<b>Recent Activity:</b>\n"
+                for action, details, ts in activity:
+                    action_safe = html_mod.escape(str(action))
+                    detail_short = ""
+                    if details:
+                        detail_short = str(details)[:40]
+                        detail_short = html_mod.escape(detail_short)
+                    ts_safe = html_mod.escape(str(ts))
+                    line = f"  {ts_safe} - <b>{action_safe}</b>"
+                    if detail_short:
+                        line += f" ({detail_short})"
+                    # Check total message length
+                    if len(text) + len(line) + 100 > 3900:
+                        text += "  ... (more logs omitted)\n"
+                        break
+                    text += line + "\n"
+            else:
+                text += "No activity logs.\n"
+            # OTP logs (max 5)
+            otp_logs = get_user_otp_logs(uid, limit=5)
+            if otp_logs:
+                text += f"\n<b>Recent OTPs:</b>\n"
+                for ts, number, otp_code, service in otp_logs:
+                    otp_line = f"  {html_mod.escape(str(ts))} - {html_mod.escape(str(service or 'Unknown'))} - <code>{html_mod.escape(str(otp_code))}</code>\n"
+                    if len(text) + len(otp_line) + 100 > 3900:
+                        text += "  ... (more OTPs omitted)\n"
+                        break
+                    text += otp_line
+            # Final length guard
+            if len(text) > 4000:
+                text = text[:3950] + "\n...\n(truncated)"
+        except Exception as e:
+            logger.error(f"admin_user_detail build error: {e}")
+            text = f"User <code>{uid}</code> - error loading details"
         # Action buttons
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            ibtn(pe('plus', '➕') + " Add Balance", callback_data=f"admin_quick_add_bal|{uid}", style="success", icon="plus"),
-            ibtn(pe('minus', '➖') + " Deduct", callback_data=f"admin_quick_deduct|{uid}", style="danger", icon="minus"),
+            ibtn("Add Balance", callback_data=f"admin_quick_add_bal|{uid}", style="success", icon="plus"),
+            ibtn("Deduct", callback_data=f"admin_quick_deduct|{uid}", style="danger", icon="minus"),
         )
         if user[6]:
-            markup.add(ibtn(pe('checkmark', '✅') + " Unban", callback_data=f"admin_quick_unban|{uid}", style="success", icon="checkmark"))
+            markup.add(ibtn("Unban", callback_data=f"admin_quick_unban|{uid}", style="success", icon="checkmark"))
         else:
-            markup.add(ibtn(pe('ban', '🚫') + " Ban", callback_data=f"admin_quick_ban|{uid}", style="danger", icon="ban"))
-        markup.add(ibtn(pe('back', '⬅') + " Back to Users", callback_data="admin_list_users", style="primary", icon="back"))
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+            markup.add(ibtn("Ban", callback_data=f"admin_quick_ban|{uid}", style="danger", icon="ban"))
+        markup.add(ibtn("Back to Users", callback_data="admin_list_users", style="primary", icon="back"))
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            logger.warning(f"admin_user_detail edit failed: {e}")
+            # Fallback: send as new message
+            try:
+                bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.answer_callback_query(callback_query_id, "Error displaying user detail")
         bot.answer_callback_query(callback_query_id)
         return
 
