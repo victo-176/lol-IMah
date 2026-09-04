@@ -1742,8 +1742,10 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     service = app_name if app_name else detect_service(sms)
     app_emoji = app_emoji_html(service)
 
-    if ALLOWED_SERVICES and service.lower() not in ALLOWED_SERVICES:
-        logger.info(f"Filtered: {service}")
+    # FIXED: Only filter by detect_service results, NOT by admin-assigned app names
+    # App names from combos table should always be allowed through
+    if not app_name and ALLOWED_SERVICES and service.lower() not in ALLOWED_SERVICES:
+        logger.info(f"Filtered by service detection: {service}")
         return
 
     user_id = get_user_by_number(number)
@@ -1836,21 +1838,37 @@ def send_to_telegram_group(text, otp_code, number):
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     if not chat_ids:
         chat_ids = ['-1003904867859']
+        logger.warning("[GROUP] No OTP groups configured, using default group")
+    sent_count = 0
     for chat_id in chat_ids:
         try:
             payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(kb)}
             resp = requests.post(url, data=payload, timeout=30)
             if resp.status_code == 200:
-                logger.info(f"Sent to group {chat_id}")
+                logger.info(f"[GROUP] OTP sent to group {chat_id}")
+                sent_count += 1
                 msg_id = resp.json()["result"]["message_id"]
                 threading.Thread(target=lambda: time.sleep(300) or requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
                     data={"chat_id": chat_id, "message_id": msg_id}, timeout=10
                 ), daemon=True).start()
             else:
-                logger.error(f"Group send failed ({chat_id}): HTTP {resp.status_code}")
+                resp_text = resp.text[:300] if resp.text else ''
+                logger.error(f"[GROUP] Send failed ({chat_id}): HTTP {resp.status_code} - {resp_text}")
+                # FIXED: Retry without parse_mode if HTML fails
+                if 'parse' in resp_text.lower() or 'html' in resp_text.lower():
+                    try:
+                        payload2 = {"chat_id": chat_id, "text": text, "reply_markup": json.dumps(kb)}
+                        resp2 = requests.post(url, data=payload2, timeout=30)
+                        if resp2.status_code == 200:
+                            logger.info(f"[GROUP] Retry (no HTML) sent to {chat_id}")
+                            sent_count += 1
+                    except Exception as retry_err:
+                        logger.error(f"[GROUP] Retry failed: {retry_err}")
         except Exception as e:
-            logger.error(f"Group send failed: {e}")
+            logger.error(f"[GROUP] Send error ({chat_id}): {e}")
+    if sent_count == 0:
+        logger.error(f"[GROUP] FAILED to send OTP to ANY group! chat_ids={chat_ids}")
 
 
 # =========================== CHOICE SMS FORWARDER ====================
@@ -3580,26 +3598,54 @@ if SOCKETIO_AVAILABLE:
 
         def handle_message(self, data):
             try:
+                # FIXED: Log raw data for debugging Ivasms field names
+                logger.info(f"[IVASMS RAW] type={type(data).__name__}, data={str(data)[:500]}")
                 number = None
                 sms = None
+                # Try multiple field name variations for Ivasms data format
                 if isinstance(data, dict):
-                    number = data.get("number") or data.get("phone") or data.get("recipient")
-                    sms = data.get("message") or data.get("text") or data.get("sms")
+                    number = (data.get("number") or data.get("num") or data.get("phone")
+                              or data.get("recipient") or data.get("msisdn") or data.get("to")
+                              or data.get("Number") or data.get("NUM") or data.get("Phone"))
+                    sms = (data.get("message") or data.get("text") or data.get("sms")
+                           or data.get("content") or data.get("body") or data.get("sms_content")
+                           or data.get("Message") or data.get("SMS") or data.get("Content"))
+                    # Ivasms may nest data under 'data' key
+                    if not number and not sms and isinstance(data.get("data"), dict):
+                        nested = data["data"]
+                        number = (nested.get("number") or nested.get("num") or nested.get("phone")
+                                  or nested.get("recipient") or nested.get("msisdn"))
+                        sms = (nested.get("message") or nested.get("text") or nested.get("sms")
+                               or nested.get("content") or nested.get("body"))
                 elif isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
                     payload = data[1]
-                    number = payload.get("number") or payload.get("phone")
-                    sms = payload.get("message") or payload.get("text") or payload.get("sms")
+                    number = (payload.get("number") or payload.get("num") or payload.get("phone")
+                              or payload.get("recipient") or payload.get("msisdn"))
+                    sms = (payload.get("message") or payload.get("text") or payload.get("sms")
+                           or payload.get("content") or payload.get("body"))
+                elif isinstance(data, list) and len(data) >= 2:
+                    # Ivasms may send [event_name, phone_number, message_text, ...]
+                    for item in data:
+                        if isinstance(item, str):
+                            if re.match(r'^\d{7,15}$', item):
+                                number = item
+                            elif len(item) > 5 and not number:
+                                sms = item
                 if number and sms:
                     number_clean = clean_number(str(number))
                     if number_clean and len(number_clean) >= 5:
-                        logger.info(f"SMS received: {number_clean}")
+                        logger.info(f"[IVASMS] SMS received: number={number_clean}, sms={sms[:100]}")
                         assigned_app = get_app_for_number(number_clean)
                         send_otp_to_user_and_group(
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             number_clean, sms, app_name=assigned_app
                         )
+                    else:
+                        logger.warning(f"[IVASMS] Number too short after clean: {number_clean}")
+                else:
+                    logger.warning(f"[IVASMS] Could not extract number/sms from data. number={number}, sms={str(sms)[:100] if sms else None}")
             except Exception as e:
-                logger.error(f"handle_message error: {e}")
+                logger.error(f"handle_message error: {e}", exc_info=True)
 
         def connect(self):
             while True:
