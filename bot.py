@@ -4234,7 +4234,7 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
 def show_user_countries(chat_id, app_name, message_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT country_code, combo_index, numbers FROM combos")
+    c.execute("SELECT country_code, combo_index, numbers FROM combos WHERE app_name=?", (app_name,))
     combos = c.fetchall()
     conn.close()
     countries = {}
@@ -4304,13 +4304,19 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name, ext
 def fetch_number_logic(chat_id, app_name, country_key, message_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT numbers FROM combos WHERE country_code=? AND combo_index=1", (country_key,))
-    row = c.fetchone()
+    # FIXED: Only pull numbers from combos belonging to the selected app (all combo indexes)
+    c.execute("SELECT numbers FROM combos WHERE country_code=? AND app_name=? ORDER BY combo_index", (country_key, app_name))
+    rows = c.fetchall()
     conn.close()
-    if not row:
+    if not rows:
         bot.edit_message_text("\u274c No numbers for this country.", chat_id, message_id, parse_mode="HTML")
         return
-    numbers = json.loads(row[0])
+    numbers = []
+    for r in rows:
+        try:
+            numbers.extend(json.loads(r[0]))
+        except Exception:
+            pass
     used = []
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
