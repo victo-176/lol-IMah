@@ -191,7 +191,9 @@ def flag_icon_id(iso):
     return premium_icon(iso) or premium_icon("XX")
 
 def app_icon_id(app_name):
-    return premium_icon(app_name) or premium_icon(app_name.lower()) or premium_icon("DEFAULT")
+    # Custom apps (not in the known list) get the fire premium emoji everywhere
+    return (premium_icon(app_name) or premium_icon(str(app_name).lower())
+            or premium_icon("fire"))
 
 def flag_emoji_html(iso):
     """Return unicode flag emoji for the country ISO code."""
@@ -205,11 +207,11 @@ def app_emoji_html(app_name):
     if eid and PREMIUM_EMOJI_OK:
         fb = {"whatsapp": "💬", "telegram": "✈️", "facebook": "📘", "tiktok": "🎵",
               "google": "🔍", "instagram": "📸", "twitter": "🐦", "discord": "🎮",
-              "default": "📱"}.get(str(app_name).lower(), "📱")
+              "default": "📱"}.get(str(app_name).lower(), "🔥")
         return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
     return {"whatsapp": "💬", "telegram": "✈️", "facebook": "📘", "tiktok": "🎵",
             "google": "🔍", "instagram": "📸", "twitter": "🐦", "discord": "🎮",
-            "default": "📱"}.get(str(app_name).lower() if app_name else "", "📱")
+            "default": "📱"}.get(str(app_name).lower() if app_name else "", "🔥")
 
 # =========================== LIVE CHAT STEP HANDLERS ===========================
 # =========================== CUSTOM BUTTON HELPERS ===========================
