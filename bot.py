@@ -505,7 +505,7 @@ def init_db():
         c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('watermark', 'MATRIXX PREMIUM')")
         c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('support_link', 'https://t.me/Jibohu1')")
         c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown', '60')")
-        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('num_per_request', '5')")
+        c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('num_per_request', '1')")
         c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('otp_price', '0.006')")
         c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('maintenance', '0')")
         # Ensure no duplicate numbers across users (migration for existing DBs)
