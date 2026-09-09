@@ -2001,14 +2001,31 @@ class ChoiceSMSForwarder:
         elif isinstance(rec, list):
             if len(rec) >= 1 and isinstance(rec[0], str) and (rec[0].startswith('$') or rec[0].strip() == '0'):
                 return None
-            # Columns: Date, Range, Number, CLI, Client, SMS, Currency
             date_val = str(rec[0]) if len(rec) > 0 else ""
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
+            # Skip junk/totals rows: Number cell must be mostly digits (7+)
+            if sum(ch.isdigit() for ch in number_val) < 7:
+                return None
+            # Layout-tolerant SMS detection: SMS column is index 5 on EVS-style
+            # panels, index 4 on others. Prefer 5, then scan 4 onward skipping
+            # currency/money and short Client-name cells.
             sms_val = str(rec[5]) if len(rec) > 5 and rec[5] else ""
-            if not sms_val and len(rec) > 4:
-                sms_val = str(rec[4] or "")
+            if not sms_val:
+                for cell in (rec[4:] if len(rec) > 4 else []):
+                    cell_str = str(cell or "").strip()
+                    if not cell_str:
+                        continue
+                    # Skip currency/money-like and pure-numeric cells
+                    if re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', cell_str):
+                        continue
+                    if re.fullmatch(r'[\d.,\s]+', cell_str):
+                        continue
+                    # Real message text: reasonably long
+                    if len(cell_str) >= 5:
+                        sms_val = cell_str
+                        break
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 
@@ -2319,8 +2336,7 @@ class ChoiceSMSForwarder:
                     # === Match number to user and DM them ===
                     try:
                         phone_digits = re.sub(r'\D', '', sms.get('phone', ''))
-                        logger.info(f"Choice SMS: Extracted phone '{phone_digits}' from record (raw: '{sms.get('phone', '')}')")
-                        if phone_digits and phone_digits != 'N/A':
+                        if len(phone_digits) >= 7:
                             matched_user = get_user_by_number(phone_digits)
                             if matched_user:
                                 try:
