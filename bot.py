@@ -2387,7 +2387,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized, skipping {startup_count} existing OTPs (marked as seen in DB)")
                     first_run = False
-                time.sleep(3)
+                time.sleep(2.5)
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
@@ -3601,7 +3601,7 @@ class SMSPanelForwarder:
                 if first_run:
                     logger.info(f"Panel [{self.name}]: Initialized, skipping {startup_count} existing OTPs")
                     first_run = False
-                time.sleep(3)
+                time.sleep(2.5)
             except Exception as e:
                 logger.error(f"Panel [{self.name}] error: {e}")
                 self._cached_sesskey = None
