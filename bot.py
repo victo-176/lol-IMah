@@ -2011,7 +2011,11 @@ class ChoiceSMSForwarder:
             # Layout-tolerant SMS detection: SMS column is index 5 on EVS-style
             # panels, index 4 on others. Prefer 5, then scan 4 onward skipping
             # currency/money and short Client-name cells.
-            sms_val = str(rec[5]) if len(rec) > 5 and rec[5] else ""
+            sms_val = ""
+            if len(rec) > 5 and rec[5]:
+                _c5 = str(rec[5]).strip()
+                if _c5 and not re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', _c5) and not re.fullmatch(r'[\d.,\s]+', _c5):
+                    sms_val = _c5
             if not sms_val:
                 for cell in (rec[4:] if len(rec) > 4 else []):
                     cell_str = str(cell or "").strip()
