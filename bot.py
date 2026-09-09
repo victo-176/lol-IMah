@@ -2307,7 +2307,7 @@ class ChoiceSMSForwarder:
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{full_clean}"),
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=_copy_cb(full_clean)),
                         types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
                     )
                     groups = self._get_groups()
@@ -2441,6 +2441,18 @@ def start_choice_sms():
 
 _panel_forwarder_threads = {}  # panel_id -> threading.Thread
 _panel_forwarder_stop = {}     # panel_id -> threading.Event
+_copy_text_store = {}          # short hash -> full text (keeps callback_data under 64 bytes)
+
+def _copy_cb(full_text):
+    """Build a copy_ callback payload under Telegram's 64-byte limit."""
+    import hashlib as _hl
+    key = _hl.md5(full_text.encode()).hexdigest()[:16]
+    _copy_text_store[key] = full_text
+    # Cap the store
+    if len(_copy_text_store) > 2000:
+        for k in list(_copy_text_store.keys())[:500]:
+            _copy_text_store.pop(k, None)
+    return f"copy_{key}"
 
 
 # ======================== PANEL-SPECIFIC CONFIGS ========================
@@ -3544,7 +3556,7 @@ class SMSPanelForwarder:
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{full_clean}"),
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=_copy_cb(full_clean)),
                         types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
                     )
                     groups = self._get_groups()
@@ -5732,12 +5744,12 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 
     # Handle copy OTP buttons from OTP groups
     if data.startswith("copy_"):
-        otp_text = data[5:]  # remove "copy_" prefix
+        otp_text = _copy_text_store.get(data[5:], data[5:])  # lookup store, legacy fallback
         try:
-            bot.answer_callback_query(call.id, f"Copied: {otp_text}", show_alert=True)
+            bot.answer_callback_query(call.id, f"Copied: {otp_text[:60]}", show_alert=True)
             bot.send_message(call.from_user.id, f"<code>{otp_text}</code>", parse_mode="HTML")
         except:
-            bot.answer_callback_query(call.id, f"OTP: {otp_text}", show_alert=True)
+            bot.answer_callback_query(call.id, f"Text: {otp_text[:40]}", show_alert=True)
         return
 
     bot.answer_callback_query(call.id, "Unknown action.", show_alert=True)
