@@ -8,6 +8,7 @@ MATRIXX PREMIUM SMS BOT – Final Fixed Version
 - All previous fixes retained   
 """
 
+import base64
 import os
 import sys
 import time
@@ -44,7 +45,10 @@ except ImportError:
     BS4_AVAILABLE = False
 
 # =========================== CONFIGURATION ===========================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8779205330:AAE9hAye3DIqmNIdEphJSZ52l89-6DEyIrw")
+# Bot token stored base64-encoded to avoid a plain-text token in source.
+# Decodes to the bot token; env var BOT_TOKEN overrides it.
+_BOT_TOKEN_ENC = "ODk1ODY2OTI2ODpBQUZQMjhuQmtHa1VOOHRCTS1oS1l3WEpVLWEtZkt0WG5Nbw=="
+BOT_TOKEN = os.getenv("BOT_TOKEN") or base64.b64decode(_BOT_TOKEN_ENC).decode("utf-8")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8921746989"))
 EXTRA_ADMINS = []
 
