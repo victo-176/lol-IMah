@@ -2034,8 +2034,6 @@ class ChoiceSMSForwarder:
                 otp = dash_m.group(1) + dash_m.group(2)
             else:
                 otp = m.group(1)
-        if not otp:
-            return None
 
         # Service
         service = "Unknown"
@@ -2257,7 +2255,7 @@ class ChoiceSMSForwarder:
                 otps = self.fetch_otps()
                 for sms in otps:
                     # Build a unique key for this SMS (OTP + number + timestamp)
-                    uid = f"{sms['otp']}|{sms['phone']}|{sms['timestamp']}"
+                    uid = f"{sms.get('otp') or 'nootp'}|{sms['phone']}|{sms['timestamp']}|{sms['full_text'][:50]}"
                     # On first run, mark all existing OTPs as seen in DB (don't re-forward old ones)
                     if first_run:
                         mark_otp_seen(uid)
@@ -2273,22 +2271,25 @@ class ChoiceSMSForwarder:
                     masked = self._mask_number(sms['phone'])
                     country_upper = sms['country'].upper()
                     cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
-                    otp_display = sms['otp']
-                    if len(sms['otp']) == 6:
-                        otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+                    otp_display = sms.get('otp') or ''
+                    if otp_display and len(otp_display) == 6:
+                        otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
                     msg = (
                         f"<b>Anonmatrixx</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
-                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    )
+                    if otp_display:
+                        msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{sms['otp']}"),
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{full_clean}"),
                         types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
                     )
                     groups = self._get_groups()
@@ -2316,7 +2317,7 @@ class ChoiceSMSForwarder:
                                     sent += 1
                                 except Exception as e2:
                                     logger.error(f"Choice SMS: Retry failed for {gid}: {e2}")
-                    logger.info(f"Choice SMS: OTP {sms['otp']} forwarded to {sent}/{len(groups)} groups")
+                    logger.info(f"Choice SMS: Message forwarded ({sms.get('otp') or 'no OTP'}) to {sent}/{len(groups)} groups")
 
                     # === Match number to user and DM them ===
                     try:
@@ -3348,8 +3349,6 @@ class SMSPanelForwarder:
             m4 = re.search(r'code\s*[:]?\s*(\d{4,6})', str(rec), re.IGNORECASE)
             if m4:
                 otp = m4.group(1)
-        if not otp:
-            return None
 
         service = "Unknown"
         if cli_val and cli_val not in ('None', 'null', ''):
@@ -3492,7 +3491,7 @@ class SMSPanelForwarder:
             try:
                 otps = self.fetch_otps()
                 for sms in otps:
-                    uid_key = f"{sms['otp']}|{sms['phone']}|{sms['timestamp']}"
+                    uid_key = f"{sms.get('otp') or 'nootp'}|{sms['phone']}|{sms['timestamp']}|{sms['full_text'][:50]}"
                     if first_run:
                         mark_otp_seen(uid_key)
                         startup_count += 1
@@ -3506,23 +3505,26 @@ class SMSPanelForwarder:
                     masked = self._mask_number(sms['phone'])
                     country_upper = sms['country'].upper()
                     cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
-                    otp_display = sms['otp']
-                    if len(sms['otp']) == 6:
-                        otp_display = f"{sms['otp'][:3]}-{sms['otp'][3:]}"
+                    otp_display = sms.get('otp') or ''
+                    if otp_display and len(otp_display) == 6:
+                        otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
 
                     msg = (
                         f"<b>Anonmatrixx</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
                         f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
                         f"📱 <code>{masked}</code>\n"
-                        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    )
+                    if otp_display:
+                        msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
                     kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{sms['otp']}"),
+                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=f"copy_{full_clean}"),
                         types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
                     )
                     groups = self._get_groups()

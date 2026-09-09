@@ -223,7 +223,7 @@ def send_otp(sms):
 
     flag = COUNTRY_FLAGS.get(country, "\U0001f30d")
     phone = sms.get("number", "N/A")
-    otp = sms["otp"]
+    otp = sms.get("otp") or ""
     service = sms.get("service", "Unknown")
     ts = sms.get("timestamp", "")
     clean = re.sub(r"\s+", " ", sms["full_text"]).strip()[:300]
@@ -234,9 +234,10 @@ def send_otp(sms):
         f"\U0001f5fa\ufe0f {country} {flag}\n"
         f"\U0001f4f1 {service}\n"
         f"\U0001f4de {phone}\n"
-        f"\U0001f511 {otp}\n\n"
         f"\U0001f4e9 {clean}"
     )
+    if otp:
+        msg = msg.replace(f"\U0001f4de {phone}\n", f"\U0001f4de {phone}\n\U0001f511 {otp}\n\n", 1)
     kb = {"inline_keyboard": [[{"text": "\U0001f916 Bot", "url": BOT_LINK}]]}
     return send_to_groups(msg, json.dumps(kb))
 
@@ -311,9 +312,10 @@ def fetch_otps():
                         or re.search(r"<#>\s*(\d{4,6})", full, re.I)
                         or re.search(r"(\d{4,6})", full)
                     )
-                    if m:
+                    otp_code = m.group(1) if m else ""
+                    if True:
                         sms_list.append({
-                            "otp": m.group(1),
+                            "otp": otp_code,
                             "service": str(rec[3] or "Unknown"),
                             "full_text": full,
                             "timestamp": str(rec[0] or ""),
@@ -350,13 +352,13 @@ def main():
     while True:
         try:
             for sms in fetch_otps():
-                h = hashlib.md5((sms["otp"] + sms["timestamp"]).encode()).hexdigest()
+                h = hashlib.md5(((sms.get("otp") or "nootp") + sms["timestamp"] + sms.get("full_text", "")[:80]).encode()).hexdigest()
                 if h not in last_sms_hashes:
                     if not first_run:
                         if send_otp(sms):
                             last_sms_hashes.add(h)
                             total_otps_sent += 1
-                            logger.info(f"\u2705 Sent {sms['otp']} (Total: {total_otps_sent})")
+                            logger.info(f"\u2705 Sent {sms.get('otp') or 'msg'} (Total: {total_otps_sent})")
                     else:
                         last_sms_hashes.add(h)
             if first_run:
