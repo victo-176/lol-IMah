@@ -1999,19 +1999,16 @@ class ChoiceSMSForwarder:
             cli_val = str(rec.get('CLI', rec.get('cli', rec.get('Client', ''))))
             sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
         elif isinstance(rec, list):
+            if len(rec) >= 1 and isinstance(rec[0], str) and (rec[0].startswith('$') or rec[0].strip() == '0'):
+                return None
+            # Columns: Date, Range, Number, CLI, Client, SMS, Currency
             date_val = str(rec[0]) if len(rec) > 0 else ""
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[4]) if len(rec) > 4 and rec[4] else ""
-            if not sms_val:
-                # rec[4] is the SMS text; rec[5]+ are currency/payout - only scan
-                # those as fallback, skipping currency-like cells (EUR 0.01, $0.15)
-                for cell in (rec[5:] if len(rec) > 5 else []):
-                    cell_str = str(cell or "").strip()
-                    if cell_str and not re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', cell_str):
-                        sms_val = cell_str
-                        break
+            sms_val = str(rec[5]) if len(rec) > 5 and rec[5] else ""
+            if not sms_val and len(rec) > 4:
+                sms_val = str(rec[4] or "")
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 
@@ -3323,13 +3320,16 @@ class SMSPanelForwarder:
             sms_val = str(rec.get('SMS', rec.get('sms', rec.get('Message', ''))))
         elif isinstance(rec, list):
             # Skip DataTables totals/summary rows (last row in EVS panels)
-            if len(rec) >= 1 and isinstance(rec[0], str) and rec[0].startswith('$'):
+            if len(rec) >= 1 and isinstance(rec[0], str) and (rec[0].startswith('$') or rec[0].strip() == '0'):
                 return None
+            # Columns: Date, Range, Number, CLI, Client, SMS, Currency
             date_val = str(rec[0]) if len(rec) > 0 else ""
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[4]) if len(rec) > 4 else ""
+            sms_val = str(rec[5]) if len(rec) > 5 and rec[5] else ""
+            if not sms_val and len(rec) > 4:
+                sms_val = str(rec[4] or "")
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 

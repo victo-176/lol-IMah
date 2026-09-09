@@ -304,6 +304,8 @@ def fetch_otps():
                 for rec in records:
                     if not isinstance(rec, list) or len(rec) < 6:
                         continue
+                    if isinstance(rec[0], str) and (rec[0].startswith('$') or rec[0].strip() == '0'):
+                        continue
                     full = str(rec[5] or "")
                     m = (
                         re.search(r"code\s+(\d{4,6})", full, re.I)
