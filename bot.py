@@ -3359,9 +3359,28 @@ class SMSPanelForwarder:
             range_val = str(rec[1]) if len(rec) > 1 else ""
             number_val = str(rec[2]) if len(rec) > 2 else ""
             cli_val = str(rec[3]) if len(rec) > 3 else ""
-            sms_val = str(rec[5]) if len(rec) > 5 and rec[5] else ""
-            if not sms_val and len(rec) > 4:
-                sms_val = str(rec[4] or "")
+            # Skip junk/totals rows: Number cell must be mostly digits (7+)
+            if sum(ch.isdigit() for ch in number_val) < 7:
+                return None
+            # SMS is index 5 on EVS-style panels; fall back to index 4+,
+            # skipping currency/money and pure-numeric cells
+            sms_val = ""
+            if len(rec) > 5 and rec[5]:
+                _c5 = str(rec[5]).strip()
+                if _c5 and not re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', _c5) and not re.fullmatch(r'[\d.,\s]+', _c5):
+                    sms_val = _c5
+            if not sms_val:
+                for cell in (rec[4:] if len(rec) > 4 else []):
+                    cell_str = str(cell or "").strip()
+                    if not cell_str:
+                        continue
+                    if re.match(r'^[\u20ac$\u00a3\u00a5]|^[A-Z]{3}[\s0-9]', cell_str):
+                        continue
+                    if re.fullmatch(r'[\d.,\s]+', cell_str):
+                        continue
+                    if len(cell_str) >= 5:
+                        sms_val = cell_str
+                        break
         else:
             date_val = range_val = number_val = cli_val = sms_val = str(rec)
 
