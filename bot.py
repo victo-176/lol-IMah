@@ -1210,8 +1210,8 @@ def get_referral_count(user_id):
 def get_top_referrers(limit=10):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT referrer_id, COUNT(*) as cnt, SUM(?) as total_reward FROM referrals GROUP BY referrer_id ORDER BY cnt DESC LIMIT ?",
-              (REFERRAL_REWARD, limit))
+    c.execute("SELECT referrer_id, COUNT(*) as cnt, SUM(?) as total_reward FROM referrals WHERE reward_claimed=1 GROUP BY referrer_id ORDER BY cnt DESC LIMIT ?",
+              (get_referral_reward(), limit))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -1231,7 +1231,7 @@ def process_referral(referrer_id, referred_id):
     try:
         c.execute("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referrer_id, referred_id))
         conn.commit()
-        log_user_activity(referrer_id, "referral", f"Referred user {referred_id} (reward after {REFERRAL_OTP_THRESHOLD} OTPs)")
+        log_user_activity(referrer_id, "referral", f"Referred user {referred_id} (reward after {get_referral_threshold()} OTPs)")
         return True
     except Exception:
         conn.rollback()
@@ -1255,17 +1255,17 @@ def credit_referral_otp(user_id):
         otp_n = c.fetchone()[0]
         c.execute("SELECT reward_claimed FROM referrals WHERE referred_id=?", (user_id,))
         claimed = c.fetchone()[0]
-        if otp_n >= REFERRAL_OTP_THRESHOLD and not claimed:
+        if otp_n >= get_referral_threshold() and not claimed:
             c.execute("UPDATE referrals SET reward_claimed=1 WHERE referred_id=?", (user_id,))
             referrer = get_user(referrer_id)
             if referrer and not is_banned(referrer_id):
-                new_balance = (referrer[10] if len(referrer) > 10 else 0.0) + REFERRAL_REWARD
+                new_balance = (referrer[10] if len(referrer) > 10 else 0.0) + get_referral_reward()
                 c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, referrer_id))
-                log_user_activity(referrer_id, "referral_reward", f"Earned ${REFERRAL_REWARD:.2f} — user {user_id} hit {REFERRAL_OTP_THRESHOLD} OTPs")
+                log_user_activity(referrer_id, "referral_reward", f"Earned ${get_referral_reward():.2f} — user {user_id} hit {get_referral_threshold()} OTPs")
                 conn.commit()
                 conn.close()
                 try:
-                    bot.send_message(referrer_id, f"{pe('fire', '🎉')} <b>Referral reward!</b>\nYour invite received {REFERRAL_OTP_THRESHOLD} OTPs — you earned <b>${REFERRAL_REWARD:.2f}</b>.", parse_mode="HTML")
+                    bot.send_message(referrer_id, f"{pe('fire', '🎉')} <b>Referral reward!</b>\nYour invite received {get_referral_threshold()} OTPs — you earned <b>${get_referral_reward():.2f}</b>.", parse_mode="HTML")
                 except Exception:
                     pass
                 return
@@ -1973,6 +1973,13 @@ def send_to_telegram_group(text, otp_code, number):
 
 
 # =========================== CHOICE SMS FORWARDER ====================
+def _get_poll():
+    """Poll interval from settings (admin-editable), min 0.5s."""
+    try:
+        return max(0.5, float(get_setting('poll_interval') or 2.5))
+    except (TypeError, ValueError):
+        return 2.5
+
 class ChoiceSMSForwarder:
     """Fetches OTPs from Choice SMS DataTables AJAX panel and forwards to OTP groups."""
 
@@ -2440,7 +2447,7 @@ class ChoiceSMSForwarder:
                 if first_run:
                     logger.info(f"Choice SMS: Initialized, skipping {startup_count} existing OTPs (marked as seen in DB)")
                     first_run = False
-                time.sleep(2.5)
+                time.sleep(_get_poll())
             except Exception as e:
                 logger.error(f"Choice SMS forwarder error: {e}")
                 import traceback
@@ -3690,7 +3697,7 @@ class SMSPanelForwarder:
                 if first_run:
                     logger.info(f"Panel [{self.name}]: Initialized, skipping {startup_count} existing OTPs")
                     first_run = False
-                time.sleep(2.5)
+                time.sleep(_get_poll())
             except Exception as e:
                 logger.error(f"Panel [{self.name}] error: {e}")
                 self._cached_sesskey = None
@@ -3900,7 +3907,7 @@ def send_welcome(message):
                 ref = int(message.text.split('ref_')[1].split()[0])
                 if ref != user_id:
                     process_referral(ref, user_id)
-                    bot.send_message(chat_id, f"{pe('fire', '🎉')} You were referred! They earn ${REFERRAL_REWARD:.2f} after you receive {REFERRAL_OTP_THRESHOLD} OTPs.", parse_mode="HTML")
+                    bot.send_message(chat_id, f"{pe('fire', '🎉')} You were referred! They earn ${get_referral_reward():.2f} after you receive {get_referral_threshold()} OTPs.", parse_mode="HTML")
             except:
                 pass
         log_user_activity(user_id, "start", "Started bot")
@@ -4147,7 +4154,7 @@ def show_referrals(chat_id):
     c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=?", (user_id,))
     refs = c.fetchone()[0] or 0
     c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND reward_claimed=1", (user_id,))
-    earned = (c.fetchone()[0] or 0) * REFERRAL_REWARD
+    earned = (c.fetchone()[0] or 0) * get_referral_reward()
     c.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     if row:
@@ -4159,7 +4166,7 @@ def show_referrals(chat_id):
             f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance}</b>\n"
             f"{pe('people', '👥')} Referrals: <b>{refs}</b>\n"
             f"{pe('dollar', '💵')} Total Earned: <b>${earned:.2f}</b>\n"
-            f"{pe('info_bw', 'ℹ️')} Reward pays when an invite receives {REFERRAL_OTP_THRESHOLD} OTPs")
+            f"{pe('info_bw', 'ℹ️')} Reward pays when an invite receives {get_referral_threshold()} OTPs")
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("BACK", callback_data="close_menu", style="primary", icon="back"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
@@ -4779,6 +4786,47 @@ def _panel_already_added(panel_name):
         return False
 
 # =========================== ADMIN PANEL ===========================
+# ======================== GENERIC ADMIN SETTING EDIT ========================
+EDITABLE_SETTINGS = {
+    # key: (label, validator)  validator: 'int', 'float', 'str'
+    'otp_price':        ('Price per OTP', 'float'),
+    'cooldown':         ('Cooldown (seconds)', 'int'),
+    'num_per_request':  ('Numbers per request', 'int'),
+    'support_link':     ('Support Link', 'str'),
+    'watermark':        ('Watermark', 'str'),
+    'bot_link':         ('Bot Link', 'str'),
+    'referral_reward':  ('Referral Reward ($)', 'float'),
+    'referral_otp_threshold': ('Referral OTP Threshold', 'int'),
+    'otp_price_user':   ('User OTP Price ($)', 'float'),
+    'poll_interval':    ('Panel Poll Interval (seconds)', 'float'),
+}
+
+def get_referral_reward():
+    try:
+        return float(get_setting('referral_reward') or REFERRAL_REWARD)
+    except (TypeError, ValueError):
+        return REFERRAL_REWARD
+
+def get_referral_threshold():
+    try:
+        return int(get_setting('referral_otp_threshold') or REFERRAL_OTP_THRESHOLD)
+    except (TypeError, ValueError):
+        return REFERRAL_OTP_THRESHOLD
+
+def admin_edit_setting_start(chat_id, msg_id, key):
+    label, _v = EDITABLE_SETTINGS[key]
+    cur = get_setting(key)
+    shown = cur if cur not in (None, '') else '(default)'
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Cancel", callback_data="admin_settings", style="danger", icon="back"))
+    set_state(chat_id, f"set_any:{key}")
+    bot.edit_message_text(
+        f"⚙️ <b>EDIT SETTING</b>\n\n"
+        f"📌 <b>{label}</b>\n"
+        f"💾 Current: <code>{shown}</code>\n\n"
+        f"Send the new value:",
+        chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+
 def show_admin_panel(chat_id, message_id=None):
     if not is_admin(chat_id):
         return
@@ -5378,8 +5426,29 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup.add(ibtn("Broadcast", callback_data="admin_broadcast", style="success", icon="announcement"))
         markup.add(ibtn(f"Real-time OTP [{rt_label}]", callback_data="admin_toggle_rt_otp", style=rt_style, icon="eye"))
         markup.add(ibtn("Maintenance", callback_data="admin_toggle_maintenance", style="danger", icon="wrench"))
+        markup.add(ibtn("📋 All Settings (edit any)", callback_data="admin_all_settings", style="primary", icon="wrench"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
         bot.edit_message_text("⚙️ <b>Settings</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_all_settings":
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        for key, (label, _v) in EDITABLE_SETTINGS.items():
+            cur = get_setting(key)
+            shown = cur if cur not in (None, '') else "default"
+            if len(shown) > 20:
+                shown = shown[:17] + "..."
+            markup.add(ibtn(f"{label}: {shown}", callback_data=f"admin_edit_setting|{key}", style="primary", icon="wrench"))
+        markup.add(ibtn("Back", callback_data="admin_settings", style="primary", icon="back"))
+        bot.edit_message_text("📋 <b>ALL SETTINGS</b>\nTap any setting to change its value:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_edit_setting|"):
+        key = data.split("|", 1)[1]
+        if key in EDITABLE_SETTINGS:
+            admin_edit_setting_start(chat_id, msg_id, key)
+        else:
+            bot.answer_callback_query(call.id, "Unknown setting.", show_alert=True)
         return
 
     if data == "admin_set_botlink":
@@ -6308,6 +6377,30 @@ def deduct_balance_handler(message):
     except:
         bot.reply_to(message, "❌ Invalid input.", parse_mode="HTML")
     clear_state(message)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), str) and get_state(msg).startswith("set_any:") and is_admin(msg.from_user.id))
+def set_any_setting_handler(message):
+    key = get_state(msg).split(":", 1)[1]
+    if key not in EDITABLE_SETTINGS:
+        clear_state(message)
+        return
+    label, kind = EDITABLE_SETTINGS[key]
+    raw = (message.text or "").strip()
+    try:
+        if kind == 'int':
+            val = int(raw)
+        elif kind == 'float':
+            val = float(raw.replace("$", ""))
+            if val < 0:
+                raise ValueError
+        else:
+            val = raw
+        set_setting(key, str(val))
+        bot.reply_to(message, f"✅ <b>{label}</b> set to: <code>{val}</code>", parse_mode="HTML")
+    except ValueError:
+        bot.reply_to(message, f"❌ Invalid value for <b>{label}</b>. Expected {'a number' if kind in ('int','float') else 'text'}.", parse_mode="HTML")
+    clear_state(message)
+
 
 @bot.message_handler(func=lambda msg: get_state(msg) == "set_botlink" and is_admin(msg.from_user.id))
 def set_botlink_handler(message):
