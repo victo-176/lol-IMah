@@ -67,6 +67,7 @@ ALLOWED_SERVICES = {
     "stcpay", "unknown"
 }
 REFERRAL_REWARD = 0.10
+REFERRAL_OTP_THRESHOLD = 3  # referrer earns when an invited user receives this many OTPs
 MIN_WITHDRAWAL = 1.0
 MAX_WITHDRAWAL = 5.0
 ADMIN_IDS = [ADMIN_ID, *EXTRA_ADMINS]
@@ -1229,16 +1230,49 @@ def process_referral(referrer_id, referred_id):
         return False
     try:
         c.execute("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referrer_id, referred_id))
-        new_balance = (referrer[10] if len(referrer) > 10 else 0.0) + REFERRAL_REWARD
-        c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, referrer_id))
         conn.commit()
-        log_user_activity(referrer_id, "referral_reward", f"Earned ${REFERRAL_REWARD:.2f} from user {referred_id}")
+        log_user_activity(referrer_id, "referral", f"Referred user {referred_id} (reward after {REFERRAL_OTP_THRESHOLD} OTPs)")
         return True
     except Exception:
         conn.rollback()
         return False
     finally:
         conn.close()
+
+def credit_referral_otp(user_id):
+    """Count an OTP received by a referred user; pay the referrer at the threshold."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT referrer_id FROM referrals WHERE referred_id=?", (user_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return
+        referrer_id = row[0]
+        c.execute("INSERT INTO otp_counts (user_id, count) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET count = count + 1", (user_id,))
+        c.execute("SELECT count FROM otp_counts WHERE user_id=?", (user_id,))
+        otp_n = c.fetchone()[0]
+        c.execute("SELECT reward_claimed FROM referrals WHERE referred_id=?", (user_id,))
+        claimed = c.fetchone()[0]
+        if otp_n >= REFERRAL_OTP_THRESHOLD and not claimed:
+            c.execute("UPDATE referrals SET reward_claimed=1 WHERE referred_id=?", (user_id,))
+            referrer = get_user(referrer_id)
+            if referrer and not is_banned(referrer_id):
+                new_balance = (referrer[10] if len(referrer) > 10 else 0.0) + REFERRAL_REWARD
+                c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, referrer_id))
+                log_user_activity(referrer_id, "referral_reward", f"Earned ${REFERRAL_REWARD:.2f} — user {user_id} hit {REFERRAL_OTP_THRESHOLD} OTPs")
+                conn.commit()
+                conn.close()
+                try:
+                    bot.send_message(referrer_id, f"{pe('fire', '🎉')} <b>Referral reward!</b>\nYour invite received {REFERRAL_OTP_THRESHOLD} OTPs — you earned <b>${REFERRAL_REWARD:.2f}</b>.", parse_mode="HTML")
+                except Exception:
+                    pass
+                return
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"credit_referral_otp error: {e}")
 
 def create_withdrawal_request(user_id, amount, method, details):
     with _db_lock:
@@ -2358,6 +2392,7 @@ class ChoiceSMSForwarder:
                                         _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
                                         _conn.commit()
                                         _conn.close()
+                                        credit_referral_otp(matched_user)
                                         logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance}")
                                     except Exception as bal_err:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
@@ -3609,6 +3644,7 @@ class SMSPanelForwarder:
                                 _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
                                 _conn.commit()
                                 _conn.close()
+                                credit_referral_otp(matched_user)
                                 pe_fire = pe('fire', '\U0001f3c6')
                                 pe_sw = pe('settings_bw', '\u2699')
                                 pe_ph = pe('phone', '\U0001f4f1')
@@ -3864,7 +3900,7 @@ def send_welcome(message):
                 ref = int(message.text.split('ref_')[1].split()[0])
                 if ref != user_id:
                     process_referral(ref, user_id)
-                    bot.send_message(chat_id, f"{pe('fire', '🎉')} You were referred! They earned ${REFERRAL_REWARD:.2f}.", parse_mode="HTML")
+                    bot.send_message(chat_id, f"{pe('fire', '🎉')} You were referred! They earn ${REFERRAL_REWARD:.2f} after you receive {REFERRAL_OTP_THRESHOLD} OTPs.", parse_mode="HTML")
             except:
                 pass
         log_user_activity(user_id, "start", "Started bot")
@@ -4110,6 +4146,8 @@ def show_referrals(chat_id):
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=?", (user_id,))
     refs = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND reward_claimed=1", (user_id,))
+    earned = (c.fetchone()[0] or 0) * REFERRAL_REWARD
     c.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     if row:
@@ -4120,7 +4158,8 @@ def show_referrals(chat_id):
     text = (f"{pe('link', '🔗')} <b>Your Referral Link</b>\n\n<code>{link}</code>\n\n"
             f"{pe('stats', '📊')} <b>Stats</b>\n{pe('dollar', '💰')} Balance: <b>${balance}</b>\n"
             f"{pe('people', '👥')} Referrals: <b>{refs}</b>\n"
-            f"{pe('dollar', '💵')} Total Earned: <b>${refs * REFERRAL_REWARD:.2f}</b>")
+            f"{pe('dollar', '💵')} Total Earned: <b>${earned:.2f}</b>\n"
+            f"{pe('info_bw', 'ℹ️')} Reward pays when an invite receives {REFERRAL_OTP_THRESHOLD} OTPs")
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("BACK", callback_data="close_menu", style="primary", icon="back"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
