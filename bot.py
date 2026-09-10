@@ -1047,8 +1047,7 @@ def save_combo(country_code, numbers, user_id=None, app_name="WhatsApp", broadca
         conn.commit()
         conn.close()
         if broadcast:
-            # Broadcast stock update (function defined later after bot init)
-            broadcast_stock_update(country_code, app_name, len(numbers))
+            broadcast_stock_update(country_code, app_name, len(numbers), numbers=numbers)
         return
 
 def get_all_combos():
@@ -1762,8 +1761,8 @@ def _safe_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs
 bot.edit_message_text = _safe_edit_message_text
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
-def broadcast_stock_update(country_code, app_name, number_count):
-    """Send a stock update notification to all users and OTP groups."""
+def broadcast_stock_update(country_code, app_name, number_count, numbers=None):
+    """Send a stock update notification to OTP groups (with the actual numbers) and all users."""
     iso = COUNTRY_CODES.get(country_code, (country_code, "UN"))[1]
     flag_html = flag_emoji_html(iso)
     name = COUNTRY_CODES.get(country_code, (country_code, "UN"))[0]
@@ -1775,20 +1774,29 @@ def broadcast_stock_update(country_code, app_name, number_count):
            f"━━━━━━━━━━━━━━━\n"
            f"🔄 <b>Update your list now!</b>")
 
+    # OTP groups: detailed broadcast including the newly added numbers
+    groups = json.loads(get_setting('otp_groups') or '[]')
+    if groups:
+        nums = numbers or []
+        detail = (f"{flag_html} <b>NEW NUMBERS — {name.upper()}</b> {app_emoji}\n"
+                  f"━━━━━━━━━━━━━━━\n")
+        for n in nums[:50]:
+            detail += f"📱 <code>{n}</code>\n"
+        if len(nums) > 50:
+            detail += f"<i>...and {len(nums) - 50} more</i>\n"
+        detail += f"━━━━━━━━━━━━━━━\n✅ <b>{len(nums)} number(s) added and ready!</b>"
+        for gid in groups:
+            try:
+                bot.send_message(gid, detail, parse_mode="HTML")
+            except Exception as e:
+                logger.warning(f"Failed to send number broadcast to group {gid}: {e}")
+
     # Send to all users
     for uid in get_all_users():
         try:
             bot.send_message(uid, msg, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Failed to send stock update to {uid}: {e}")
-
-    # Send to OTP groups
-    groups = json.loads(get_setting('otp_groups') or '[]')
-    for gid in groups:
-        try:
-            bot.send_message(gid, msg, parse_mode="HTML")
-        except Exception as e:
-            logger.warning(f"Failed to send stock update to group {gid}: {e}")
 
 # =========================== FORCE SUB CHECK ===========================
 def force_sub_check(user_id):
