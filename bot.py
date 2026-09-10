@@ -4813,19 +4813,31 @@ def get_referral_threshold():
     except (TypeError, ValueError):
         return REFERRAL_OTP_THRESHOLD
 
-def admin_edit_setting_start(chat_id, msg_id, key):
+def admin_edit_setting_start(call, key):
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
     label, _v = EDITABLE_SETTINGS[key]
     cur = get_setting(key)
     shown = cur if cur not in (None, '') else '(default)'
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Cancel", callback_data="admin_settings", style="danger", icon="back"))
     set_state(chat_id, f"set_any:{key}")
-    bot.edit_message_text(
-        f"⚙️ <b>EDIT SETTING</b>\n\n"
-        f"📌 <b>{label}</b>\n"
-        f"💾 Current: <code>{shown}</code>\n\n"
-        f"Send the new value:",
-        chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+    set_state(call.from_user.id, f"set_any:{key}")
+    logger.info(f"Admin settings: editing '{key}' (current: {shown}) — waiting for new value")
+    try:
+        bot.edit_message_text(
+            f"⚙️ <b>EDIT SETTING</b>\n\n"
+            f"📌 <b>{label}</b>\n"
+            f"💾 Current: <code>{shown}</code>\n\n"
+            f"Send the new value:",
+            chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        # 'message is not modified' etc - still fine, state is set
+        logger.warning(f"admin_edit_setting_start edit: {e}")
+    try:
+        bot.answer_callback_query(call.id, f"Editing: {label}")
+    except Exception:
+        pass
 
 def show_admin_panel(chat_id, message_id=None):
     if not is_admin(chat_id):
@@ -5412,6 +5424,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         return
 
     if data == "admin_settings":
+        user_states.pop(chat_id, None)
         rt_otp = get_setting('realtime_otp_admin') == '1'
         rt_label = "ON" if rt_otp else "OFF"
         rt_style = "success" if rt_otp else "danger"
@@ -5432,6 +5445,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         return
 
     if data == "admin_all_settings":
+        user_states.pop(chat_id, None)
         markup = types.InlineKeyboardMarkup(row_width=2)
         for key, (label, _v) in EDITABLE_SETTINGS.items():
             cur = get_setting(key)
@@ -5446,7 +5460,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
     if data.startswith("admin_edit_setting|"):
         key = data.split("|", 1)[1]
         if key in EDITABLE_SETTINGS:
-            admin_edit_setting_start(chat_id, msg_id, key)
+            admin_edit_setting_start(call, key)
         else:
             bot.answer_callback_query(call.id, "Unknown setting.", show_alert=True)
         return
@@ -6380,9 +6394,11 @@ def deduct_balance_handler(message):
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), str) and get_state(msg).startswith("set_any:") and is_admin(msg.from_user.id))
 def set_any_setting_handler(message):
-    key = get_state(msg).split(":", 1)[1]
+    state = get_state(message)
+    key = state.split(":", 1)[1]
+    clear_state(message)
     if key not in EDITABLE_SETTINGS:
-        clear_state(message)
+        bot.reply_to(message, "❌ Unknown setting.")
         return
     label, kind = EDITABLE_SETTINGS[key]
     raw = (message.text or "").strip()
@@ -6396,10 +6412,10 @@ def set_any_setting_handler(message):
         else:
             val = raw
         set_setting(key, str(val))
+        logger.info(f"Admin settings: '{key}' changed to {val}")
         bot.reply_to(message, f"✅ <b>{label}</b> set to: <code>{val}</code>", parse_mode="HTML")
     except ValueError:
         bot.reply_to(message, f"❌ Invalid value for <b>{label}</b>. Expected {'a number' if kind in ('int','float') else 'text'}.", parse_mode="HTML")
-    clear_state(message)
 
 
 @bot.message_handler(func=lambda msg: get_state(msg) == "set_botlink" and is_admin(msg.from_user.id))
