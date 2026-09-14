@@ -1837,31 +1837,40 @@ def admin_msg_user_send(message):
     # Reply button so the user can respond directly to the admin
     reply_kb = types.InlineKeyboardMarkup()
     reply_kb.add(ibtn("\U0001F4AC Reply to Admin", callback_data="user_reply_admin", style="primary", icon="chat"))
+
+    def _dm_media(send_fn, *args, **kwargs):
+        """Only pass caption/parse_mode when a caption exists."""
+        cap_full = (header + caption + footer) if caption else None
+        if cap_full:
+            send_fn(target_user, *args, caption=cap_full, parse_mode="HTML", reply_markup=reply_kb)
+        else:
+            send_fn(target_user, *args, reply_markup=reply_kb)
+
     try:
         sent_ok = False
         if message.text:
             bot.send_message(target_user, header + caption + footer, parse_mode="HTML", reply_markup=reply_kb)
             sent_ok = True
         elif message.photo:
-            bot.send_photo(target_user, message.photo[-1].file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
+            _dm_media(bot.send_photo, message.photo[-1].file_id)
             sent_ok = True
         elif message.video:
-            bot.send_video(target_user, message.video.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
+            _dm_media(bot.send_video, message.video.file_id)
             sent_ok = True
         elif message.voice:
-            bot.send_voice(target_user, message.voice.file_id, reply_markup=reply_kb)
+            _dm_media(bot.send_voice, message.voice.file_id)
             sent_ok = True
         elif message.audio:
-            bot.send_audio(target_user, message.audio.file_id, reply_markup=reply_kb)
+            _dm_media(bot.send_audio, message.audio.file_id)
             sent_ok = True
         elif message.document:
-            bot.send_document(target_user, message.document.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
+            _dm_media(bot.send_document, message.document.file_id)
             sent_ok = True
         elif message.sticker:
-            bot.send_sticker(target_user, message.sticker.file_id, reply_markup=reply_kb)
+            _dm_media(bot.send_sticker, message.sticker.file_id)
             sent_ok = True
         elif message.animation:
-            bot.send_animation(target_user, message.animation.file_id, reply_markup=reply_kb)
+            _dm_media(bot.send_animation, message.animation.file_id)
             sent_ok = True
         if sent_ok:
             disp = get_user_display(target_user)
@@ -7109,11 +7118,21 @@ def broadcast_handler(message):
         return
     sent = 0
     failed = 0
+    last_err = ""
     caption = ""
     if message.caption:
-        caption = f"📢 <b>{html_mod.escape(message.caption)}</b>"
+        caption = "\U0001F4E2 <b>" + html_mod.escape(message.caption) + "</b>"
     if message.text:
-        caption = f"📢 <b>{html_mod.escape(message.text.strip())}</b>"
+        caption = "\U0001F4E2 <b>" + html_mod.escape(message.text.strip()) + "</b>"
+
+    def _send_media(uid, send_fn, *args, **kwargs):
+        """Send media; only pass caption/parse_mode when a caption exists."""
+        cap = kwargs.pop("caption", None)
+        if cap:
+            send_fn(uid, *args, caption=cap, parse_mode="HTML", **kwargs)
+        else:
+            send_fn(uid, *args, **kwargs)
+
     for (uid,) in users:
         try:
             ok = False
@@ -7121,40 +7140,41 @@ def broadcast_handler(message):
                 bot.send_message(uid, caption, parse_mode="HTML")
                 ok = True
             elif message.photo:
-                bot.send_photo(uid, message.photo[-1].file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_photo, message.photo[-1].file_id, caption=caption)
                 ok = True
             elif message.video:
-                bot.send_video(uid, message.video.file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_video, message.video.file_id, caption=caption)
                 ok = True
             elif message.video_note:
-                bot.send_video_note(uid, message.video_note.file_id)
+                _send_media(uid, bot.send_video_note, message.video_note.file_id)
                 ok = True
             elif message.voice:
-                bot.send_voice(uid, message.voice.file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_voice, message.voice.file_id, caption=caption)
                 ok = True
             elif message.audio:
-                bot.send_audio(uid, message.audio.file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_audio, message.audio.file_id, caption=caption)
                 ok = True
             elif message.document:
-                bot.send_document(uid, message.document.file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_document, message.document.file_id, caption=caption)
                 ok = True
             elif message.sticker:
-                bot.send_sticker(uid, message.sticker.file_id)
+                _send_media(uid, bot.send_sticker, message.sticker.file_id)
                 ok = True
             elif message.animation:
-                bot.send_animation(uid, message.animation.file_id, caption=caption or None, parse_mode="HTML")
+                _send_media(uid, bot.send_animation, message.animation.file_id, caption=caption)
                 ok = True
             if ok:
                 sent += 1
             else:
                 failed += 1
-        except Exception:
+        except Exception as be:
             failed += 1
+            last_err = str(be)[:100]
     bot.reply_to(
         message,
         pe('checkmark', '✅') + " <b>Broadcast Sent!</b>\n\n"
         f"Sent: {sent} users\n"
-        f"Failed: {failed}",
+        f"Failed: {failed}" + (f"\nLast error: <code>{html_mod.escape(last_err)}</code>" if last_err else ""),
         parse_mode="HTML"
     )
 
