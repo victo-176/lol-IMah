@@ -4405,7 +4405,7 @@ def show_2fa_menu(chat_id):
     text = f"━━━━━━━━━━━━━━━\n《 {pe('lock', '🔐')} <b>2FA AUTHENTICATOR</b> 》\n━━━━━━━━━━━━━━━\n{pe('lock', '🔐')} <b>GENERATE SECURE 2FA CODES</b>\n{pe('phone', '📱')} <b>ENTER YOUR SECRET KEY</b>\n\n<b>CLICK GENERATE 2FA CODE BELOW</b>"
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("GENERATE 2FA CODE", callback_data="2fa_generate", style="primary", icon="lock"))
-    markup.add(ibtn("BACK", callback_data="close_menu", style="danger", icon="back"))
+    markup.add(ibtn("BACK", callback_data="nav_back", style="danger", icon="back"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 def show_leaderboard(chat_id):
@@ -4510,7 +4510,7 @@ def show_referrals(chat_id):
             f"{pe('dollar', '💵')} Total Earned: <b>${earned:.2f}</b>\n"
             f"{pe('info_bw', 'ℹ️')} Reward pays when an invite receives {get_referral_threshold()} OTPs")
     markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("BACK", callback_data="close_menu", style="primary", icon="back"))
+    markup.add(ibtn("BACK", callback_data="nav_back", style="primary", icon="back"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 # ---- Withdrawals ----
@@ -4587,6 +4587,17 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
     # FIXED: Block ALL callbacks for banned users (except close_menu)
     if is_banned(user_id) and data != "close_menu":
         bot.answer_callback_query(call.id, "🚫 You are banned from this bot.", show_alert=True)
+        return
+
+    if data == "nav_back":
+        # Back button: return to the main menu screen instead of closing
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+        user = get_user(chat_id)
+        fname = (user[2] if user and len(user) > 2 else "") or "User"
+        show_main_menu(chat_id, chat_id, fname)
         return
 
     if data == "close_menu":
@@ -4700,7 +4711,7 @@ def show_user_countries(chat_id, app_name, message_id):
         markup.add(ibtn(f"{info['name']} ({info['count']})",
                         callback_data=f"usr_cnt|{app_name}|{cc}", style="primary",
                         icon_id=flag_icon_id(info["iso"])))
-    markup.add(ibtn("Back", callback_data="close_menu", style="danger", icon="back"))
+    markup.add(ibtn("Back", callback_data="nav_back", style="danger", icon="back"))
     app_emoji = app_emoji_html(app_name)
     bot.edit_message_text(f"{app_emoji} <b>{app_name}</b>\n\n📍 <b>SELECT COUNTRY:</b>",
                           chat_id, message_id, parse_mode="HTML", reply_markup=markup)
@@ -4743,7 +4754,7 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name, ext
         ibtn(cc_btn_text, callback_data=f"toggle_cc|{app_name}|{country_key}|{number}", style="success", icon="earth"),
         ibtn("Change Number", callback_data=f"chg_local|{app_name}|{country_key}", style="danger", icon="refresh"),
     )
-    markup.row(ibtn("Back", callback_data="close_menu", style="primary", icon="back"))
+    markup.row(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
     bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
 
 def _check_rate_limit(user_id):
@@ -4875,7 +4886,7 @@ def process_2fa_code(message):
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn(f"COPY: {code}", copy_text_str=code, style="success", icon="copy"))
         markup.add(ibtn("REFRESH", callback_data="2fa_generate", style="primary", icon="refresh"))
-        markup.add(ibtn("BACK", callback_data="close_menu", style="danger", icon="back"))
+        markup.add(ibtn("BACK", callback_data="nav_back", style="danger", icon="back"))
         bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}", parse_mode="HTML")
@@ -5255,7 +5266,7 @@ def get_admin_menu():
         ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
         ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
         ibtn("Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
-        ibtn("Leave", callback_data="close_menu", style="danger", icon="back")
+        ibtn("Leave", callback_data="nav_back", style="danger", icon="back")
     ]
     for i in range(0, len(buttons), 2):
         if i+1 < len(buttons):
