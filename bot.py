@@ -4422,14 +4422,12 @@ def show_leaderboard(chat_id):
     c = conn.cursor()
     # Rank by actual OTP counts received (otp_counts) merged with users table
     c.execute("""
-        SELECT COALESCE(oc.user_id, u.user_id) AS uid,
-               COALESCE(NULLIF(u.first_name, ''), NULLIF(u.username, ''), CAST(COALESCE(oc.user_id, u.user_id) AS TEXT)) AS name,
-               COALESCE(oc.count, 0) AS cnt
+        SELECT oc.user_id AS uid,
+               COALESCE(NULLIF(u.first_name, ''), NULLIF(u.username, ''), CAST(oc.user_id AS TEXT)) AS name,
+               oc.count AS cnt
         FROM otp_counts oc
         LEFT JOIN users u ON u.user_id = oc.user_id
-        UNION
-        SELECT u.user_id, COALESCE(NULLIF(u.first_name, ''), NULLIF(u.username, ''), CAST(u.user_id AS TEXT)), 0
-        FROM users u WHERE u.user_id NOT IN (SELECT user_id FROM otp_counts)
+        WHERE oc.count > 0
         ORDER BY cnt DESC, uid
         LIMIT 10
     """)
