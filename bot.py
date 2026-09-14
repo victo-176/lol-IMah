@@ -84,11 +84,41 @@ def get_max_withdrawal():
     except (TypeError, ValueError):
         return MAX_WITHDRAWAL
 
+_NGN_RATE_CACHE = {"rate": None, "ts": 0}
+
+def _fetch_live_ngn_rate():
+    """Fetch live USD->NGN rate from a free API. Cached 30 minutes."""
+    import time as _time
+    now = _time.time()
+    if _NGN_RATE_CACHE["rate"] and now - _NGN_RATE_CACHE["ts"] < 1800:
+        return _NGN_RATE_CACHE["rate"]
+    for url in ("https://open.er-api.com/v6/latest/USD",
+                "https://api.exchangerate-api.com/v4/latest/USD"):
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                rate = (data.get("rates") or {}).get("NGN")
+                if rate and 100 < float(rate) < 10000:
+                    _NGN_RATE_CACHE["rate"] = float(rate)
+                    _NGN_RATE_CACHE["ts"] = now
+                    return float(rate)
+        except Exception:
+            continue
+    return None
+
 def get_ngn_rate():
-    try:
-        return float(get_setting('ngn_rate') or 1325.98)
-    except (TypeError, ValueError):
-        return 1325.98
+    # Admin override takes priority if set explicitly
+    admin_rate = get_setting('ngn_rate')
+    if admin_rate:
+        try:
+            return float(admin_rate)
+        except (TypeError, ValueError):
+            pass
+    live = _fetch_live_ngn_rate()
+    if live:
+        return live
+    return 1325.98  # fallback
 ADMIN_IDS = [ADMIN_ID, *EXTRA_ADMINS]
 # ======================== PERSISTENT STORAGE ========================
 PERSISTENT_DIR = os.environ.get("PERSISTENT_DIR", "/app/data/")
@@ -4224,21 +4254,38 @@ def show_user_services(chat_id):
 def show_traffic(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Admin-configured traffic rates
+    rates = []
+    try:
+        c.execute("SELECT name, rate_pct FROM traffic_rates ORDER BY rate_pct DESC LIMIT 20")
+        rates = c.fetchall()
+    except Exception:
+        pass
     c.execute("SELECT app_name, country, count FROM traffic_log ORDER BY count DESC LIMIT 20")
     rows = c.fetchall()
     conn.close()
-    text = f"{pe('stats', '📊')} <b>NETWORK TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-    if not rows:
-        text += "No data yet."
-    else:
-        for app, country, count in rows:
+    text = pe('stats', '\U0001F4CA') + " <b>NETWORK TRAFFIC</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+    if rates:
+        text += "<b>Rates:</b>\n"
+        for name, pct in rates:
+            parts = name.split("|", 1)
+            app = parts[0]
+            ctry = parts[1] if len(parts) > 1 else ""
             app_emoji = app_emoji_html(app)
-            text += f"{app_emoji} <b>{app}</b> — {country} ({count})\n"
-    markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("Refresh", callback_data="refresh_traffic", style="success", icon="refresh"))
-    markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
-
+            text += app_emoji + " <b>" + app + "</b> \u2014 " + ctry + ": <b>" + str(pct) + "%</b>\n"
+        text += "\n<b>Live Traffic:</b>\n"
+    if not rows and not rates:
+        text += "No data yet."
+    for app, country, count in rows:
+        app_emoji = app_emoji_html(app)
+        rate_disp = ""
+        try:
+            r = get_traffic_rate(app, country)
+            if r is not None:
+                rate_disp = " \u2022 " + str(r) + "%"
+        except Exception:
+            pass
+        text += app_emoji + " <b>" + app + "</b> \u2014 " + country + " (" + str(count) + ")" + rate_disp + "\n"
 def show_2fa_menu(chat_id):
     text = f"━━━━━━━━━━━━━━━\n《 {pe('lock', '🔐')} <b>2FA AUTHENTICATOR</b> 》\n━━━━━━━━━━━━━━━\n{pe('lock', '🔐')} <b>GENERATE SECURE 2FA CODES</b>\n{pe('phone', '📱')} <b>ENTER YOUR SECRET KEY</b>\n\n<b>CLICK GENERATE 2FA CODE BELOW</b>"
     markup = types.InlineKeyboardMarkup()
