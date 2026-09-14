@@ -4154,25 +4154,38 @@ def send_welcome(message):
         except:
             pass
 
+_PENDING_JOIN_ALERT = {"info": None}
+
+def queue_join_alert(user_id, disp):
+    """Store the latest join so the next admin button press pops it up."""
+    _PENDING_JOIN_ALERT["info"] = (user_id, disp)
+
+def _pop_join_alert():
+    info = _PENDING_JOIN_ALERT["info"]
+    _PENDING_JOIN_ALERT["info"] = None
+    return info
+
 def add_user(user_id, username="", first_name=""):
     existing = get_user(user_id)
     if not existing:
         save_user(user_id, username=username, first_name=first_name, balance=0.0)
+        disp = f"{first_name} (@{username})" if (first_name and username) else (first_name or (f"@{username}" if username else str(user_id)))
+        for admin in get_all_admins():
+            try:
+                newu_msg = (pe('new_badge', '\U0001F195') + " <b>NEW USER JOINED</b>\n"
+                    "\U0001F464 <b>Name:</b> " + disp + "\n"
+                    "\U0001F194 <b>ID:</b> <code>" + str(user_id) + "</code>")
+                bot.send_message(admin, newu_msg, parse_mode="HTML")
+            except:
+                pass
+        # Popup alert appears on the next admin button press
+        queue_join_alert(user_id, disp)
     else:
         # Backfill name/username if previously empty (user existed before messaging)
         cur_uname = (existing[1] or "").strip()
         cur_fname = (existing[2] or "").strip()
         if (username and not cur_uname) or (first_name and not cur_fname):
             save_user(user_id, username=username, first_name=first_name, balance=None)
-        disp = f"{first_name} (@{username})" if (first_name and username) else (first_name or (f"@{username}" if username else str(user_id)))
-        for admin in get_all_admins():
-            try:
-                newu_msg = (pe('new_badge', '🆕') + " <b>NEW USER JOINED</b>\n"
-                    "👤 <b>Name:</b> " + disp + "\n"
-                    "🆔 <b>ID:</b> <code>" + str(user_id) + "</code>")
-                bot.send_message(admin, newu_msg, parse_mode="HTML")
-            except:
-                pass
 
 def show_main_menu(chat_id, user_id, first_name):
     if is_banned(user_id):
@@ -5208,6 +5221,17 @@ def get_admin_menu():
 
 # ---- Admin callbacks ----
 def handle_admin_callback(call, data, chat_id, msg_id):
+    # If a new user joined recently, pop a notification alert on this button press
+    try:
+        ji = _pop_join_alert()
+        if ji:
+            juid, jdisp = ji
+            try:
+                bot.answer_callback_query(call.id, "\U0001F195 NEW USER: " + jdisp + " (ID: " + str(juid) + ")", show_alert=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
     if data == "admin_dashboard":
         stats = get_dashboard_stats()
         text = (f"{pe('stats', '📊')} <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
@@ -5759,15 +5783,65 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             conn.close()
         except Exception:
             pass
-        text = "\U0001F4CA <b>Add Traffic Rate</b>\n\nSend: <code>app|country|rate%</code>\nExample: <code>1xBet|NG|15</code>\n\n"
-        if rates:
-            text += "<b>Current rates:</b>\n"
-            for name, pct in rates:
-                a, co = name.split("|", 1)
-                text += f"  \u2022 {a} ({co}) \u2014 {pct}%\n"
+        text = "\U0001F4CA <b>Manage Traffic Rates</b>\n\n<b>Add:</b> send <code>app|country|rate%</code>\nExample: <code>1xBet|NG|15</code>\n\n"
         markup = types.InlineKeyboardMarkup()
+        if rates:
+            text += "<b>Current rates (tap to delete):</b>\n"
+            for name, pct in rates:
+                parts = name.split("|", 1)
+                a = parts[0]
+                co = parts[1] if len(parts) > 1 else ""
+                text += f"  \u2022 {a} ({co}) \u2014 {pct}%\n"
+                markup.add(ibtn(f"\u274C Delete {a} ({co}) \u2014 {pct}%", callback_data=f"admin_del_traffic|{name}", style="danger", icon="cross"))
+        else:
+            text += "No rates set yet."
         markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_del_traffic|"):
+        name = data.split("|", 1)[1]
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM traffic_rates WHERE kind='app_country' AND name=?", (name,))
+            conn.commit()
+            conn.close()
+            parts = name.split("|", 1)
+            a = parts[0]
+            co = parts[1] if len(parts) > 1 else ""
+            bot.answer_callback_query(call.id, "\u2705 Deleted " + a + " (" + co + ")", show_alert=True)
+        except Exception as e:
+            bot.answer_callback_query(call.id, "\u274c Error: " + str(e)[:60], show_alert=True)
+        # Refresh the manage screen
+        user_states.pop(chat_id, None)
+        set_state(chat_id, "add_traffic_rate")
+        rates = []
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT name, rate_pct FROM traffic_rates ORDER BY rate_pct DESC LIMIT 10")
+            rates = c.fetchall()
+            conn.close()
+        except Exception:
+            pass
+        text = "\U0001F4CA <b>Manage Traffic Rates</b>\n\n<b>Add:</b> send <code>app|country|rate%</code>\nExample: <code>1xBet|NG|15</code>\n\n"
+        markup = types.InlineKeyboardMarkup()
+        if rates:
+            text += "<b>Current rates (tap to delete):</b>\n"
+            for name, pct in rates:
+                parts = name.split("|", 1)
+                a = parts[0]
+                co = parts[1] if len(parts) > 1 else ""
+                text += f"  \u2022 {a} ({co}) \u2014 {pct}%\n"
+                markup.add(ibtn(f"\u274C Delete {a} ({co}) \u2014 {pct}%", callback_data=f"admin_del_traffic|{name}", style="danger", icon="cross"))
+        else:
+            text += "No rates set yet."
+        markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
         return
 
     if data == "admin_choice_sms":
