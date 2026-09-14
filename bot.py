@@ -1834,31 +1834,34 @@ def admin_msg_user_send(message):
         return
     header = "\U0001F4E8 <b>MESSAGE FROM ADMIN</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
     footer = "\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+    # Reply button so the user can respond directly to the admin
+    reply_kb = types.InlineKeyboardMarkup()
+    reply_kb.add(ibtn("\U0001F4AC Reply to Admin", callback_data="user_reply_admin", style="primary", icon="chat"))
     try:
         sent_ok = False
         if message.text:
-            bot.send_message(target_user, header + caption + footer, parse_mode="HTML")
+            bot.send_message(target_user, header + caption + footer, parse_mode="HTML", reply_markup=reply_kb)
             sent_ok = True
         elif message.photo:
-            bot.send_photo(target_user, message.photo[-1].file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            bot.send_photo(target_user, message.photo[-1].file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
             sent_ok = True
         elif message.video:
-            bot.send_video(target_user, message.video.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            bot.send_video(target_user, message.video.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
             sent_ok = True
         elif message.voice:
-            bot.send_voice(target_user, message.voice.file_id)
+            bot.send_voice(target_user, message.voice.file_id, reply_markup=reply_kb)
             sent_ok = True
         elif message.audio:
-            bot.send_audio(target_user, message.audio.file_id)
+            bot.send_audio(target_user, message.audio.file_id, reply_markup=reply_kb)
             sent_ok = True
         elif message.document:
-            bot.send_document(target_user, message.document.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            bot.send_document(target_user, message.document.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None, reply_markup=reply_kb)
             sent_ok = True
         elif message.sticker:
-            bot.send_sticker(target_user, message.sticker.file_id)
+            bot.send_sticker(target_user, message.sticker.file_id, reply_markup=reply_kb)
             sent_ok = True
         elif message.animation:
-            bot.send_animation(target_user, message.animation.file_id)
+            bot.send_animation(target_user, message.animation.file_id, reply_markup=reply_kb)
             sent_ok = True
         if sent_ok:
             disp = get_user_display(target_user)
@@ -1867,6 +1870,48 @@ def admin_msg_user_send(message):
             bot.reply_to(message, "\u274c Unsupported content.", parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, "\u274c Failed: " + str(e)[:100], parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "user_reply_admin")
+def user_reply_admin_start(call):
+    """User wants to reply to an admin message."""
+    set_state(call.message.chat.id, "user_reply_admin_msg")
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("\u274c Cancel", callback_data="close_menu", style="danger", icon="cross"))
+    bot.edit_message_text(
+        "\U0001F4AC <b>REPLY TO ADMIN</b>\n\n"
+        "<b>Type your reply now:</b>",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda msg: get_state(msg) == "user_reply_admin_msg" and msg.text and not msg.text.startswith("/"))
+def user_reply_admin_send(message):
+    """Send the user's reply to all admins."""
+    text = message.text.strip()
+    clear_state(message)
+    if not text:
+        bot.reply_to(message, "\u274c Message cannot be empty.", parse_mode="HTML")
+        return
+    disp = get_user_display(message.from_user.id)
+    admins = get_all_admins()
+    sent = False
+    for admin_id in admins:
+        try:
+            kb = types.InlineKeyboardMarkup()
+            kb.add(ibtn("\U0001F4E8 Reply to " + disp, callback_data=f"admin_msg_user|{message.from_user.id}", style="success", icon="chat"))
+            admin_msg = ("\U0001F4E8 <b>USER REPLY</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                "\U0001F464 <b>From:</b> " + disp + " (<code>" + str(message.from_user.id) + "</code>)\n"
+                "\U0001F4AC <b>Message:</b>\n" + text[:1000] +
+                "\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501")
+            bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
+            sent = True
+        except Exception as e:
+            logger.error(f"User reply to admin {admin_id} failed: {e}")
+    if sent:
+        bot.reply_to(message, "\u2705 Reply sent to admin.", parse_mode="HTML")
+    else:
+        bot.reply_to(message, "\u274c Could not deliver your reply. Try again later.", parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("support_reply|") and is_admin(call.from_user.id))
 def admin_support_reply_start(call):
