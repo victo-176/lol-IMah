@@ -70,6 +70,25 @@ REFERRAL_REWARD = 0.10
 REFERRAL_OTP_THRESHOLD = 3  # referrer earns when an invited user receives this many OTPs
 MIN_WITHDRAWAL = 1.0
 MAX_WITHDRAWAL = 5.0
+
+def get_min_withdrawal():
+    try:
+        return float(get_setting('min_withdrawal') or MIN_WITHDRAWAL)
+    except (TypeError, ValueError):
+        return MIN_WITHDRAWAL
+
+def get_max_withdrawal():
+    try:
+        v = get_setting('max_withdrawal')
+        return float(v) if v else MAX_WITHDRAWAL
+    except (TypeError, ValueError):
+        return MAX_WITHDRAWAL
+
+def get_ngn_rate():
+    try:
+        return float(get_setting('ngn_rate') or 1325.98)
+    except (TypeError, ValueError):
+        return 1325.98
 ADMIN_IDS = [ADMIN_ID, *EXTRA_ADMINS]
 # ======================== PERSISTENT STORAGE ========================
 PERSISTENT_DIR = os.environ.get("PERSISTENT_DIR", "/app/data/")
@@ -412,6 +431,14 @@ def init_db():
         )''')
         c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
 
+        c.execute('''CREATE TABLE IF NOT EXISTS traffic_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            rate_pct REAL DEFAULT 0.0,
+            UNIQUE(kind, name)
+        )
+        ''')
         c.execute('''CREATE TABLE IF NOT EXISTS traffic_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             app_name TEXT,
@@ -756,6 +783,23 @@ def get_user(user_id):
     row = c.fetchone()
     conn.close()
     return row
+
+def get_user_display(user_id):
+    """Return 'Name (@username)' for a user ID, falling back gracefully."""
+    try:
+        u = get_user(user_id)
+        if u:
+            name = (u[2] or "").strip()
+            uname = (u[1] or "").strip()
+            if name and uname:
+                return f"{name} (@{uname})"
+            if uname:
+                return f"@{uname}"
+            if name:
+                return name
+    except Exception:
+        pass
+    return str(user_id)
 
 def save_user(user_id, username="", first_name="", last_name="", country_code=None, assigned_number=None, private_combo_country=None, balance=None):
     with _db_lock:
@@ -1273,6 +1317,71 @@ def credit_referral_otp(user_id):
     except Exception as e:
         logger.error(f"credit_referral_otp error: {e}")
 
+
+def get_ngn_amount(usd):
+    try:
+        return usd * get_ngn_rate()
+    except Exception:
+        return 0.0
+
+def format_withdrawal_notification(user_id, amount, method, details, req_id):
+    """Build the full withdrawal notification with user info + payment details."""
+    u = get_user(user_id)
+    uname = (u[1] if u and len(u) > 1 else "") or ""
+    tname = (u[2] if u and len(u) > 2 else "") or ""
+    tg_line = f"{html_mod.escape(tname)}" if tname else "N/A"
+    if uname:
+        tg_line += f" (@{html_mod.escape(uname)})"
+    phone = html_mod.escape(str(details.get("phone", "") or details.get("upi_id", "") or ""))
+    address = html_mod.escape(str(details.get("address", "") or details.get("withdraw_address", "") or ""))
+    full_name = html_mod.escape(str(details.get("full_name", "") or details.get("withdraw_name", "") or ""))
+    extras = details.get("extras", {})
+    extras_str = ""
+    if extras:
+        extras_str = "\n".join(f"{html_mod.escape(str(k).title())}: {html_mod.escape(str(v))}" for k, v in extras.items() if v)
+    rate = get_ngn_rate()
+    ngn = get_ngn_amount(amount)
+    msg = (
+        f"\U0001F4B3 <b>NEW WITHDRAWAL REQUEST</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\U0001F464 <b>Telegram:</b> {tg_line}\n"
+        f"\U0001F194 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"\U0001F4D3 <b>Account Name:</b> {full_name or 'N/A'}\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\U0001F4B0 <b>Amount (USD):</b> ${amount:.2f}\n"
+        f"\U0001F4B1 <b>Rate:</b> 1 USD = \u20A6{rate:,.2f}\n"
+        f"\U0001F1F3\U0001F1EC <b>Amount (NGN):</b> \u20A6{ngn:,.2f}\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\U0001F3E6 <b>Method:</b> {html_mod.escape(method.upper())}\n"
+    )
+    if phone:
+        msg += f"\U0001F4F1 <b>Account No:</b> <code>{phone}</code>\n"
+    if address:
+        msg += f"\U0001F4DD <b>Address:</b> <code>{address}</code>\n"
+    if extras_str:
+        msg += extras_str + "\n"
+    msg += f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\U0001F194 <b>Request:</b> <code>{req_id}</code>"
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        ibtn("\u2705 APPROVE", callback_data=f"wd_approve|{req_id}", style="success", icon="checkmark"),
+        ibtn("\u274C REJECT", callback_data=f"wd_reject|{req_id}", style="danger", icon="cross"),
+    )
+    return msg, kb
+
+def notify_admin_withdrawal(user_id, amount, method, details, req_id):
+    """Send the withdrawal notification with Approve/Reject buttons to all admins."""
+    try:
+        msg, kb = format_withdrawal_notification(user_id, amount, method, details, req_id)
+    except Exception as e:
+        logger.error(f"Withdrawal notify format error: {e}")
+        msg = f"\U0001F4B3 New withdrawal: ${amount:.2f} via {method} from <code>{user_id}</code> (req {req_id})"
+        kb = None
+    for admin in get_all_admins():
+        try:
+            bot.send_message(admin, msg, parse_mode="HTML", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"Withdrawal notify failed for admin {admin}: {e}")
+
 def create_withdrawal_request(user_id, amount, method, details):
     with _db_lock:
         conn = _get_conn()
@@ -1618,7 +1727,7 @@ def live_support_send(message):
             user = get_user(user_id)
             username = user[1] if user and len(user) > 1 else ""
             first_name = user[2] if user and len(user) > 2 else ""
-            display = first_name or (f"@{username}" if username else str(user_id))
+            display = f"{first_name} (@{username})" if (first_name and username) else (first_name or (f"@{username}" if username else str(user_id)))
             pe_c3 = pe('chat', '\U0001F4AC')
             pe_p = pe('people', '\U0001F465')
             admin_msg = (
@@ -2147,7 +2256,11 @@ class ChoiceSMSForwarder:
     def _get_groups(self):
         groups = json.loads(get_setting('otp_groups') or '[]')
         if not groups:
-            groups = [self.DEFAULT_GROUP_ID]
+            default_grp = get_setting('default_otp_group')
+            if default_grp:
+                groups = [default_grp]
+            else:
+                groups = [self.DEFAULT_GROUP_ID]
         return groups
 
     def _do_login(self):
@@ -2349,6 +2462,15 @@ class ChoiceSMSForwarder:
                     )
                     if otp_display:
                         msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    # Show owning user's name + username if number is assigned
+                    try:
+                        _pd = re.sub(r'\D', '', sms.get('phone', ''))
+                        if len(_pd) >= 7:
+                            _mu = get_user_by_number(_pd)
+                            if _mu:
+                                msg += pe('people', '\U0001F465') + " <b>User:</b> " + get_user_display(_mu) + "\n"
+                    except Exception:
+                        pass
                     msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
@@ -3137,6 +3259,7 @@ class SMSPanelForwarder:
             'Accept': 'application/json, text/javascript, */*',
         })
         self._cached_sesskey = None
+        self._no_sesskey = False
         self.stop_event = threading.Event()
 
     def _do_login(self):
@@ -3487,6 +3610,10 @@ class SMSPanelForwarder:
 
     def _get_groups(self):
         groups = json.loads(get_setting('otp_groups') or '[]')
+        if not groups:
+            default_grp = get_setting('default_otp_group')
+            if default_grp:
+                groups = [default_grp]
         return groups if groups else []
 
     def _try_fetch(self, otp_ep, params):
@@ -3587,10 +3714,22 @@ class SMSPanelForwarder:
         """Main polling loop for this panel."""
         first_run = True
         startup_count = 0
+        empty_polls = 0
         logger.info(f"Panel forwarder [{self.name}] started (ID: {self.panel_id})")
         while not self.stop_event.is_set():
             try:
                 otps = self.fetch_otps()
+                if not otps:
+                    empty_polls += 1
+                    if empty_polls >= 8:
+                        logger.info(f"Panel [{self.name}]: {empty_polls} empty polls, refreshing session...")
+                        self.session.cookies.clear()
+                        self._cached_sesskey = None
+                        self._no_sesskey = False
+                        self._ensure_session()
+                        empty_polls = 0
+                else:
+                    empty_polls = 0
                 for sms in otps:
                     uid_key = f"{sms.get('otp') or 'nootp'}|{sms['phone']}|{sms['timestamp']}|{sms['full_text'][:50]}"
                     if first_run:
@@ -3618,6 +3757,15 @@ class SMSPanelForwarder:
                     )
                     if otp_display:
                         msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                    # Show owning user's name + username if number is assigned
+                    try:
+                        _pd = re.sub(r'\D', '', sms.get('phone', ''))
+                        if len(_pd) >= 7:
+                            _mu = get_user_by_number(_pd)
+                            if _mu:
+                                msg += pe('people', '\U0001F465') + " <b>User:</b> " + get_user_display(_mu) + "\n"
+                    except Exception:
+                        pass
                     msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
@@ -3919,7 +4067,7 @@ def send_welcome(message):
             except:
                 pass
         log_user_activity(user_id, "start", "Started bot")
-        add_user(user_id)
+        add_user(user_id, username=(message.from_user.username or ""), first_name=(message.from_user.first_name or ""))
         if not force_sub_check(user_id):
             show_force_join(chat_id)
             return
@@ -3931,12 +4079,16 @@ def send_welcome(message):
         except:
             pass
 
-def add_user(user_id):
+def add_user(user_id, username="", first_name=""):
     if not get_user(user_id):
-        save_user(user_id, balance=0.0)
+        save_user(user_id, username=username, first_name=first_name, balance=0.0)
+        disp = f"{first_name} (@{username})" if (first_name and username) else (first_name or (f"@{username}" if username else str(user_id)))
         for admin in get_all_admins():
             try:
-                bot.send_message(admin, f"{pe('new_badge', '🆕')} New user: <code>{user_id}</code>", parse_mode="HTML")
+                newu_msg = (pe('new_badge', '🆕') + " <b>NEW USER JOINED</b>\n"
+                    "👤 <b>Name:</b> " + disp + "\n"
+                    "🆔 <b>ID:</b> <code>" + str(user_id) + "</code>")
+                bot.send_message(admin, newu_msg, parse_mode="HTML")
             except:
                 pass
 
@@ -4097,15 +4249,30 @@ def show_2fa_menu(chat_id):
 def show_leaderboard(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT user_id, name, count FROM leaderboard ORDER BY count DESC LIMIT 10")
+    # Rank by actual OTP counts received (otp_counts) merged with users table
+    c.execute("""
+        SELECT COALESCE(oc.user_id, u.user_id) AS uid,
+               COALESCE(NULLIF(u.first_name, ''), NULLIF(u.username, ''), CAST(COALESCE(oc.user_id, u.user_id) AS TEXT)) AS name,
+               COALESCE(oc.count, 0) AS cnt
+        FROM otp_counts oc
+        LEFT JOIN users u ON u.user_id = oc.user_id
+        UNION
+        SELECT u.user_id, COALESCE(NULLIF(u.first_name, ''), NULLIF(u.username, ''), CAST(u.user_id AS TEXT)), 0
+        FROM users u WHERE u.user_id NOT IN (SELECT user_id FROM otp_counts)
+        ORDER BY cnt DESC, uid
+        LIMIT 10
+    """)
     rows = c.fetchall()
     conn.close()
-    text = f"{pe('top', '🏆')} <b>LEADERBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+    text = f"{pe('top', '🏆')} <b>LEADERBOARD</b> — TOP OTP USERS\n━━━━━━━━━━━━━━━━━━━━━\n"
     if not rows:
         text += "No data yet."
     else:
+        medals = ['🥇', '🥈', '🥉']
         for i, (uid, name, cnt) in enumerate(rows, 1):
-            text += f"{i}. <a href='tg://user?id={uid}'>{name}</a> — {cnt} OTPs\n"
+            rank = medals[i-1] if i <= 3 else f"{i}."
+            safe_name = html_mod.escape(str(name or uid))
+            text += f"{rank} <a href='tg://user?id={uid}'>{safe_name}</a> — {cnt} OTPs\n"
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Refresh", callback_data="refresh_leaderboard", style="success", icon="refresh"))
     markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
@@ -4114,18 +4281,23 @@ def show_leaderboard(chat_id):
 def show_stock_info(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT country_code, combo_index, numbers FROM combos")
+    c.execute("SELECT country_code, combo_index, numbers, app_name FROM combos")
     combos = c.fetchall()
     conn.close()
     total = 0
     text = f"{pe('chart_up', '📈')} <b>STOCK INFO</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-    for cc, ci, nums_json in combos:
-        nums = json.loads(nums_json)
+    for cc, ci, nums_json, app_name in combos:
+        try:
+            nums = json.loads(nums_json)
+        except Exception:
+            nums = []
         total += len(nums)
         iso = COUNTRY_CODES.get(cc, (cc, "UN"))[1]
         flag_html = flag_emoji_html(iso)
         name = COUNTRY_CODES.get(cc, (cc, "UN"))[0]
-        text += f"{flag_html} {name} (Combo {ci}): {len(nums)} numbers\n"
+        app_disp = html_mod.escape(app_name or "Unknown")
+        app_e = app_emoji_html(app_name or "")
+        text += f"{app_e} {app_disp} — {flag_html} {name}: {len(nums)} numbers\n"
     text += f"\n{pe('stats', '📊')} <b>Total:</b> {total} numbers"
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Refresh", callback_data="refresh_stock", style="success", icon="refresh"))
@@ -4412,7 +4584,47 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name, ext
     markup.row(ibtn("Back", callback_data="close_menu", style="primary", icon="back"))
     bot.edit_message_text(msg_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
 
+def _check_rate_limit(user_id):
+    """Returns error string if cooldown/rate-limit blocks the request, else None."""
+    if get_setting('rate_limit_enabled') == '1':
+        c = get_setting('rate_limit_per_hour')
+        try:
+            max_per_hour = int(c) if c else 10
+        except (TypeError, ValueError):
+            max_per_hour = 10
+        conn = sqlite3.connect(DB_PATH)
+        cu = conn.cursor()
+        cu.execute("SELECT COUNT(*) FROM user_activity WHERE user_id=? AND action='number_fetched' AND timestamp > datetime('now', '-1 hour')", (user_id,))
+        cnt = cu.fetchone()[0]
+        conn.close()
+        if cnt >= max_per_hour:
+            return "\u23F3 Rate limit reached. Try again later."
+    if get_setting('cooldown_enabled') != '0':
+        cd = get_setting('cooldown')
+        try:
+            cooldown_s = int(cd) if cd else 60
+        except (TypeError, ValueError):
+            cooldown_s = 60
+        conn = sqlite3.connect(DB_PATH)
+        cu = conn.cursor()
+        cu.execute("SELECT timestamp FROM user_activity WHERE user_id=? AND action='number_fetched' ORDER BY timestamp DESC LIMIT 1", (user_id,))
+        r = cu.fetchone()
+        conn.close()
+        if r:
+            try:
+                last = datetime.fromisoformat(r[0])
+                elapsed = (datetime.now() - last).total_seconds()
+                if elapsed < cooldown_s:
+                    return "\u23F3 Cooldown active: wait " + str(int(cooldown_s - elapsed)) + "s."
+            except Exception:
+                pass
+    return None
+
 def fetch_number_logic(chat_id, app_name, country_key, message_id):
+    rl_err = _check_rate_limit(chat_id)
+    if rl_err:
+        bot.edit_message_text(rl_err, chat_id, message_id, parse_mode="HTML")
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # FIXED: Only pull numbers from combos belonging to the selected app (all combo indexes)
@@ -4466,6 +4678,10 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     else:
         assign_number_to_user(chat_id, assigned)
         save_user(chat_id, country_code=country_key, assigned_number=assigned)
+    try:
+        log_user_activity(chat_id, "number_fetched", f"{app_name}/{country_key}")
+    except Exception:
+        pass
 
     # Show all assigned numbers
     if len(assigned_numbers) > 1:
@@ -4531,10 +4747,10 @@ def check_withdrawal_amount(user_id, amount):
     balance = user[10] if user and len(user) > 10 else 0.0
     if amount > balance:
         return f"❌ Insufficient balance. You have ${balance}."
-    if amount < MIN_WITHDRAWAL:
-        return f"❌ Minimum withdrawal is ${MIN_WITHDRAWAL:.2f}."
-    if amount > MAX_WITHDRAWAL:
-        return f"❌ Maximum withdrawal is ${MAX_WITHDRAWAL:.2f}."
+    if amount < get_min_withdrawal():
+        return f"❌ Minimum withdrawal is ${get_min_withdrawal():.2f}."
+    if amount > get_max_withdrawal():
+        return f"❌ Maximum withdrawal is ${get_max_withdrawal():.2f}."
     return None
 
 def process_opay_amount(message):
@@ -4558,11 +4774,7 @@ def process_opay_amount(message):
         "full_name": details.get("withdraw_name", "")
     })
     bot.reply_to(message, f"✅ Withdrawal request of ${amount:.2f} via Opay submitted for approval.", parse_mode="HTML")
-    for admin in get_all_admins():
-        try:
-            bot.send_message(admin, f"{pe('card', '💳')} <b>New Withdrawal</b>\nUser: <code>{user_id}</code>\nAmount: ${amount:.2f}\nMethod: Opay\nPhone: {details.get('withdraw_phone', '')}", parse_mode="HTML")
-        except:
-            pass
+    notify_admin_withdrawal(user_id, amount, "Opay", details, req_id)
     user_states.pop(user_id, None)
 
 def process_usdt_address(message):
@@ -4594,11 +4806,7 @@ def process_usdt_amount(message):
     address = user_states.get(user_id, {}).get("withdraw_address", "")
     req_id = create_withdrawal_request(user_id, amount, "usdt", {"address": address})
     bot.reply_to(message, f"✅ Withdrawal request of ${amount:.2f} via USDT submitted.", parse_mode="HTML")
-    for admin in get_all_admins():
-        try:
-            bot.send_message(admin, f"{pe('card', '💳')} <b>New Withdrawal</b>\nUser: <code>{user_id}</code>\nAmount: ${amount:.2f}\nMethod: USDT\nAddress: {address}", parse_mode="HTML")
-        except:
-            pass
+    notify_admin_withdrawal(user_id, amount, "USDT", details, req_id)
     user_states.pop(user_id, None)
 
 def process_upi_id(message):
@@ -4646,11 +4854,7 @@ def process_upi_amount(message):
         "full_name": details.get("withdraw_name", "")
     })
     bot.reply_to(message, f"✅ Withdrawal request of ${amount:.2f} via UPI submitted.", parse_mode="HTML")
-    for admin in get_all_admins():
-        try:
-            bot.send_message(admin, f"{pe('card', '💳')} <b>New Withdrawal</b>\nUser: <code>{user_id}</code>\nAmount: ${amount:.2f}\nMethod: UPI\nUPI: {details.get('withdraw_upi', '')}", parse_mode="HTML")
-        except:
-            pass
+    notify_admin_withdrawal(user_id, amount, "UPI", details, req_id)
     user_states.pop(user_id, None)
 
 def process_others_country(message):
@@ -4722,11 +4926,7 @@ def process_others_amount(message):
         "bank_name": details.get("others_bank", "")
     })
     bot.reply_to(message, f"✅ Withdrawal request of ${amount:.2f} via Other submitted.", parse_mode="HTML")
-    for admin in get_all_admins():
-        try:
-            bot.send_message(admin, f"{pe('card', '💳')} <b>New Withdrawal</b>\nUser: <code>{user_id}</code>\nAmount: ${amount:.2f}\nMethod: Others\nDetails: {details}", parse_mode="HTML")
-        except:
-            pass
+    notify_admin_withdrawal(user_id, amount, "Others", details, req_id)
     user_states.pop(user_id, None)
 
 # =========================== PREDEFINED PANELS (48 PANELS) ===========================
@@ -4807,6 +5007,13 @@ EDITABLE_SETTINGS = {
     'referral_otp_threshold': ('Referral OTP Threshold', 'int'),
     'otp_price_user':   ('User OTP Price ($)', 'float'),
     'poll_interval':    ('Panel Poll Interval (seconds)', 'float'),
+    'min_withdrawal':   ('Min Withdrawal ($)', 'float'),
+    'max_withdrawal':   ('Max Withdrawal ($)', 'float'),
+    'ngn_rate':         ('USD to NGN Rate', 'float'),
+    'cooldown_enabled': ('Cooldown Enabled (1=on, 0=off)', 'int'),
+    'rate_limit_enabled': ('Rate Limiting Enabled (1=on, 0=off)', 'int'),
+    'default_otp_group': ('Default OTP Group ID', 'str'),
+    'rate_limit_per_hour': ('Rate Limit: Max Numbers/Hour', 'int'),
 }
 
 def get_referral_reward():
@@ -5342,6 +5549,59 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.edit_message_text("Select withdrawal to approve:", chat_id, msg_id, reply_markup=markup)
         return
 
+    # --- Direct Approve/Reject buttons on the withdrawal notification ---
+    if data.startswith("wd_approve|"):
+        req_id = data.split("|")[1]
+        success, result = approve_withdrawal(req_id, chat_id, "Approved")
+        if success:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT user_id, amount FROM withdrawal_requests WHERE id=?", (req_id,))
+            row = c.fetchone()
+            conn.close()
+            if row:
+                try:
+                    amt_str = f"${row[1]:.2f}"
+                    bot.send_message(row[0], pe('checkmark', "\u2705") + " <b>Withdrawal Approved</b>\n" + amt_str + " has been processed.", parse_mode="HTML")
+                except Exception:
+                    pass
+            bot.answer_callback_query(call.id, "\u2705 Withdrawal approved", show_alert=True)
+            try:
+                bot.edit_message_text(
+                    f"\u2705 <b>WITHDRAWAL APPROVED</b>\nRequest <code>{req_id}</code> was approved.",
+                    chat_id, msg_id, parse_mode="HTML")
+            except Exception:
+                pass
+        else:
+            bot.answer_callback_query(call.id, f"\u274c {result}", show_alert=True)
+        return
+
+    if data.startswith("wd_reject|"):
+        req_id = data.split("|")[1]
+        success, result = reject_withdrawal(req_id, chat_id, "Rejected by admin")
+        if success:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT user_id, amount FROM withdrawal_requests WHERE id=?", (req_id,))
+            row = c.fetchone()
+            conn.close()
+            if row:
+                try:
+                    amt_str2 = f"${row[1]:.2f}"
+                    bot.send_message(row[0], pe('cross', "\u274c") + " <b>Withdrawal Rejected</b>\nYour withdrawal request of " + amt_str2 + " was rejected. Your balance was not deducted.", parse_mode="HTML")
+                except Exception:
+                    pass
+            bot.answer_callback_query(call.id, "\u274c Withdrawal rejected", show_alert=True)
+            try:
+                bot.edit_message_text(
+                    f"\u274c <b>WITHDRAWAL REJECTED</b>\nRequest <code>{req_id}</code> was rejected.",
+                    chat_id, msg_id, parse_mode="HTML")
+            except Exception:
+                pass
+        else:
+            bot.answer_callback_query(call.id, f"\u274c {result}", show_alert=True)
+        return
+
     if data.startswith("admin_approve_wd|"):
         req_id = data.split("|")[1]
         success, result = approve_withdrawal(req_id, chat_id, "Approved")
@@ -5354,7 +5614,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             conn.close()
             if row:
                 try:
-                    bot.send_message(row[0], f"{pe('checkmark', '✅')} <b>Withdrawal Approved</b>\n${row[1]:.2f} processed.", parse_mode="HTML")
+                    bot.send_message(row[0], pe('checkmark', "\u2705") + " <b>Withdrawal Approved</b>\n" + amt_str + " has been processed.", parse_mode="HTML")
                 except:
                     pass
         else:
@@ -5381,6 +5641,29 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.register_next_step_handler_by_chat_id(chat_id, admin_reject_reason_step)
         return
 
+
+    if data == "admin_add_traffic_rate":
+        user_states.pop(chat_id, None)
+        set_state(chat_id, "add_traffic_rate")
+        rates = []
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT name, rate_pct FROM traffic_rates ORDER BY rate_pct DESC LIMIT 10")
+            rates = c.fetchall()
+            conn.close()
+        except Exception:
+            pass
+        text = "\U0001F4CA <b>Add Traffic Rate</b>\n\nSend: <code>app|country|rate%</code>\nExample: <code>1xBet|NG|15</code>\n\n"
+        if rates:
+            text += "<b>Current rates:</b>\n"
+            for name, pct in rates:
+                a, co = name.split("|", 1)
+                text += f"  \u2022 {a} ({co}) \u2014 {pct}%\n"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
 
     if data == "admin_choice_sms":
         enabled = get_setting('choice_enabled') == '1'
@@ -5445,6 +5728,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup.add(ibtn("Bot Link", callback_data="admin_set_botlink", style="primary", icon="link"))
         markup.add(ibtn("Force Subscribe", callback_data="admin_force_sub", style="primary", icon="lock"))
         markup.add(ibtn("Broadcast", callback_data="admin_broadcast", style="success", icon="announcement"))
+        markup.add(ibtn("Add Traffic Rate (%)", callback_data="admin_add_traffic_rate", style="primary", icon="stats"))
         markup.add(ibtn(f"Real-time OTP [{rt_label}]", callback_data="admin_toggle_rt_otp", style=rt_style, icon="eye"))
         markup.add(ibtn("Maintenance", callback_data="admin_toggle_maintenance", style="danger", icon="wrench"))
         markup.add(ibtn("📋 All Settings (edit any)", callback_data="admin_all_settings", style="primary", icon="wrench"))
@@ -5618,7 +5902,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         set_state(chat_id, "admin_broadcast_msg")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("Cancel", callback_data="admin_settings", style="danger", icon="back"))
-        bot.edit_message_text("📢 <b>Broadcast Message</b>\n\nSend the message you want to broadcast to all users:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text("📢 <b>Broadcast</b>\n\nSend <b>any message or media</b> (text, photo, video, file, voice, sticker...) to broadcast to all users:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
     # === REAL-TIME OTP TOGGLE ===
@@ -5909,13 +6193,46 @@ def handle_combo_file(message):
     if not is_admin(message.from_user.id):
         return
     doc = message.document
-    if not doc.file_name.endswith('.txt'):
-        bot.reply_to(message, "❌ Only .txt files.", parse_mode="HTML")
+    fname = (doc.file_name or "").lower()
+    if not (fname.endswith('.txt') or fname.endswith('.csv')):
+        bot.reply_to(message, "❌ Only .txt or .csv files.", parse_mode="HTML")
         return
     try:
         file = bot.get_file(doc.file_id)
-        content = bot.download_file(file.file_path).decode('utf-8')
-        lines = [l.strip() for l in content.splitlines() if l.strip()]
+        content = bot.download_file(file.file_path).decode('utf-8', errors='replace')
+        lines = []
+        if fname.endswith('.csv'):
+            # CSV: extract phone numbers from any column. Prefer columns whose
+            # header looks like number/phone/msisdn, else longest digit run per row.
+            import csv as _csv, io as _io
+            rows = list(_csv.reader(_io.StringIO(content)))
+            if rows:
+                header = [h.strip().lower() for h in rows[0]]
+                num_col = None
+                for i, h in enumerate(header):
+                    if any(k in h for k in ('number', 'phone', 'msisdn', 'num')):
+                        num_col = i
+                        break
+                for row in rows[1:]:
+                    if not row:
+                        continue
+                    val = ""
+                    if num_col is not None and num_col < len(row):
+                        val = row[num_col]
+                    else:
+                        # fallback: pick the cell with the most digits
+                        best = ""
+                        for cell in row:
+                            d = re.sub(r'\D', '', cell)
+                            if len(d) > len(best):
+                                best = d
+                        val = best
+                    d = re.sub(r'\D', '', val)
+                    if d and len(d) >= 5:
+                        lines.append(d)
+            lines = list(dict.fromkeys(lines))  # dedupe preserving order
+        else:
+            lines = [l.strip() for l in content.splitlines() if l.strip()]
         if not lines:
             bot.reply_to(message, "❌ Empty file.", parse_mode="HTML")
             return
@@ -6082,7 +6399,8 @@ def admin_reject_reason_step(message):
         row = c.fetchone()
         if row:
             try:
-                bot.send_message(row[0], f"{pe('cross', '❌')} <b>Withdrawal Rejected</b>\nAmount: ${row[1]:.2f}\nReason: {reason}", parse_mode="HTML")
+                amt_str2 = f"${row[1]:.2f}"
+                bot.send_message(row[0], pe('cross', "\u274c") + " <b>Withdrawal Rejected</b>\nYour withdrawal request of " + amt_str2 + " was rejected. Your balance was not deducted.", parse_mode="HTML")
             except:
                 pass
         conn.close()
@@ -6260,6 +6578,52 @@ def add_nums_numbers_handler(message):
     name = COUNTRY_CODES.get(cc, (cc, "UN"))[0]
     bot.reply_to(message, f"✅ Added {len(nums)} numbers to {flag_html} {name}.", parse_mode="HTML")
     clear_state(message)
+
+# ---- Traffic rate management ----
+@bot.message_handler(func=lambda msg: get_state(msg) == "add_traffic_rate" and is_admin(msg.from_user.id))
+def add_traffic_rate_handler(message):
+    """Format: app|country|rate%  e.g.  1xBet|NG|15  — rate applies to OTP payout."""
+    raw = message.text.strip()
+    clear_state(message)
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) != 3:
+        bot.reply_to(message, "\u274c Format: <code>app|country|rate%</code> (e.g. <code>1xBet|NG|15</code>)", parse_mode="HTML")
+        return
+    app, country, rate_s = parts
+    try:
+        rate = float(rate_s.rstrip("%"))
+        if rate < 0 or rate > 100:
+            raise ValueError
+    except ValueError:
+        bot.reply_to(message, "\u274c Rate must be 0-100.", parse_mode="HTML")
+        return
+    kind = "app_country"
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO traffic_rates (kind, name, rate_pct) VALUES (?, ?, ?) "
+                  "ON CONFLICT(kind, name) DO UPDATE SET rate_pct=excluded.rate_pct",
+                  (kind, f"{app}|{country}", rate))
+        conn.commit()
+        conn.close()
+        bot.reply_to(message, f"\u2705 Traffic rate saved: <b>{app}</b> ({country}) at <b>{rate}%</b>", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"\u274c Error: {e}", parse_mode="HTML")
+
+def get_traffic_rate(app_name, country):
+    """Return % rate for app|country, then app-only, then None."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT rate_pct FROM traffic_rates WHERE kind='app_country' AND name=?", (f"{app_name}|{country}",))
+        r = c.fetchone()
+        if not r:
+            c.execute("SELECT rate_pct FROM traffic_rates WHERE kind='app_country' AND name LIKE ?", (f"{app_name}|%",))
+            r = c.fetchone()
+        conn.close()
+        return r[0] if r else None
+    except Exception:
+        return None
 
 @bot.message_handler(func=lambda msg: get_state(msg) == "add_otp_group" and is_admin(msg.from_user.id))
 def add_otp_group_handler(message):
@@ -6495,13 +6859,10 @@ def add_force_channel_handler(message):
 
 
 # ======================== BROADCAST ========================
-@bot.message_handler(func=lambda msg: get_state(msg) == "admin_broadcast_msg" and is_admin(msg.from_user.id))
+@bot.message_handler(func=lambda msg: get_state(msg) == "admin_broadcast_msg" and is_admin(msg.from_user.id),
+                     content_types=['text', 'photo', 'video', 'video_note', 'voice', 'audio', 'document', 'sticker', 'animation', 'media_group'])
 def broadcast_handler(message):
-    """Admin broadcasts a message to all users with premium emojis."""
-    text = message.text.strip()
-    if not text:
-        bot.reply_to(message, "❌ Message cannot be empty.", parse_mode="HTML")
-        return
+    """Admin broadcasts ANY content type (text/photo/video/file/etc) to all users."""
     clear_state(message)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -6511,21 +6872,52 @@ def broadcast_handler(message):
     if not users:
         bot.reply_to(message, "❌ No users to broadcast to.", parse_mode="HTML")
         return
-    # Premium emoji broadcast message
-    broadcast_msg = (
-        f"{pe('announcement', '📢')} <b>{text}</b>"
-    )
     sent = 0
     failed = 0
+    caption = ""
+    if message.caption:
+        caption = f"📢 <b>{html_mod.escape(message.caption)}</b>"
+    if message.text:
+        caption = f"📢 <b>{html_mod.escape(message.text.strip())}</b>"
     for (uid,) in users:
         try:
-            bot.send_message(uid, broadcast_msg, parse_mode="HTML")
-            sent += 1
-        except:
+            ok = False
+            if message.text:
+                bot.send_message(uid, caption, parse_mode="HTML")
+                ok = True
+            elif message.photo:
+                bot.send_photo(uid, message.photo[-1].file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            elif message.video:
+                bot.send_video(uid, message.video.file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            elif message.video_note:
+                bot.send_video_note(uid, message.video_note.file_id)
+                ok = True
+            elif message.voice:
+                bot.send_voice(uid, message.voice.file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            elif message.audio:
+                bot.send_audio(uid, message.audio.file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            elif message.document:
+                bot.send_document(uid, message.document.file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            elif message.sticker:
+                bot.send_sticker(uid, message.sticker.file_id)
+                ok = True
+            elif message.animation:
+                bot.send_animation(uid, message.animation.file_id, caption=caption or None, parse_mode="HTML")
+                ok = True
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+        except Exception:
             failed += 1
     bot.reply_to(
         message,
-        f"{pe('checkmark', '✅')} <b>Broadcast Sent!</b>\n\n"
+        pe('checkmark', '✅') + " <b>Broadcast Sent!</b>\n\n"
         f"Sent: {sent} users\n"
         f"Failed: {failed}",
         parse_mode="HTML"
@@ -6734,10 +7126,20 @@ def send_otp_to_admin(timestamp, number, otp, service="", country="", full_msg="
     if len(otp) == 6 and '-' not in otp:
         otp_display = f"{otp[:3]}-{otp[3:]}"
     service_upper = (service or "UNKNOWN").upper()
+    owner_line = ""
+    try:
+        pd = re.sub(r'\D', '', str(number))
+        if len(pd) >= 7:
+            mu = get_user_by_number(pd)
+            if mu:
+                owner_line = pe('people', '\U0001F465') + " <b>User:</b> " + get_user_display(mu) + "\n"
+    except Exception:
+        pass
     rt_msg = (
         f"{pe('fire', '🔥')} <b>LIVE OTP {pe('fire', '🔥')}</b>\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"{pe('phone', '📞')} <b>Number:</b> <code>{number}</code>\n"
+        f"{owner_line}"
         f"{pe('star', '⭐')} <b>Service:</b> {service_upper}\n"
         f"{pe('earth', '🌍')} <b>Country:</b> {country}\n"
         f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
