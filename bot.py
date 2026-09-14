@@ -1316,17 +1316,19 @@ def process_referral(referrer_id, referred_id):
         conn.close()
 
 def credit_referral_otp(user_id):
-    """Count an OTP received by a referred user; pay the referrer at the threshold."""
+    """Count an OTP received by a user (leaderboard) and pay the referrer at the threshold."""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        # Always count the OTP for the leaderboard, referred or not
+        c.execute("INSERT INTO otp_counts (user_id, count) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET count = count + 1", (user_id,))
         c.execute("SELECT referrer_id FROM referrals WHERE referred_id=?", (user_id,))
         row = c.fetchone()
         if not row:
+            conn.commit()
             conn.close()
             return
         referrer_id = row[0]
-        c.execute("INSERT INTO otp_counts (user_id, count) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET count = count + 1", (user_id,))
         c.execute("SELECT count FROM otp_counts WHERE user_id=?", (user_id,))
         otp_n = c.fetchone()[0]
         c.execute("SELECT reward_claimed FROM referrals WHERE referred_id=?", (user_id,))
@@ -2077,6 +2079,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
             conn.commit()
             conn.close()
+            credit_referral_otp(user_id)
             logger.info(f"Balance updated for {user_id}: ${new_balance}")
         except Exception as bal_err:
             logger.error(f"Balance credit failed for {user_id}: {bal_err}")
