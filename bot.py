@@ -1792,6 +1792,77 @@ def live_support_send(message):
             f"{pe_x} <b>Failed to send message.</b>\nPlease try again later.",
             parse_mode="HTML")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_msg_user|") and is_admin(call.from_user.id))
+def admin_msg_user_start(call):
+    """Admin wants to send a direct message to any user."""
+    try:
+        target_user = int(call.data.split("|")[1])
+        set_state(call.message.chat.id, {"admin_msg_to": target_user})
+        bot.answer_callback_query(call.id)
+        disp = get_user_display(target_user)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("\u274c Cancel", callback_data="close_menu", style="danger", icon="cross"))
+        bot.edit_message_text(
+            "\U0001F4E8 <b>MESSAGE USER</b>\n\n"
+            "To: " + disp + "\n"
+            "ID: <code>" + str(target_user) + "</code>\n\n"
+            "<b>Type your message (any text):</b>",
+            call.message.chat.id, call.message.message_id,
+            parse_mode="HTML", reply_markup=markup
+        )
+    except Exception as e:
+        bot.answer_callback_query(call.id, "Error: " + str(e)[:60], show_alert=True)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("admin_msg_to") and is_admin(msg.from_user.id))
+def admin_msg_user_send(message):
+    """Admin sends direct message to a user (text or any media)."""
+    state = get_state(message)
+    target_user = state.get("admin_msg_to")
+    clear_state(message)
+    caption = ""
+    if message.text:
+        caption = message.text.strip()
+    elif message.caption:
+        caption = message.caption
+    if not caption and not any([message.photo, message.video, message.voice, message.audio, message.document, message.sticker, message.animation]):
+        bot.reply_to(message, "\u274c Empty message.", parse_mode="HTML")
+        return
+    header = "\U0001F4E8 <b>MESSAGE FROM ADMIN</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+    footer = "\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+    try:
+        sent_ok = False
+        if message.text:
+            bot.send_message(target_user, header + caption + footer, parse_mode="HTML")
+            sent_ok = True
+        elif message.photo:
+            bot.send_photo(target_user, message.photo[-1].file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            sent_ok = True
+        elif message.video:
+            bot.send_video(target_user, message.video.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            sent_ok = True
+        elif message.voice:
+            bot.send_voice(target_user, message.voice.file_id)
+            sent_ok = True
+        elif message.audio:
+            bot.send_audio(target_user, message.audio.file_id)
+            sent_ok = True
+        elif message.document:
+            bot.send_document(target_user, message.document.file_id, caption=(header + caption + footer) if caption else None, parse_mode="HTML" if caption else None)
+            sent_ok = True
+        elif message.sticker:
+            bot.send_sticker(target_user, message.sticker.file_id)
+            sent_ok = True
+        elif message.animation:
+            bot.send_animation(target_user, message.animation.file_id)
+            sent_ok = True
+        if sent_ok:
+            disp = get_user_display(target_user)
+            bot.reply_to(message, "\u2705 Message sent to " + disp + " (<code>" + str(target_user) + "</code>).", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "\u274c Unsupported content.", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, "\u274c Failed: " + str(e)[:100], parse_mode="HTML")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("support_reply|") and is_admin(call.from_user.id))
 def admin_support_reply_start(call):
     """Admin wants to reply to a support message."""
@@ -1901,7 +1972,7 @@ bot.edit_message_text = _safe_edit_message_text
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
 def broadcast_stock_update(country_code, app_name, number_count, numbers=None):
-    """Send a stock update notification to OTP groups (with the actual numbers) and all users."""
+    """Send a stock update notification to all users (OTP groups stay OTP-only)."""
     iso = COUNTRY_CODES.get(country_code, (country_code, "UN"))[1]
     flag_html = flag_emoji_html(iso)
     name = COUNTRY_CODES.get(country_code, (country_code, "UN"))[0]
@@ -1913,22 +1984,7 @@ def broadcast_stock_update(country_code, app_name, number_count, numbers=None):
            f"━━━━━━━━━━━━━━━\n"
            f"🔄 <b>Update your list now!</b>")
 
-    # OTP groups: detailed broadcast including the newly added numbers
-    groups = json.loads(get_setting('otp_groups') or '[]')
-    if groups:
-        nums = numbers or []
-        detail = (f"{flag_html} <b>NEW NUMBERS — {name.upper()}</b> {app_emoji}\n"
-                  f"━━━━━━━━━━━━━━━\n")
-        for n in nums[:50]:
-            detail += f"📱 <code>{n}</code>\n"
-        if len(nums) > 50:
-            detail += f"<i>...and {len(nums) - 50} more</i>\n"
-        detail += f"━━━━━━━━━━━━━━━\n✅ <b>{len(nums)} number(s) added and ready!</b>"
-        for gid in groups:
-            try:
-                bot.send_message(gid, detail, parse_mode="HTML")
-            except Exception as e:
-                logger.warning(f"Failed to send number broadcast to group {gid}: {e}")
+    # NOTE: OTP groups no longer receive stock broadcasts - they are OTP-only.
 
     # Send to all users
     for uid in get_all_users():
@@ -5452,6 +5508,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             text = f"User <code>{uid}</code> - error loading details"
         # Action buttons
         markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(ibtn("\U0001F4E8 Message User", callback_data=f"admin_msg_user|{uid}", style="primary", icon="chat"))
         markup.add(
             ibtn("Add Balance", callback_data=f"admin_quick_add_bal|{uid}", style="success", icon="plus"),
             ibtn("Deduct", callback_data=f"admin_quick_deduct|{uid}", style="danger", icon="minus"),
