@@ -41,9 +41,10 @@ def test_withdrawal_buttons():
 def test_user_display():
     src = read_bot()
     assert "def get_user_display" in src
-    assert "get_user_display(mu)" in src  # used in forwarders
-    assert "get_user_display(_mu)" in src
-    assert "get_user_display(mu)" in src.split("def send_otp_to_admin")[1][:2000]  # admin live OTP
+    # Used in admin DM flows (message user, support reply) and admin live OTP
+    assert "get_user_display(target_user)" in src
+    lb = src.split("def send_otp_to_admin")[1][:2500]
+    assert "get_user_display" in lb  # admin live OTP still shows the user
     print("  PASS: user_display")
 
 

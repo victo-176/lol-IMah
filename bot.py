@@ -2551,15 +2551,6 @@ class ChoiceSMSForwarder:
                     )
                     if otp_display:
                         msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                    # Show owning user's name + username if number is assigned
-                    try:
-                        _pd = re.sub(r'\D', '', sms.get('phone', ''))
-                        if len(_pd) >= 7:
-                            _mu = get_user_by_number(_pd)
-                            if _mu:
-                                msg += pe('people', '\U0001F465') + " <b>User:</b> " + get_user_display(_mu) + "\n"
-                    except Exception:
-                        pass
                     msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
@@ -3846,15 +3837,6 @@ class SMSPanelForwarder:
                     )
                     if otp_display:
                         msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-                    # Show owning user's name + username if number is assigned
-                    try:
-                        _pd = re.sub(r'\D', '', sms.get('phone', ''))
-                        if len(_pd) >= 7:
-                            _mu = get_user_by_number(_pd)
-                            if _mu:
-                                msg += pe('people', '\U0001F465') + " <b>User:</b> " + get_user_display(_mu) + "\n"
-                    except Exception:
-                        pass
                     msg += (
                         f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
                         f"⏰ {sms['timestamp']}\n"
