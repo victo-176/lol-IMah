@@ -837,6 +837,9 @@ def save_user(user_id, username="", first_name="", last_name="", country_code=No
         c = conn.cursor()
         existing = get_user(user_id)
         if existing:
+            username = username if username else (existing[1] or "")
+            first_name = first_name if first_name else (existing[2] or "")
+            last_name = last_name if last_name else (existing[3] or "")
             country_code = country_code if country_code is not None else existing[4]
             assigned_number = assigned_number if assigned_number is not None else existing[5]
             private_combo_country = private_combo_country if private_combo_country is not None else existing[7]
@@ -4154,6 +4157,7 @@ def send_welcome(message):
                 pass
         log_user_activity(user_id, "start", "Started bot")
         add_user(user_id, username=(message.from_user.username or ""), first_name=(message.from_user.first_name or ""))
+        save_user(user_id, username=(message.from_user.username or ""), first_name=(message.from_user.first_name or ""))
         if not force_sub_check(user_id):
             show_force_join(chat_id)
             return
@@ -4166,8 +4170,15 @@ def send_welcome(message):
             pass
 
 def add_user(user_id, username="", first_name=""):
-    if not get_user(user_id):
+    existing = get_user(user_id)
+    if not existing:
         save_user(user_id, username=username, first_name=first_name, balance=0.0)
+    else:
+        # Backfill name/username if previously empty (user existed before messaging)
+        cur_uname = (existing[1] or "").strip()
+        cur_fname = (existing[2] or "").strip()
+        if (username and not cur_uname) or (first_name and not cur_fname):
+            save_user(user_id, username=username, first_name=first_name, balance=None)
         disp = f"{first_name} (@{username})" if (first_name and username) else (first_name or (f"@{username}" if username else str(user_id)))
         for admin in get_all_admins():
             try:
@@ -4342,6 +4353,11 @@ def show_traffic(chat_id):
         except Exception:
             pass
         text += app_emoji + " <b>" + app + "</b> \u2014 " + country + " (" + str(count) + ")" + rate_disp + "\n"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Refresh", callback_data="refresh_traffic", style="success", icon="refresh"))
+    markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
 def show_2fa_menu(chat_id):
     text = f"━━━━━━━━━━━━━━━\n《 {pe('lock', '🔐')} <b>2FA AUTHENTICATOR</b> 》\n━━━━━━━━━━━━━━━\n{pe('lock', '🔐')} <b>GENERATE SECURE 2FA CODES</b>\n{pe('phone', '📱')} <b>ENTER YOUR SECRET KEY</b>\n\n<b>CLICK GENERATE 2FA CODE BELOW</b>"
     markup = types.InlineKeyboardMarkup()
