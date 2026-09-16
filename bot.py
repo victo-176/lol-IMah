@@ -54,13 +54,12 @@ except ImportError:
 _BOT_TOKEN_ENC = "ODk1ODY2OTI2ODpBQUZQMjhuQmtHa1VOOHRCTS1oS1l3WEpVLWEtZkt0WG5Nbw=="
 BOT_TOKEN = os.getenv("BOT_TOKEN") or base64.b64decode(_BOT_TOKEN_ENC).decode("utf-8")
 
-# AgentMail API key for the temp-email feature (inbox: victor-8722@agentmail.to).
-# Stored base64-encoded to avoid a plain-text key in source.
-# Decodes to the API key; env var AGENTMAIL_API_KEY overrides it.
-_AGENTMAIL_KEY_ENC = "YW1fdXNfaW5ib3hfZTYzYTk0NGVjYmNiYzIxYTZmNWE3Yzg0MzNmYmZkZTQ2MGNmZDJlM2Y2MzA2ZGQ3MzVlMGY5OTkzMTkyZDJmMg=="
-AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY") or base64.b64decode(_AGENTMAIL_KEY_ENC).decode("utf-8")
-AGENTMAIL_BASE = "https://api.agentmail.to/v0"
-AGENTMAIL_INBOX = "victor-8722@agentmail.to"
+# Temp email services - free, no API key required.
+# Primary: mail.tm (account+token, full message bodies, reliable)
+# Fallback: temp-mail.io (no auth, custom usernames)
+MAILTM_BASE = "https://api.mail.tm"
+TEMPMAILIO_BASE = "https://api.internal.temp-mail.io/api/v3"
+TEMP_EMAIL_POLL_SECONDS = 2  # fast polling
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8921746989"))
 EXTRA_ADMINS = []
 
@@ -473,7 +472,7 @@ def init_db():
         )''')
         c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
 
-        # Temp email addresses per user (AgentMail)
+        # Temp email addresses per user (mail.tm / temp-mail.io)
         c.execute('''CREATE TABLE IF NOT EXISTS temp_emails (
             user_id INTEGER,
             email TEXT PRIMARY KEY,
@@ -481,6 +480,13 @@ def init_db():
             last_seen_message_id TEXT
         )''')
         c.execute("CREATE INDEX IF NOT EXISTS idx_temp_emails_user ON temp_emails(user_id)")
+        c.execute('''CREATE TABLE IF NOT EXISTS temp_email_creds (
+            email TEXT PRIMARY KEY,
+            service TEXT,
+            token TEXT,
+            account_id TEXT,
+            password TEXT
+        )''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS traffic_rates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1715,55 +1721,211 @@ def extract_otp(message):
     nums = re.findall(r'\d{4,8}', message)
     return nums[0] if nums else "N/A"
 
-# ======================== TEMP EMAIL (AgentMail) ========================
+# ======================== TEMP EMAIL (mail.tm + temp-mail.io) ========================
 
-def _am_headers():
-    return {"Authorization": f"Bearer {AGENTMAIL_API_KEY}", "Content-Type": "application/json"}
-
-def am_api(path, method="GET", body=None):
-    """Call the AgentMail API. Returns (ok, parsed_json_or_error_text)."""
+def _te_requests_json(method, url, headers=None, body=None, timeout=15):
+    """Requests wrapper returning (ok, parsed_json_or_error_text)."""
     try:
-        req = urllib.request.Request(
-            AGENTMAIL_BASE + path,
-            method=method,
-            data=json.dumps(body).encode() if body else None,
-            headers=_am_headers(),
-        )
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return True, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
+        r = requests.request(method, url, headers=headers, json=body, timeout=timeout)
+        if r.status_code >= 400:
+            return False, f"HTTP {r.status_code}"
+        if not r.text:
+            return True, {}
         try:
-            detail = e.read().decode()[:200]
-        except Exception:
-            detail = ""
-        logger.warning(f"AgentMail API {method} {path} failed: HTTP {e.code} {detail}")
-        return False, f"HTTP {e.code}"
+            return True, r.json()
+        except ValueError:
+            return True, {"raw": r.text}
     except Exception as e:
-        logger.warning(f"AgentMail API {method} {path} failed: {e}")
+        logger.warning(f"TempEmail request {method} {url} failed: {e}")
         return False, str(e)
 
-def am_create_inbox(username_prefix="tmp"):
-    """Create a new temp inbox. Returns (email, None) or (None, error)."""
-    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    username = f"{username_prefix}-{suffix}"
-    ok, data = am_api("/inboxes", "POST", {"username": username})
+# ---------- mail.tm (primary: full bodies, accounts+tokens) ----------
+
+def _mt_headers(token=None):
+    h = {"Content-Type": "application/json"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+def mt_get_domains():
+    ok, data = _te_requests_json("GET", f"{MAILTM_BASE}/domains")
+    if not ok:
+        return []
+    try:
+        members = data.get("hydra:member") or data.get("member") or []
+        return [d["domain"] for d in members if d.get("isActive", True)]
+    except Exception:
+        return []
+
+def mt_create_account(username, domain, password):
+    """Create a mail.tm account. Returns (token, account_id, None) or (None, None, error)."""
+    address = f"{username}@{domain}"
+    ok, data = _te_requests_json("POST", f"{MAILTM_BASE}/accounts",
+                                 headers=_mt_headers(), body={"address": address, "password": password})
+    if not ok:
+        return None, None, data
+    acct_id = data.get("id")
+    ok2, tok = _te_requests_json("POST", f"{MAILTM_BASE}/token",
+                                 headers=_mt_headers(), body={"address": address, "password": password})
+    if not ok2:
+        return None, None, tok
+    return tok.get("token"), acct_id, None
+
+def mt_list_messages(token, limit=10):
+    ok, data = _te_requests_json("GET", f"{MAILTM_BASE}/messages?page=1",
+                                 headers=_mt_headers(token))
+    if not ok:
+        return None
+    members = data.get("hydra:member") or data.get("member") or []
+    return members[:limit]
+
+def mt_get_message(token, message_id):
+    ok, data = _te_requests_json("GET", f"{MAILTM_BASE}/messages/{message_id}",
+                                 headers=_mt_headers(token))
+    return data if ok else None
+
+def mt_delete_account(token, account_id):
+    if account_id and token:
+        try:
+            requests.delete(f"{MAILTM_BASE}/accounts/{account_id}",
+                             headers=_mt_headers(token), timeout=15)
+        except Exception as e:
+            logger.warning(f"mail.tm delete account failed: {e}")
+
+# ---------- temp-mail.io (fallback: no auth, custom username) ----------
+
+def tio_get_domains():
+    ok, data = _te_requests_json("GET", f"{TEMPMAILIO_BASE}/domains")
+    if not ok:
+        return []
+    try:
+        return [d["name"] for d in data.get("domains", []) if d.get("type") == "public"]
+    except Exception:
+        return []
+
+def tio_create_email(username, domain):
+    """Create a temp-mail.io mailbox with a custom username. Returns (email, None) or (None, err)."""
+    ok, data = _te_requests_json("POST", f"{TEMPMAILIO_BASE}/email/new",
+                                 body={"name": username, "domain": domain})
     if not ok:
         return None, data
-    email = data.get("inbox_id") or data.get("email") or (f"{username}@agentmail.to" if data else None)
-    return email, None
+    email = data.get("email")
+    return email, (None if email else "no email in response")
 
-def am_list_messages(email, limit=20):
-    ok, data = am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}/messages?limit={limit}")
+def tio_list_messages(email):
+    ok, data = _te_requests_json("GET", f"{TEMPMAILIO_BASE}/email/{email}/messages")
     if not ok:
         return None
-    return data.get("messages", []) or []
+    msgs = data if isinstance(data, list) else data.get("messages", [])
+    return msgs
 
-def am_get_message(email, message_id):
-    """Fetch full message body. message_id is URL-encoded (it contains <>@)."""
-    ok, data = am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}/messages/{urllib.parse.quote(message_id, safe='')}")
-    if not ok:
-        return None
-    return data
+# ---------- Unified service interface ----------
+
+def te_get_service(email):
+    """Return (service, token, account_id) for a stored address."""
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT token, account_id, service FROM temp_email_creds WHERE email=?", (email,))
+        row = c.fetchone()
+        conn.close()
+    if row:
+        return row[2] or "tio", row[0], row[1]
+    return "tio", None, None
+
+def te_store_creds(email, service, token=None, account_id=None, password=None):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO temp_email_creds (email, service, token, account_id, password) VALUES (?, ?, ?, ?, ?)",
+                  (email, service, token, account_id, password))
+        conn.commit()
+        conn.close()
+
+def te_delete_creds(email):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM temp_email_creds WHERE email=?", (email,))
+        conn.commit()
+        conn.close()
+
+def te_create_email(username):
+    """Create a temp email trying mail.tm first, then temp-mail.io.
+    Returns (email, service, token, account_id, password, error)."""
+    errors = []
+    # --- mail.tm ---
+    domains = mt_get_domains()
+    password = "Te!" + username + str(random.randint(10000, 99999))
+    for dom in domains[:3]:
+        token, acct_id, err = mt_create_account(username, dom, password)
+        if token:
+            return f"{username}@{dom}", "mailtm", token, acct_id, password, None
+        errors.append(f"mail.tm/{dom}: {err}")
+    # --- temp-mail.io fallback ---
+    tio_domains = tio_get_domains()
+    for dom in tio_domains[:3]:
+        email, err = tio_create_email(username, dom)
+        if email:
+            return email, "tio", None, None, None, None
+        errors.append(f"temp-mail.io/{dom}: {err}")
+    return None, None, None, None, None, ("; ".join(errors)[:200] or "all providers failed")
+
+def te_list_messages(email):
+    """List messages for a stored email. Returns list of normalized dicts or None on failure."""
+    service, token, acct_id = te_get_service(email)
+    if service == "mailtm" and token:
+        msgs = mt_list_messages(token, limit=10)
+        if msgs is None:
+            return None
+        out = []
+        for m in msgs:
+            out.append({
+                "id": m.get("id") or m.get("message_id"),
+                "from": (m.get("from") or {}).get("address", "unknown"),
+                "from_name": (m.get("from") or {}).get("name", ""),
+                "subject": m.get("subject") or "(no subject)",
+                "preview": m.get("intro") or "",
+                "created_at": m.get("createdAt") or "",
+                "raw": m,
+            })
+        return out
+    elif service == "tio":
+        msgs = tio_list_messages(email)
+        if msgs is None:
+            return None
+        out = []
+        for m in msgs:
+            out.append({
+                "id": m.get("id"),
+                "from": m.get("from") or "unknown",
+                "from_name": "",
+                "subject": m.get("subject") or "(no subject)",
+                "preview": (m.get("body_text") or "")[:200],
+                "created_at": m.get("created_at") or "",
+                "raw": m,
+            })
+        return out
+    return None
+
+def te_get_full(email, msg_id):
+    """Fetch the full message. Returns dict with keys: text, html, or None."""
+    service, token, acct_id = te_get_service(email)
+    if service == "mailtm" and token:
+        full = mt_get_message(token, msg_id)
+        if not full:
+            return None
+        html = full.get("html")
+        if isinstance(html, list):
+            html = "\n".join(html)
+        return {"text": full.get("text") or "", "html": html or ""}
+    elif service == "tio":
+        # temp-mail.io list already includes full body_text / body_html
+        msgs = tio_list_messages(email) or []
+        for m in msgs:
+            if str(m.get("id")) == str(msg_id):
+                return {"text": m.get("body_text") or "", "html": m.get("body_html") or ""}
+    return None
 
 def extract_otp_from_email(subject, body):
     """Extract a verification code from an email's subject/body."""
@@ -1804,26 +1966,40 @@ def set_temp_email_last_seen(email, message_id):
         conn.close()
 
 def delete_user_temp_email(user_id, email):
+    # Remove remote mailbox (mail.tm) then local rows
+    service, token, acct_id = te_get_service(email)
+    if service == "mailtm" and token:
+        mt_delete_account(token, acct_id)
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
         c.execute("DELETE FROM temp_emails WHERE user_id=? AND email=?", (user_id, email))
         conn.commit()
         conn.close()
-    # Best-effort remote delete (outside DB lock)
-    am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}", "DELETE")
+    te_delete_creds(email)
 
 def _email_format_message(m, full=None):
-    """Format an email dict into the bot's HTML message style. Returns (text, otp)."""
-    sender = (m.get('from') or {}).get('address', 'unknown') if isinstance(m.get('from'), dict) else (m.get('from') or 'unknown')
-    subject = m.get('subject') or '(no subject)'
-    preview = (full or {}).get('text') or m.get('preview') or ''
-    preview = re.sub(r'<[^>]+>', ' ', preview)
-    preview = re.sub(r'\s+', ' ', preview).strip()
-    if len(preview) > 600:
-        preview = preview[:600] + "..."
+    """Format a normalized message dict into the bot's HTML style. Returns (text, otp)."""
+    sender = m.get("from") or "unknown"
+    name = m.get("from_name") or ""
+    if name:
+        sender = f"{name} <{sender}>"
+    subject = m.get("subject") or "(no subject)"
+    body_text = ""
+    body_html = ""
+    if full:
+        body_text = full.get("text") or ""
+        body_html = full.get("html") or ""
+    preview = body_text or m.get("preview") or ""
+    if not preview and body_html:
+        preview = re.sub(r'<br\s*/?>', '\n', body_html, flags=re.IGNORECASE)
+        preview = re.sub(r'<[^>]+>', ' ', preview)
+    preview = re.sub(r'[ \t]+', ' ', preview)
+    preview = re.sub(r'\n{3,}', '\n\n', preview).strip()
+    if len(preview) > 1500:
+        preview = preview[:1500] + "\n... (truncated)"
     otp = extract_otp_from_email(subject, preview)
-    ts = (m.get('created_at') or '')[:19].replace('T', ' ')
+    ts = (m.get("created_at") or "")[:19].replace("T", " ")
     pe_m = pe('mail', '\U0001F4E7')
     pe_k = pe('key', '\U0001F511')
     lines = [
@@ -1849,9 +2025,9 @@ def show_temp_email(chat_id, user_id):
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"\u300A {pe_m} <b>TEMP EMAIL</b> \u300B\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-        f"{pe_m} <b>GET A DISPOSABLE EMAIL ADDRESS</b>\n"
+        f"{pe_m} <b>GET A FREE DISPOSABLE EMAIL</b>\n"
         f"\U0001F4E5 Receive emails & verification codes in real time\n"
-        f"\U0001F504 New mail is delivered to you here automatically\n"
+        f"\U0001F504 New mail is delivered here automatically (2s polling)\n"
     )
     markup = types.InlineKeyboardMarkup()
     if emails:
@@ -1868,8 +2044,8 @@ def show_temp_email(chat_id, user_id):
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 def temp_email_watcher_loop():
-    """Background thread: poll every temp email inbox and DM new mail to its owner."""
-    logger.info("Temp email watcher started")
+    """Background thread: poll every temp email every 2s and DM new mail to its owner."""
+    logger.info("Temp email watcher started (fast polling)")
     while True:
         try:
             rows = []
@@ -1880,15 +2056,15 @@ def temp_email_watcher_loop():
                 rows = c.fetchall()
                 conn.close()
             for user_id, email, last_seen in rows:
-                msgs = am_list_messages(email, limit=10)
+                msgs = te_list_messages(email)
                 if msgs is None:
                     continue
-                # Oldest-first so the user reads in order; stop once we hit the last seen id
+                # Oldest-first so the user reads in order; stop at last seen id
                 for m in reversed(msgs):
-                    mid = m.get('message_id')
-                    if not mid or mid == last_seen:
+                    mid = str(m.get("id"))
+                    if not mid or mid == str(last_seen):
                         break
-                    full = am_get_message(email, mid)
+                    full = te_get_full(email, mid)
                     text, otp = _email_format_message(m, full)
                     markup = types.InlineKeyboardMarkup()
                     if otp:
@@ -1900,12 +2076,12 @@ def temp_email_watcher_loop():
                     set_temp_email_last_seen(email, mid)
                     log_user_activity(user_id, "temp_email_received", f"{email} :: {(m.get('subject') or '')[:40]}")
                 if msgs:
-                    newest = msgs[0].get('message_id')
-                    if newest and newest != last_seen:
+                    newest = str(msgs[0].get("id"))
+                    if newest and newest != str(last_seen):
                         set_temp_email_last_seen(email, newest)
         except Exception as e:
             logger.error(f"Temp email watcher error: {e}")
-        time.sleep(5)
+        time.sleep(TEMP_EMAIL_POLL_SECONDS)
 
 def detect_service(message):
     message_lower = message.lower()
@@ -4577,6 +4753,46 @@ def traffic_handler(message):
 def temp_email_handler(message):
     show_temp_email(message.chat.id, message.from_user.id)
 
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("awaiting") == "temail_username" and msg.text)
+def temp_email_username_handler(message):
+    username = message.text.strip().lower()
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    user_states.pop(chat_id, None)
+    user_states.pop(user_id, None)
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{2,28})[a-z0-9]", username):
+        bot.send_message(chat_id, "❌ Invalid username. Use 4-30 letters/numbers/dots/dashes (starts & ends with letter/number). Try again.", parse_mode="HTML")
+        show_temp_email(chat_id, user_id)
+        return
+    existing = get_user_temp_emails(user_id)
+    if len(existing) >= 5:
+        bot.send_message(chat_id, "❌ You already have 5 addresses. Delete one first.", parse_mode="HTML")
+        return
+    if any(em == username for em, _, _ in []):
+        pass
+    bot.send_message(chat_id, "⏳ Creating your temp email address, please wait...")
+    email, service, token, acct_id, password, err = te_create_email(username)
+    if not email:
+        bot.send_message(chat_id, f"❌ Failed: {err}\nTry a different username.", parse_mode="HTML")
+        return
+    te_store_creds(email, service, token, acct_id, password)
+    save_user_temp_email(user_id, email)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("📋 COPY ADDRESS", copy_text_str=email, style="success", icon="copy"))
+    markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
+    _pe_mail = pe('mail', '\U0001F4E7')
+    text = (
+        "\u2501" * 19 +
+        "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
+        "\u2501" * 19 +
+        "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
+        "\U0001F4E5 Emails sent to this address arrive here automatically\n"
+        "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
+        "\u2501" * 19
+    )
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+    log_user_activity(user_id, "temp_email_created", email)
+
 @bot.message_handler(func=menu_match("2FA ONLINE"))
 def twofa_handler(message):
     show_2fa_menu(message.chat.id)
@@ -4873,12 +5089,40 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             show_force_join(chat_id)
             bot.answer_callback_query(call.id)
             return
+        bot.answer_callback_query(call.id)
+        set_state(chat_id, {"awaiting": "temail_username"})
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("❌ Cancel", callback_data="temail_cancel", style="danger", icon="cross"))
+        bot.send_message(
+            chat_id,
+            "━" * 19 +
+            "\n\U0001F4E7 <b>NEW TEMP EMAIL</b>\n" +
+            "\u2501" * 19 +
+            "\n✍️ Send me the <b>username</b> you want (letters/numbers/dots).\n"
+            "Example: <code>john</code> \u2192 <code>john@&lt;domain&gt;</code>\n"
+            "\u23F3 Max 5 addresses per user.",
+            parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "temail_cancel":
+        user_states.pop(chat_id, None)
+        user_states.pop(user_id, None)
+        bot.answer_callback_query(call.id, "Cancelled")
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+        return
+
+    if data.startswith("temail_new_name|"):
+        username = data.split("|", 1)[1]
         bot.answer_callback_query(call.id, "⏳ Creating address...")
-        bot.send_message(chat_id, "⏳ Creating your temp email address...")
-        email, err = am_create_inbox("tmp")
+        bot.send_message(chat_id, "⏳ Creating your temp email address, please wait...")
+        email, service, token, acct_id, password, err = te_create_email(username)
         if not email:
-            bot.send_message(chat_id, f"❌ Failed to create address: {err}\nTry again in a moment.", parse_mode="HTML")
+            bot.send_message(chat_id, f"❌ Failed to create address: {err}\nTry a different username.", parse_mode="HTML")
             return
+        te_store_creds(email, service, token, acct_id, password)
         save_user_temp_email(user_id, email)
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("📋 COPY ADDRESS", copy_text_str=email, style="success", icon="copy"))
@@ -4900,7 +5144,7 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
     if data.startswith("temail_check|"):
         email = data.split("|", 1)[1]
         bot.answer_callback_query(call.id, "⏳ Checking inbox...")
-        msgs = am_list_messages(email, limit=5)
+        msgs = te_list_messages(email)
         if msgs is None:
             bot.send_message(chat_id, "❌ Couldn't reach the mail service. Try again.", parse_mode="HTML")
             return
@@ -4908,7 +5152,7 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.send_message(chat_id, f"📭 <b>{html_mod.escape(email)}</b> is empty \u2014 no mail yet.", parse_mode="HTML")
             return
         for m in msgs[:5]:
-            full = am_get_message(email, m.get('message_id'))
+            full = te_get_full(email, str(m.get("id")))
             text, otp = _email_format_message(m, full)
             mk = types.InlineKeyboardMarkup()
             if otp:
