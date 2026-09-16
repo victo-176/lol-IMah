@@ -19,6 +19,10 @@ import threading
 import traceback
 import logging
 import random
+import string
+import urllib.request
+import urllib.error
+import urllib.parse
 import requests
 import hashlib
 import uuid
@@ -468,6 +472,15 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         c.execute("CREATE INDEX IF NOT EXISTS idx_seen_otps_ts ON seen_otps(timestamp)")
+
+        # Temp email addresses per user (AgentMail)
+        c.execute('''CREATE TABLE IF NOT EXISTS temp_emails (
+            user_id INTEGER,
+            email TEXT PRIMARY KEY,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_message_id TEXT
+        )''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_temp_emails_user ON temp_emails(user_id)")
 
         c.execute('''CREATE TABLE IF NOT EXISTS traffic_rates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1701,6 +1714,198 @@ def extract_otp(message):
             return match.group(1).replace(' ', '').replace('-', '')
     nums = re.findall(r'\d{4,8}', message)
     return nums[0] if nums else "N/A"
+
+# ======================== TEMP EMAIL (AgentMail) ========================
+
+def _am_headers():
+    return {"Authorization": f"Bearer {AGENTMAIL_API_KEY}", "Content-Type": "application/json"}
+
+def am_api(path, method="GET", body=None):
+    """Call the AgentMail API. Returns (ok, parsed_json_or_error_text)."""
+    try:
+        req = urllib.request.Request(
+            AGENTMAIL_BASE + path,
+            method=method,
+            data=json.dumps(body).encode() if body else None,
+            headers=_am_headers(),
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return True, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode()[:200]
+        except Exception:
+            detail = ""
+        logger.warning(f"AgentMail API {method} {path} failed: HTTP {e.code} {detail}")
+        return False, f"HTTP {e.code}"
+    except Exception as e:
+        logger.warning(f"AgentMail API {method} {path} failed: {e}")
+        return False, str(e)
+
+def am_create_inbox(username_prefix="tmp"):
+    """Create a new temp inbox. Returns (email, None) or (None, error)."""
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    username = f"{username_prefix}-{suffix}"
+    ok, data = am_api("/inboxes", "POST", {"username": username})
+    if not ok:
+        return None, data
+    email = data.get("inbox_id") or data.get("email") or (f"{username}@agentmail.to" if data else None)
+    return email, None
+
+def am_list_messages(email, limit=20):
+    ok, data = am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}/messages?limit={limit}")
+    if not ok:
+        return None
+    return data.get("messages", []) or []
+
+def am_get_message(email, message_id):
+    """Fetch full message body. message_id is URL-encoded (it contains <>@)."""
+    ok, data = am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}/messages/{urllib.parse.quote(message_id, safe='')}")
+    if not ok:
+        return None
+    return data
+
+def extract_otp_from_email(subject, body):
+    """Extract a verification code from an email's subject/body."""
+    text = f"{subject or ''}\n{body or ''}"
+    # Contextual patterns first
+    m = re.search(r'(?:code|otp|pin|token|verification|verify)[^0-9]{0,30}(\d{4,8})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # Standalone short number with word boundaries
+    m = re.search(r'\b(\d{4,8})\b', text)
+    if m:
+        return m.group(1)
+    return None
+
+def get_user_temp_emails(user_id):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT email, created_at, last_seen_message_id FROM temp_emails WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (user_id,))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+def save_user_temp_email(user_id, email):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO temp_emails (user_id, email) VALUES (?, ?)", (user_id, email))
+        conn.commit()
+        conn.close()
+
+def set_temp_email_last_seen(email, message_id):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("UPDATE temp_emails SET last_seen_message_id=? WHERE email=?", (message_id, email))
+        conn.commit()
+        conn.close()
+
+def delete_user_temp_email(user_id, email):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM temp_emails WHERE user_id=? AND email=?", (user_id, email))
+        conn.commit()
+        conn.close()
+    # Best-effort remote delete (outside DB lock)
+    am_api(f"/inboxes/{urllib.parse.quote(email, safe='')}", "DELETE")
+
+def _email_format_message(m, full=None):
+    """Format an email dict into the bot's HTML message style. Returns (text, otp)."""
+    sender = (m.get('from') or {}).get('address', 'unknown') if isinstance(m.get('from'), dict) else (m.get('from') or 'unknown')
+    subject = m.get('subject') or '(no subject)'
+    preview = (full or {}).get('text') or m.get('preview') or ''
+    preview = re.sub(r'<[^>]+>', ' ', preview)
+    preview = re.sub(r'\s+', ' ', preview).strip()
+    if len(preview) > 600:
+        preview = preview[:600] + "..."
+    otp = extract_otp_from_email(subject, preview)
+    ts = (m.get('created_at') or '')[:19].replace('T', ' ')
+    pe_m = pe('mail', '\U0001F4E7')
+    pe_k = pe('key', '\U0001F511')
+    lines = [
+        pe_m + " <b>NEW EMAIL</b>",
+        "\u2501" * 19,
+        f"\U0001F4E8 <b>From:</b> {html_mod.escape(str(sender))}",
+        f"\U0001F4CC <b>Subject:</b> {html_mod.escape(str(subject))}",
+    ]
+    if otp:
+        lines.append(f"{pe_k} <b>Code:</b> <code>{otp}</code>")
+    lines.append("\u2501" * 19)
+    if preview:
+        lines.append(html_mod.escape(preview))
+    lines.append("\u2501" * 19)
+    lines.append(f"\u23F0 {ts}")
+    return "\n".join(lines), otp
+
+def show_temp_email(chat_id, user_id):
+    """Render the TEMP EMAIL screen for a user."""
+    pe_m = pe('mail', '\U0001F4E7')
+    emails = get_user_temp_emails(user_id)
+    text = (
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\u300A {pe_m} <b>TEMP EMAIL</b> \u300B\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"{pe_m} <b>GET A DISPOSABLE EMAIL ADDRESS</b>\n"
+        f"\U0001F4E5 Receive emails & verification codes in real time\n"
+        f"\U0001F504 New mail is delivered to you here automatically\n"
+    )
+    markup = types.InlineKeyboardMarkup()
+    if emails:
+        text += "\U0001F4CB <b>Your addresses:</b>\n"
+        for em, created, _last in emails:
+            text += f"\u2022 <code>{html_mod.escape(em)}</code>\n"
+            markup.add(ibtn("\U0001F4E5 Check now", callback_data=f"temail_check|{em}", style="primary", icon="refresh"),
+                       ibtn("\U0001F5D1 Delete", callback_data=f"temail_delete|{em}", style="danger", icon="cross"))
+    else:
+        text += "\U0001F4AD No address yet.\n"
+    text += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+    markup.add(ibtn("\u2795 NEW EMAIL ADDRESS", callback_data="temail_new", style="success", icon="plus"))
+    markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+
+def temp_email_watcher_loop():
+    """Background thread: poll every temp email inbox and DM new mail to its owner."""
+    logger.info("Temp email watcher started")
+    while True:
+        try:
+            rows = []
+            with _db_lock:
+                conn = _get_conn()
+                c = conn.cursor()
+                c.execute("SELECT user_id, email, last_seen_message_id FROM temp_emails")
+                rows = c.fetchall()
+                conn.close()
+            for user_id, email, last_seen in rows:
+                msgs = am_list_messages(email, limit=10)
+                if msgs is None:
+                    continue
+                # Oldest-first so the user reads in order; stop once we hit the last seen id
+                for m in reversed(msgs):
+                    mid = m.get('message_id')
+                    if not mid or mid == last_seen:
+                        break
+                    full = am_get_message(email, mid)
+                    text, otp = _email_format_message(m, full)
+                    markup = types.InlineKeyboardMarkup()
+                    if otp:
+                        markup.add(ibtn(f"COPY: {otp}", copy_text_str=otp, style="success", icon="copy"))
+                    try:
+                        bot.send_message(user_id, text, parse_mode="HTML", reply_markup=markup)
+                    except Exception as e:
+                        logger.warning(f"Temp email DM to {user_id} failed: {e}")
+                    set_temp_email_last_seen(email, mid)
+                    log_user_activity(user_id, "temp_email_received", f"{email} :: {(m.get('subject') or '')[:40]}")
+                if msgs:
+                    newest = msgs[0].get('message_id')
+                    if newest and newest != last_seen:
+                        set_temp_email_last_seen(email, newest)
+        except Exception as e:
+            logger.error(f"Temp email watcher error: {e}")
+        time.sleep(5)
 
 def detect_service(message):
     message_lower = message.lower()
@@ -4293,6 +4498,7 @@ def show_main_menu(chat_id, user_id, first_name):
         f"└─────────────────────┘\n\n"
         f"{pe('wave')} <b>WELCOME,</b> <a href='tg://user?id={user_id}'>{first_name}</a>!\n\n"
         f"{pe('phone')} <b>GET NUMBER</b> — OTP SERVICE\n"
+        f"{pe('mail')} <b>TEMP EMAIL</b> — DISPOSABLE INBOX\n"
         f"{pe('stats')} <b>TRAFFIC</b> — LIVE NETWORK\n"
         f"{pe('lock')} <b>2FA ONLINE</b> — AUTHENTICATOR\n"
         f"{pe('top')} <b>LEADERBOARD</b> — TOP USERS\n"
@@ -4331,8 +4537,9 @@ def get_main_menu(user_id):
                rbtn("LEADERBOARD", style="primary", icon="top"))
     markup.add(rbtn("STOCK INFO", style="success", icon="chart_up"),
                rbtn("SUPPORT", style="primary", icon="headphones"))
-    markup.add(rbtn("REFERRALS", style="primary", icon="people"),
-               rbtn("WITHDRAW", style="danger", icon="card"))
+    markup.add(rbtn("TEMP EMAIL", style="success", icon="mail"),
+               rbtn("REFERRALS", style="primary", icon="people"))
+    markup.add(rbtn("WITHDRAW", style="danger", icon="card"))
     if is_admin(user_id):
         markup.add(rbtn("ADMIN PANEL", style="danger", icon="settings"))
     return markup
@@ -4365,6 +4572,10 @@ def get_number_handler(message):
 @bot.message_handler(func=menu_match("TRAFFIC"))
 def traffic_handler(message):
     show_traffic(message.chat.id)
+
+@bot.message_handler(func=menu_match("TEMP EMAIL"))
+def temp_email_handler(message):
+    show_temp_email(message.chat.id, message.from_user.id)
 
 @bot.message_handler(func=menu_match("2FA ONLINE"))
 def twofa_handler(message):
@@ -4653,6 +4864,67 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.delete_message(chat_id, msg_id)
         except:
             pass
+        return
+
+    # ---- TEMP EMAIL callbacks ----
+    if data == "temail_new":
+        ok = force_sub_check(user_id)
+        if not ok:
+            show_force_join(chat_id)
+            bot.answer_callback_query(call.id)
+            return
+        bot.answer_callback_query(call.id, "⏳ Creating address...")
+        bot.send_message(chat_id, "⏳ Creating your temp email address...")
+        email, err = am_create_inbox("tmp")
+        if not email:
+            bot.send_message(chat_id, f"❌ Failed to create address: {err}\nTry again in a moment.", parse_mode="HTML")
+            return
+        save_user_temp_email(user_id, email)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("📋 COPY ADDRESS", copy_text_str=email, style="success", icon="copy"))
+        markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
+        _pe_mail = pe('mail', '\U0001F4E7')
+        _new_email_text = (
+            "\u2501" * 19 +
+            "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
+            "\u2501" * 19 +
+            "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
+            "\U0001F4E5 Emails sent to this address arrive here automatically\n"
+            "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
+            "\u2501" * 19
+        )
+        bot.send_message(chat_id, _new_email_text, parse_mode="HTML", reply_markup=markup)
+        log_user_activity(user_id, "temp_email_created", email)
+        return
+
+    if data.startswith("temail_check|"):
+        email = data.split("|", 1)[1]
+        bot.answer_callback_query(call.id, "⏳ Checking inbox...")
+        msgs = am_list_messages(email, limit=5)
+        if msgs is None:
+            bot.send_message(chat_id, "❌ Couldn't reach the mail service. Try again.", parse_mode="HTML")
+            return
+        if not msgs:
+            bot.send_message(chat_id, f"📭 <b>{html_mod.escape(email)}</b> is empty \u2014 no mail yet.", parse_mode="HTML")
+            return
+        for m in msgs[:5]:
+            full = am_get_message(email, m.get('message_id'))
+            text, otp = _email_format_message(m, full)
+            mk = types.InlineKeyboardMarkup()
+            if otp:
+                mk.add(ibtn(f"COPY: {otp}", copy_text_str=otp, style="success", icon="copy"))
+            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=mk)
+        return
+
+    if data.startswith("temail_delete|"):
+        email = data.split("|", 1)[1]
+        delete_user_temp_email(user_id, email)
+        bot.answer_callback_query(call.id, "🗑 Address deleted", show_alert=True)
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+        show_temp_email(chat_id, user_id)
         return
 
     if data == "refresh_leaderboard":
@@ -7479,6 +7751,7 @@ def main():
     threading.Thread(target=monitor_loop, daemon=True).start()
     threading.Thread(target=start_choice_sms, daemon=True).start()
     threading.Thread(target=periodic_cleanup, daemon=True).start()
+    threading.Thread(target=temp_email_watcher_loop, daemon=True).start()
     # Start forwarders for all admin-added SMS panels
     try:
         start_all_panel_forwarders()
