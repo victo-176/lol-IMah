@@ -2078,8 +2078,12 @@ def show_temp_email(chat_id, user_id):
     markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
+_temail_seen_ids = {}  # email -> set of recently sent message ids (restart-safe via last_seen too)
+
 def temp_email_watcher_loop():
-    """Background thread: poll every temp email every 2s and DM new mail to its owner."""
+    """Background thread: poll every temp email every 2s and DM new mail to its owner.
+    Services list messages NEWEST-FIRST. A message is delivered only if its id is
+    neither the stored last_seen id nor already delivered this session."""
     logger.info("Temp email watcher started (fast polling)")
     while True:
         try:
@@ -2094,11 +2098,34 @@ def temp_email_watcher_loop():
                 msgs = te_list_messages(email)
                 if msgs is None:
                     continue
-                # Oldest-first so the user reads in order; stop at last seen id
-                for m in reversed(msgs):
+                seen = _temail_seen_ids.setdefault(email, set())
+                # Determine the position of last_seen in the newest-first list.
+                # Everything ABOVE that position is new and must be delivered (oldest of the new first).
+                start = 0
+                if last_seen:
+                    for idx, m in enumerate(msgs):
+                        if str(m.get("id")) == str(last_seen):
+                            start = idx + 1
+                            break
+                    else:
+                        # last_seen fell off the first page (many new mails) - deliver all on page
+                        start = 0
+                new_msgs = [m for m in msgs[:start] if str(m.get("id")) not in seen] if start > 0 else \
+                           [m for m in msgs if str(m.get("id")) not in seen] if not last_seen else \
+                           [m for m in msgs[:start] if str(m.get("id")) not in seen]
+                if not last_seen:
+                    # Fresh address: don't spam history, just remember what's already there
+                    for m in msgs:
+                        seen.add(str(m.get("id")))
+                    newest = str(msgs[0].get("id")) if msgs else None
+                    if newest:
+                        set_temp_email_last_seen(email, newest)
+                    continue
+                # Deliver new messages oldest-first
+                for m in reversed(new_msgs):
                     mid = str(m.get("id"))
-                    if not mid or mid == str(last_seen):
-                        break
+                    if mid in seen:
+                        continue
                     full = te_get_full(email, mid)
                     text, otp = _email_format_message(m, full)
                     markup = types.InlineKeyboardMarkup()
@@ -2108,12 +2135,12 @@ def temp_email_watcher_loop():
                         bot.send_message(user_id, text, parse_mode="HTML", reply_markup=markup)
                     except Exception as e:
                         logger.warning(f"Temp email DM to {user_id} failed: {e}")
+                    seen.add(mid)
                     set_temp_email_last_seen(email, mid)
                     log_user_activity(user_id, "temp_email_received", f"{email} :: {(m.get('subject') or '')[:40]}")
-                if msgs:
-                    newest = str(msgs[0].get("id"))
-                    if newest and newest != str(last_seen):
-                        set_temp_email_last_seen(email, newest)
+                # Bound the in-memory set
+                if len(seen) > 200:
+                    _temail_seen_ids[email] = set(list(seen)[-100:])
         except Exception as e:
             logger.error(f"Temp email watcher error: {e}")
         time.sleep(TEMP_EMAIL_POLL_SECONDS)
