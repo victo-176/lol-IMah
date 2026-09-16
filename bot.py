@@ -49,6 +49,14 @@ except ImportError:
 # Decodes to the bot token; env var BOT_TOKEN overrides it.
 _BOT_TOKEN_ENC = "ODk1ODY2OTI2ODpBQUZQMjhuQmtHa1VOOHRCTS1oS1l3WEpVLWEtZkt0WG5Nbw=="
 BOT_TOKEN = os.getenv("BOT_TOKEN") or base64.b64decode(_BOT_TOKEN_ENC).decode("utf-8")
+
+# AgentMail API key for the temp-email feature (inbox: victor-8722@agentmail.to).
+# Stored base64-encoded to avoid a plain-text key in source.
+# Decodes to the API key; env var AGENTMAIL_API_KEY overrides it.
+_AGENTMAIL_KEY_ENC = "YW1fdXNfaW5ib3hfZTYzYTk0NGVjYmNiYzIxYTZmNWE3Yzg0MzNmYmZkZTQ2MGNmZDJlM2Y2MzA2ZGQ3MzVlMGY5OTkzMTkyZDJmMg=="
+AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY") or base64.b64decode(_AGENTMAIL_KEY_ENC).decode("utf-8")
+AGENTMAIL_BASE = "https://api.agentmail.to/v0"
+AGENTMAIL_INBOX = "victor-8722@agentmail.to"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8921746989"))
 EXTRA_ADMINS = []
 
