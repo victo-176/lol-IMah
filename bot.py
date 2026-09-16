@@ -4700,10 +4700,14 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
         _, app, country_key, number = parts
         new_state = toggle_remove_cc(user_id)
         if new_state:
-            bot.answer_callback_query(call.id, "CC ON — prefix removed", show_alert=False)
+            bot.answer_callback_query(call.id, "CC ON — prefix removed from ALL numbers", show_alert=False)
         else:
-            bot.answer_callback_query(call.id, "CC OFF — prefix restored", show_alert=False)
-        _show_number_display(chat_id, msg_id, number, country_key, app)
+            bot.answer_callback_query(call.id, "CC OFF — prefix restored on ALL numbers", show_alert=False)
+        # Re-show with ALL the user's assigned numbers so CC applies to every one
+        u = get_user(chat_id)
+        all_nums = _split_assigned(u[5]) if u and len(u) > 5 and u[5] else [number]
+        _show_number_display(chat_id, msg_id, number, country_key, app,
+                             extra_numbers=all_nums if len(all_nums) > 1 else None)
         return
 
     if data.startswith("chg_local|"):
@@ -4784,9 +4788,15 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name, ext
         f"{svc} <b>Service:</b> {app_name}\n"
         f"⏳ <b>Status:</b> Waiting for SMS"
     )
-    # Fixed: Show extra numbers if num_per_request > 1
+    # Show extra numbers if num_per_request > 1 - CC mode applies to ALL of them
     if extra_numbers:
-        msg_text += f"\n\n📋 <b>All Assigned Numbers:</b>\n{extra_numbers}"
+        if isinstance(extra_numbers, str):
+            extra_numbers = _split_assigned(extra_numbers)
+        lines = []
+        for n in extra_numbers:
+            shown = _strip_cc(n, country_key) if remove_cc else f"+{n}"
+            lines.append(f"\u2022 <code>{shown}</code>")
+        msg_text += f"\n\n📋 <b>All Assigned Numbers:</b>\n" + "\n".join(lines)
 
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("View OTP", url="https://t.me/animatrixx_otp", style="primary", icon="eye"))
@@ -4899,8 +4909,7 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
 
     # Show all assigned numbers
     if len(assigned_numbers) > 1:
-        nums_text = "\n".join([f"\u2022 <code>{n}</code>" for n in assigned_numbers])
-        _show_number_display(chat_id, message_id, assigned, country_key, app_name, extra_numbers=nums_text)
+        _show_number_display(chat_id, message_id, assigned, country_key, app_name, extra_numbers=assigned_numbers)
     else:
         _show_number_display(chat_id, message_id, assigned, country_key, app_name)
 
