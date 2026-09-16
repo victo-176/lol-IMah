@@ -1850,12 +1850,28 @@ def te_delete_creds(email):
         conn.commit()
         conn.close()
 
-def te_create_email(username):
-    """Create a temp email trying mail.tm first, then temp-mail.io.
+def te_create_email(username, domain=None):
+    """Create a temp email, preferring the requested domain if given.
+    Tries mail.tm first, then temp-mail.io.
     Returns (email, service, token, account_id, password, error)."""
     errors = []
     # --- mail.tm ---
     domains = mt_get_domains()
+    if domain:
+        # User explicitly chose this domain; find which service hosts it
+        if domain in domains:
+            password = "Te!" + username + str(random.randint(10000, 99999))
+            token, acct_id, err = mt_create_account(username, domain, password)
+            if token:
+                return f"{username}@{domain}", "mailtm", token, acct_id, password, None
+            errors.append(f"mail.tm/{domain}: {err}")
+            return None, None, None, None, None, ("; ".join(errors)[:200] or "domain unavailable")
+        # not a mail.tm domain - try temp-mail.io with it
+        email, err = tio_create_email(username, domain)
+        if email and email.endswith("@" + domain):
+            return email, "tio", None, None, None, None
+        errors.append(f"temp-mail.io/{domain}: {err or 'provider assigned a different domain'}")
+        return None, None, None, None, None, ("; ".join(errors)[:200] or "domain unavailable")
     password = "Te!" + username + str(random.randint(10000, 99999))
     for dom in domains[:3]:
         token, acct_id, err = mt_create_account(username, dom, password)
@@ -1870,6 +1886,25 @@ def te_create_email(username):
             return email, "tio", None, None, None, None
         errors.append(f"temp-mail.io/{dom}: {err}")
     return None, None, None, None, None, ("; ".join(errors)[:200] or "all providers failed")
+
+def te_domain_keyboard(username):
+    """Build an inline keyboard of all available domains (mail.tm + temp-mail.io)."""
+    markup = types.InlineKeyboardMarkup()
+    seen = set()
+    for dom in mt_get_domains():
+        if dom not in seen:
+            seen.add(dom)
+            markup.add(ibtn(f"📧 {dom}", callback_data=f"temail_domain|{username}|{dom}",
+                            style="primary", icon="mail"))
+    for dom in tio_get_domains()[:6]:
+        if dom not in seen:
+            seen.add(dom)
+            markup.add(ibtn(f"📧 {dom}", callback_data=f"temail_domain|{username}|{dom}",
+                            style="primary", icon="mail"))
+    markup.add(ibtn("✈ 🏰 Any (fastest)", callback_data=f"temail_domain|{username}|_any",
+                    style="success", icon="plus"))
+    markup.add(ibtn("❌ Cancel", callback_data="temail_cancel", style="danger", icon="cross"))
+    return markup
 
 def te_list_messages(email):
     """List messages for a stored email. Returns list of normalized dicts or None on failure."""
@@ -4768,30 +4803,9 @@ def temp_email_username_handler(message):
     if len(existing) >= 5:
         bot.send_message(chat_id, "❌ You already have 5 addresses. Delete one first.", parse_mode="HTML")
         return
-    if any(em == username for em, _, _ in []):
-        pass
-    bot.send_message(chat_id, "⏳ Creating your temp email address, please wait...")
-    email, service, token, acct_id, password, err = te_create_email(username)
-    if not email:
-        bot.send_message(chat_id, f"❌ Failed: {err}\nTry a different username.", parse_mode="HTML")
-        return
-    te_store_creds(email, service, token, acct_id, password)
-    save_user_temp_email(user_id, email)
-    markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("📋 COPY ADDRESS", copy_text_str=email, style="success", icon="copy"))
-    markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
-    _pe_mail = pe('mail', '\U0001F4E7')
-    text = (
-        "\u2501" * 19 +
-        "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
-        "\u2501" * 19 +
-        "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
-        "\U0001F4E5 Emails sent to this address arrive here automatically\n"
-        "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
-        "\u2501" * 19
-    )
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
-    log_user_activity(user_id, "temp_email_created", email)
+    bot.send_message(chat_id, f"✅ <code>{html_mod.escape(username)}</code> is free — now choose a domain:", parse_mode="HTML")
+    bot.send_message(chat_id, "🏰 <b>AVAILABLE DOMAINS</b>", parse_mode="HTML",
+                     reply_markup=te_domain_keyboard(username))
 
 @bot.message_handler(func=menu_match("2FA ONLINE"))
 def twofa_handler(message):
@@ -5112,6 +5126,35 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             bot.delete_message(chat_id, msg_id)
         except:
             pass
+        return
+
+    if data.startswith("temail_domain|"):
+        _, username, domain = data.split("|", 2)
+        if domain == "_any":
+            domain = None
+        bot.answer_callback_query(call.id, "⏳ Creating address...")
+        bot.send_message(chat_id, "⏳ Creating your temp email address, please wait...")
+        email, service, token, acct_id, password, err = te_create_email(username, domain)
+        if not email:
+            bot.send_message(chat_id, f"❌ Failed: {err}\nTry a different username or domain.", parse_mode="HTML")
+            return
+        te_store_creds(email, service, token, acct_id, password)
+        save_user_temp_email(user_id, email)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("📋 COPY ADDRESS", copy_text_str=email, style="success", icon="copy"))
+        markup.add(ibtn("Back", callback_data="nav_back", style="primary", icon="back"))
+        _pe_mail = pe('mail', '\U0001F4E7')
+        text = (
+            "\u2501" * 19 +
+            "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
+            "\u2501" * 19 +
+            "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
+            "\U0001F4E5 Emails sent to this address arrive here automatically\n"
+            "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
+            "\u2501" * 19
+        )
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+        log_user_activity(user_id, "temp_email_created", email)
         return
 
     if data.startswith("temail_new_name|"):
