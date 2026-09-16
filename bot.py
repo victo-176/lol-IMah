@@ -948,40 +948,37 @@ def get_user_by_number(number):
         logger.debug(f"get_user_by_number: searching '{clean}' in {[(u,n) for u,n in all_nums]}")
     else:
         logger.warning(f"get_user_by_number: NO users have assigned numbers! Cannot match '{clean}'")
-    # Try exact match first
+    # Exact match first
     c.execute("SELECT user_id FROM users WHERE assigned_number=?", (clean,))
     row = c.fetchone()
     if row:
         conn.close()
         return row[0]
-    # Try without leading zeros
-    c.execute("SELECT user_id FROM users WHERE assigned_number=?", (clean.lstrip('0'),))
-    row = c.fetchone()
-    if row:
-        conn.close()
-        return row[0]
-    # Try with + prefix
-    c.execute("SELECT user_id FROM users WHERE assigned_number=?", ('+' + clean,))
-    row = c.fetchone()
-    if row:
-        conn.close()
-        return row[0]
-    # Try fuzzy: get all assigned numbers and check if any is a suffix/prefix match
-    c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
-    for uid, anum in c.fetchall():
-        clean_anum = re.sub(r'\D', '', str(anum))
-        if not clean_anum:
-            continue
-        # Check if one contains the other (for country code differences)
-        if clean.endswith(clean_anum) or clean_anum.endswith(clean):
-            conn.close()
-            return uid
-        if clean.startswith(clean_anum) or clean_anum.startswith(clean):
-            # Only match if the remaining part is at least 5 digits
-            diff = abs(len(clean) - len(clean_anum))
-            if diff >= 0 and min(len(clean), len(clean_anum)) >= 5:
+    # Try without leading zeros / with + prefix
+    for variant in (clean.lstrip('0'), '+' + clean):
+        if variant:
+            c.execute("SELECT user_id FROM users WHERE assigned_number=?", (variant,))
+            row = c.fetchone()
+            if row:
                 conn.close()
-                return uid
+                return row[0]
+    # Fuzzy: iterate all assigned cells (cells may hold MULTIPLE comma-separated numbers)
+    c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+    best_uid = None
+    best_len = 0
+    for uid, cell in c.fetchall():
+        for anum in _split_assigned(cell):
+            clean_anum = re.sub(r'\D', '', str(anum))
+            if not clean_anum:
+                continue
+            # Exact or suffix/prefix match (country code differences)
+            if clean == clean_anum or clean.endswith(clean_anum) or clean_anum.endswith(clean) \
+               or clean.startswith(clean_anum) or clean_anum.startswith(clean):
+                if min(len(clean), len(clean_anum)) >= 5 and len(clean_anum) > best_len:
+                    best_uid, best_len = uid, len(clean_anum)
+    if best_uid is not None:
+        conn.close()
+        return best_uid
     conn.close()
     return None
 
@@ -1035,33 +1032,67 @@ def get_price_for_number(number):
         logger.debug(f"get_price_for_number error: {e}")
     return None
 
+def _split_assigned(cell):
+    """Split an assigned_number cell into individual numbers (comma-separated multi-assign)."""
+    if not cell:
+        return []
+    return [p.strip() for p in str(cell).split(',') if p.strip()]
+
+def _cell_holds(cell, number):
+    """True if an assigned_number cell (possibly CSV) contains this number (normalized)."""
+    n_clean = re.sub(r'\D', '', str(number))
+    for part in _split_assigned(cell):
+        p_clean = re.sub(r'\D', '', part)
+        if p_clean and (p_clean == n_clean or (n_clean and (p_clean.endswith(n_clean) or n_clean.endswith(p_clean)))):
+            return True
+    return False
+
 def assign_number_to_user(user_id, number):
+    """Assign number(s) to a user, APPENDING to any existing assignment (multi-number support)."""
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
-        # Check if number is already taken by another user
-        c.execute("SELECT user_id FROM users WHERE assigned_number=? AND user_id!=?", (number, user_id))
-        existing = c.fetchone()
-        if existing:
-            logger.warning(f"Number {number} already taken by user {existing[0]}, rejecting assignment to {user_id}")
-            conn.close()
-            return False
-        c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (number, user_id))
+        c.execute("SELECT assigned_number FROM users WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        current = _split_assigned(row[0]) if row else []
+        for num in _split_assigned(number):
+            # Check if this specific number is held by ANOTHER user (match inside CSV cells too)
+            c.execute("SELECT user_id, assigned_number FROM users WHERE user_id!=? AND assigned_number IS NOT NULL AND assigned_number != ''", (user_id,))
+            conflict = False
+            for other_uid, cell in c.fetchall():
+                if _cell_holds(cell, num):
+                    logger.warning(f"Number {num} already taken by user {other_uid}, rejecting assignment to {user_id}")
+                    conflict = True
+                    break
+            if conflict:
+                conn.close()
+                return False
+            if num not in current:
+                current.append(num)
+        c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (",".join(current), user_id))
         conn.commit()
         conn.close()
-        log_user_activity(user_id, "number_assigned", f"Number {number} assigned")
+        log_user_activity(user_id, "number_assigned", f"Numbers {number} assigned")
         _persist_db()
         return True
 
 def release_number(number):
-    """Release a number from user AND delete it entirely from the stock."""
+    """Release number(s) from user AND delete them entirely from the stock.
+    Accepts a single number or a comma-separated cell of several numbers."""
     if not number:
         return
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
-        # Remove from user assignment
-        c.execute("UPDATE users SET assigned_number=NULL WHERE assigned_number=?", (number,))
+        # Remove from user assignments - handle CSV cells holding multiple numbers
+        target_nums = _split_assigned(number)
+        c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+        for uid, cell in c.fetchall():
+            remaining = [p for p in _split_assigned(cell)
+                         if not any(_cell_holds(p, t) for t in target_nums)]
+            new_cell = ",".join(remaining)
+            if new_cell != cell:
+                c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (new_cell if new_cell else None, uid))
         # Delete from combo stock entirely
         c.execute("SELECT id, numbers FROM combos")
         for row in c.fetchall():
@@ -1153,7 +1184,9 @@ def get_available_numbers(country_code, combo_index=1, user_id=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
-    used_numbers = set(r[0] for r in c.fetchall())
+    used_numbers = set()
+    for (cell,) in c.fetchall():
+        used_numbers.update(_split_assigned(cell))
     conn.close()
     return [num for num in all_numbers if num not in used_numbers]
 
@@ -4820,11 +4853,12 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
             numbers.extend(json.loads(r[0]))
         except Exception:
             pass
-    used = []
+    used = set()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
-    used = [r[0] for r in c.fetchall()]
+    for (cell,) in c.fetchall():
+        used.update(_split_assigned(cell))
     conn.close()
     available = [n for n in numbers if n not in used]
     if not available:
