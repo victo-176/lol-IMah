@@ -3253,6 +3253,18 @@ def _copy_cb(full_text):
 # This registry maps panel names (lowercase) to their specific configs.
 
 PANEL_LOGIN_CONFIGS = {
+    # --- Dream SMS (REST API panel, token auth, no login/session) ---
+    # GET {base}/api/v1/messages?token=...&from=...&to=...&limit=...
+    # Rate limits: 1 req/s and 40 req/60s per endpoint (429 + Retry-After)
+    # Admin flow: URL = http://49.13.121.155, API token as username, type = api
+    "dream sms": {
+        "type": "api",
+        "api_path": "/api/v1/messages",
+        "min_interval": 1.1,
+        "page_size": 200,
+        "window_minutes": 20,
+    },
+
     # --- Standard SMSCDRStats panels (most common) ---
     # These all share: POST {url}/signin, field names: username/password/capt
     # Sesskey on: /{type}/SMSCDRStats page, API: /client/res/data_smscdr.php
@@ -3882,10 +3894,205 @@ class SMSPanelForwarder:
         self._cached_sesskey = None
         self._no_sesskey = False
         self.stop_event = threading.Event()
+        # Panel-type detection: REST API panels (Dream SMS) vs SMSCDRStats panels
+        self.panel_cfg = get_panel_config(self.name)
+        if self.panel_cfg.get("type") == "api" or (login_type or "").lower() == "api":
+            self.panel_cfg = dict(self.panel_cfg)
+            self.panel_cfg.setdefault("type", "api")
+        self._api_last_poll = 0.0
+
+    def _dreamsms_validate(self):
+        """Validate the Dream SMS API token with a minimal request."""
+        try:
+            from datetime import timezone
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            params = {
+                "token": self.username,
+                "from": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "to": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "limit": "1",
+            }
+            resp = self.session.get(f"{self.url}/api/v1/messages", params=params, timeout=30)
+            if resp.status_code == 200:
+                logger.info(f"Panel [{self.name}]: Dream SMS API token OK")
+                return True
+            logger.error(f"Panel [{self.name}]: Dream SMS token check failed ({resp.status_code}): {(resp.text or '')[:120]}")
+            return False
+        except Exception as e:
+            logger.error(f"Panel [{self.name}]: Dream SMS token check error: {e}")
+            return False
+
+    @staticmethod
+    def _dreamsms_otp(sms_val):
+        """Dream SMS OTP extraction. Real panel codes can be ALPHANUMERIC
+        ('ekxbr', '63xc3c') or numeric ('64492'). Three stages:
+        1. Colon-anchored: marker ... ':' code   -> any 4-8 alnum accepted
+           ("Do not share your confirmation code with anyone: ekxbr")
+        2. Short filler, no colon: marker + filler + code, code must contain
+           a digit to reject English words ("...one-time password to log in to 63xc3c on to others")
+        3. Shared numeric extractor fallback ("code 64492", "451-025", "<#> 773456")."""
+        markers = (r'(?:confirmation\s+code|one[-\s]?time\s+password|verification\s+code|'
+                   r'\bcode\b|\botp\b|\bpin\b|\bpasscode\b|\bpassword\b)')
+        # Stage 1: code follows a colon after the marker (accepts letters-only codes)
+        m = re.search(markers + r'[^:\n]{0,40}:\s*([A-Za-z0-9]{4,8})(?=\s|$|[.,!?])',
+                      sms_val, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Stage 2: bounded filler without colon; require >=1 digit in the code
+        m = re.search(markers + r'\s*(?:with\s+anyone|is|to\s+log\s+in\s+to)?\s*[:\s]\s*'
+                      r'([A-Za-z0-9]{4,8})(?=\s|$|[.,!?])',
+                      sms_val, re.IGNORECASE)
+        if m and re.search(r'\d', m.group(1)):
+            return m.group(1)
+        return extract_otp(sms_val)
+
+    def _dreamsms_parse(self, records):
+        """Map Dream SMS /api/v1/messages records to the standard sms dict.
+        Field names are mapped tolerantly (full schema not publicly documented)."""
+        results = []
+        if not isinstance(records, list):
+            return results
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            # Phone number
+            number_val = ""
+            for k in ("number", "recipient", "phone", "msisdn", "to", "num",
+                      "Number", "Recipient", "Phone", "MSISDN"):
+                if rec.get(k):
+                    number_val = str(rec[k])
+                    break
+            # Message body
+            sms_val = ""
+            for k in ("message", "sms", "text", "content", "body",
+                      "Message", "SMS", "Text", "Content", "Body"):
+                if rec.get(k):
+                    sms_val = str(rec[k])
+                    break
+            if not sms_val:
+                continue
+            # CLI / sender
+            cli_val = ""
+            for k in ("cli", "originator", "sender", "service", "from_name",
+                      "CLI", "Originator", "Sender", "Service"):
+                if rec.get(k):
+                    cli_val = str(rec[k])
+                    break
+            # Timestamp
+            date_val = ""
+            for k in ("timestamp", "date", "time", "created_at", "received_at",
+                      "Timestamp", "Date", "Time", "CreatedAt"):
+                if rec.get(k):
+                    date_val = str(rec[k])
+                    break
+            # Country
+            country_val = ""
+            for k in ("country", "range", "country_iso", "country_name",
+                      "Country", "Range"):
+                if rec.get(k):
+                    country_val = str(rec[k])
+                    break
+            if sum(ch.isdigit() for ch in number_val) < 7:
+                continue  # junk row, no real phone number
+            otp = self._dreamsms_otp(sms_val)
+            if not otp or otp == "N/A":
+                continue
+            phone = number_val if number_val not in ("None", "null", "") else "N/A"
+            service = cli_val.strip() if cli_val and cli_val not in ("None", "null", "") else "Unknown"
+            country = "Unknown"
+            country_m = re.match(r'([A-Za-z]+)', country_val)
+            if country_m:
+                country = country_m.group(1).capitalize()
+            elif country_val.upper() in COUNTRY_FLAGS:
+                country = country_val.upper()
+            if country == "Unknown" and phone != "N/A":
+                cname, _iso, _x = get_country_info(phone)
+                if cname != "Unknown":
+                    country = cname
+            # Normalize ISO/UTC timestamps to a readable form
+            # (real Dream SMS values carry milliseconds: 2026-09-17T17:32:31.730Z)
+            ts = date_val
+            try:
+                ts_dt = datetime.strptime(date_val.replace("Z", "").split(".")[0][:19], "%Y-%m-%dT%H:%M:%S")
+                ts = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+            results.append({
+                'otp': otp,
+                'service': service,
+                'phone': phone,
+                'country': country,
+                'full_text': sms_val[:500],
+                'timestamp': ts if ts else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        return results
+
+    def _dreamsms_fetch(self):
+        """Fetch recent messages from the Dream SMS REST API.
+        Returns parsed sms dicts (possibly empty), or None on auth failure."""
+        cfg = self.panel_cfg
+        api_path = cfg.get("api_path", "/api/v1/messages")
+        min_interval = float(cfg.get("min_interval", 1.1))
+        limit = str(cfg.get("page_size", 200))
+        window_minutes = int(cfg.get("window_minutes", 20))
+        # Normalize base URL: admin may have included /api/v1 in the URL
+        base = self.url.rstrip('/')
+        if base.endswith('/api/v1'):
+            base = base[:-len('/api/v1')]
+        # Rate-limit guard: minimum interval between polls (429 also carries Retry-After)
+        now_ts = time.time()
+        wait = min_interval - (now_ts - self._api_last_poll)
+        if wait > 0:
+            time.sleep(wait)
+        from datetime import timedelta, timezone
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        params = {
+            "token": self.username,
+            "from": (now_utc - timedelta(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "to": (now_utc + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "limit": limit,
+        }
+        try:
+            self._api_last_poll = time.time()
+            resp = self.session.get(f"{base}{api_path}", params=params, timeout=30)
+            if resp.status_code == 429:
+                retry_after = 1.5
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "1")) + 0.5
+                except (TypeError, ValueError):
+                    pass
+                logger.warning(f"Panel [{self.name}]: Dream SMS rate limited, waiting {retry_after:.1f}s")
+                time.sleep(retry_after)
+                self._api_last_poll = time.time()
+                resp = self.session.get(f"{base}{api_path}", params=params, timeout=30)
+            if resp.status_code in (401, 403):
+                logger.error(f"Panel [{self.name}]: Dream SMS auth failed ({resp.status_code}): {resp.text[:120]}")
+                return None
+            if resp.status_code != 200:
+                logger.warning(f"Panel [{self.name}]: Dream SMS API {resp.status_code}: {resp.text[:120]}")
+                return []
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.warning(f"Panel [{self.name}]: Dream SMS non-JSON response")
+                return []
+            records = data.get("records") if isinstance(data, dict) else data
+            parsed = self._dreamsms_parse(records)
+            if parsed:
+                logger.info(f"Panel [{self.name}]: Dream SMS returned {len(records or [])} records, {len(parsed)} with OTP")
+            return parsed
+        except requests.RequestException as e:
+            logger.error(f"Panel [{self.name}]: Dream SMS fetch error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Panel [{self.name}]: Dream SMS unexpected error: {e}")
+            return []
 
     def _do_login(self):
         """Login to panel with captcha solving. Tries multiple login paths."""
-        cfg = get_panel_config(self.name)
+        cfg = self.panel_cfg
+        if cfg.get("type") == "api":
+            return self._dreamsms_validate()
         if cfg.get("type") in ("websocket", "custom"):
             logger.warning(f"Panel [{self.name}]: Custom type, skipping login")
             return False
@@ -4307,6 +4514,10 @@ class SMSPanelForwarder:
 
     def fetch_otps(self):
         """Fetch OTPs from the panel API."""
+        # REST API panels (Dream SMS): token-auth fetch, no session/sesskey
+        if self.panel_cfg.get("type") == "api":
+            res = self._dreamsms_fetch()
+            return res if res else []
         sesskey = self._ensure_session()
         # None = not logged in at all; "" = logged in but no sesskey
         if sesskey is None:
@@ -4341,14 +4552,17 @@ class SMSPanelForwarder:
             try:
                 otps = self.fetch_otps()
                 if not otps:
-                    empty_polls += 1
-                    if empty_polls >= 8:
-                        logger.info(f"Panel [{self.name}]: {empty_polls} empty polls, refreshing session...")
-                        self.session.cookies.clear()
-                        self._cached_sesskey = None
-                        self._no_sesskey = False
-                        self._ensure_session()
-                        empty_polls = 0
+                    if self.panel_cfg.get("type") == "api":
+                        empty_polls = 0  # token auth: no session to refresh
+                    else:
+                        empty_polls += 1
+                        if empty_polls >= 8:
+                            logger.info(f"Panel [{self.name}]: {empty_polls} empty polls, refreshing session...")
+                            self.session.cookies.clear()
+                            self._cached_sesskey = None
+                            self._no_sesskey = False
+                            self._ensure_session()
+                            empty_polls = 0
                 else:
                     empty_polls = 0
                 for sms in otps:
@@ -4486,6 +4700,8 @@ def start_panel_forwarder(panel_id):
     stop_event = threading.Event()
     _panel_forwarder_stop[panel_id] = stop_event
     forwarder = SMSPanelForwarder(panel_id, name, url, login_type, username, password)
+    if getattr(forwarder, "panel_cfg", {}).get("type") == "api":
+        logger.info(f"Panel [{name}]: API mode (Dream SMS, token auth)")
     forwarder.stop_event = stop_event
     t = threading.Thread(target=forwarder.run, daemon=True, name=f"panel-{panel_id}")
     _panel_forwarder_threads[panel_id] = t
@@ -5064,12 +5280,22 @@ def sms_panel_type_handler(call):
         bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
         return
     state["login_type"] = login_type
-    state["add_sms_panel_step"] = "username"
     set_state(call.message.chat.id, state)
     bot.answer_callback_query(call.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
-    bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+    if login_type == "api":
+        # API panels (Dream SMS): token goes in the username field, no password
+        state["add_sms_panel_step"] = "token"
+        set_state(call.message.chat.id, state)
+        bot.edit_message_text(
+            pe("key", "🔑") + " Send the API token:\n\n"
+            "<code>(the long token from your Dream SMS panel — API page)</code>",
+            call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+    else:
+        state["add_sms_panel_step"] = "username"
+        set_state(call.message.chat.id, state)
+        bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -5748,6 +5974,7 @@ def process_others_amount(message):
 
 # =========================== PREDEFINED PANELS (48 PANELS) ===========================
 PREDEFINED_PANELS = [
+    ("Dream SMS", "http://49.13.121.155"),
     ("Astra SMS", "http://51.161.128.71/ints"),
     ("Bolt", "http://93.190.143.35/ints"),
     ("Choice SMS", "http://51.77.52.79/ints"),
@@ -7026,6 +7253,10 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             ibtn(f"{pe('admin', '🤖')} AGENT", callback_data=f"admin_panel_quick_type|{panel_name}|agent", style="primary", icon="admin"),
             ibtn(f"{pe('profile', '👤')} CLIENT", callback_data=f"admin_panel_quick_type|{panel_name}|client", style="primary", icon="profile")
         )
+        if panel_name.lower() == "dream sms":
+            markup.add(
+                ibtn(f"{pe('key', '🔑')} API (token)", callback_data=f"admin_panel_quick_type|{panel_name}|api", style="success", icon="key")
+            )
         markup.add(ibtn(f"{pe('back', '⬅️')} Back", callback_data="admin_all_panels", style="primary", icon="back"))
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
@@ -7042,6 +7273,18 @@ def handle_admin_callback(call, data, chat_id, msg_id):
                 break
         if not panel_url:
             bot.answer_callback_query(call.id, "Panel not found.", show_alert=True)
+            return
+        if login_type == "api":
+            # API panels (Dream SMS): token IS the username, no password
+            set_state(chat_id, {"quick_panel_name": panel_name, "quick_panel_url": panel_url, "quick_panel_type": "api", "quick_panel_api": "1", "step": "quick_panel_user"})
+            text = (f"{pe('info_bw', '📋')} <b>{panel_name}</b>\n"
+                    f"Type: <b>API (token auth)</b>\n\n"
+                    f"{pe('key', '🔑')} <b>ENTER API TOKEN:</b>\n"
+                    f"<i>The long token from your panel's API page</i>\n\n"
+                    f"{pe('cross', '❌')} /cancel to cancel")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(ibtn(f"{pe('back', '⬅️')} Cancel", callback_data="admin_all_panels", style="danger", icon="back"))
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
             return
         set_state(chat_id, {"quick_panel_name": panel_name, "quick_panel_url": panel_url, "quick_panel_type": login_type, "step": "quick_panel_user"})
         text = (f"{pe('info_bw', '📋')} <b>{panel_name}</b>\n"
@@ -7299,6 +7542,77 @@ def quick_panel_user_handler(message):
         show_admin_panel(message.chat.id)
         return
     username = message.text.strip()
+    if st.get("quick_panel_api") == "1":
+        # API panels (Dream SMS): token = username, no password; validate live and save
+        panel_name = st.get("quick_panel_name", "Unknown")
+        panel_url = st.get("quick_panel_url", "")
+        clear_state(message)
+        testing_msg = bot.send_message(message.chat.id, f"{pe('wrench', '🧪')} <b>TESTING API TOKEN...</b>", parse_mode="HTML")
+        try:
+            from datetime import timezone
+            s = requests.Session()
+            s.headers.update({"Accept": "application/json"})
+            base = panel_url.rstrip('/')
+            if base.endswith('/api/v1'):
+                base = base[:-len('/api/v1')]
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            params = {"token": username,
+                      "from": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "to": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "limit": "1"}
+            resp = s.get(f"{base}/api/v1/messages", params=params, timeout=20)
+            token_ok = (resp.status_code == 200)
+            api_err = "" if token_ok else f"{resp.status_code}: {resp.text[:80]}"
+        except Exception as ve:
+            token_ok = False
+            api_err = str(ve)[:120]
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT id FROM sms_panels WHERE name=?", (panel_name,))
+            existing = c.fetchone()
+            if existing:
+                c.execute("UPDATE sms_panels SET url=?, login_type='api', username=?, password='' , sesskey='' WHERE id=?",
+                          (panel_url, username, existing[0]))
+            else:
+                c.execute("INSERT INTO sms_panels (name, url, login_type, username, password, sesskey) VALUES (?, ?, 'api', ?, '', '')",
+                          (panel_name, panel_url, username))
+            conn.commit()
+            if token_ok:
+                try:
+                    c2 = conn.cursor()
+                    c2.execute("SELECT id FROM sms_panels WHERE name=?", (panel_name,))
+                    row = c2.fetchone()
+                    if row:
+                        start_panel_forwarder(row[0])
+                except Exception as fw_err:
+                    logger.error(f"Failed to auto-start API forwarder for {panel_name}: {fw_err}")
+            conn.close()
+        except Exception as db_err:
+            logger.error(f"Quick add API panel DB error: {db_err}")
+            try:
+                bot.edit_message_text(f"{pe('cross', '❌')} <b>Setup failed:</b> {str(db_err)[:200]}",
+                                      message.chat.id, testing_msg.message_id, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+        status_icon = pe('checkmark', '✅') if token_ok else pe('cross', '❌')
+        login_text = "Token valid" if token_ok else f"Token check failed ({api_err})"
+        result_text = (f"━━━━━━━━━━━━━━━\n"
+                       f"{status_icon} <b>PANEL SETUP {'COMPLETE' if token_ok else 'SAVED (token failed!)'}</b>\n"
+                       f"━━━━━━━━━━━━━━━\n"
+                       f"{pe('info_bw', '📋')} Name: <b>{panel_name}</b>\n"
+                       f"{pe('link', '🔗')} URL: {panel_url}\n"
+                       f"{pe('key', '🔑')} Type: <b>API (Dream SMS)</b>\n"
+                       f"{pe('lock', '🔐')} Token: {status_icon} {login_text}\n"
+                       f"━━━━━━━━━━━━━━━\n"
+                       + (f"{pe('refresh', '📡')} <b>OTP monitoring ACTIVE!</b>" if token_ok
+                          else f"{pe('cross', '❌')} Fix the token (re-add panel) to activate."))
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn(f"{pe('back', '⬅️')} Back to Panels", callback_data="admin_all_panels", style="primary", icon="back"))
+        bot.edit_message_text(result_text, message.chat.id, testing_msg.message_id, parse_mode="HTML", reply_markup=markup)
+        logger.info(f"Quick add API panel: {panel_name} (api) - token_ok={token_ok}")
+        return
     st["quick_panel_user"] = username
     st["step"] = "quick_panel_pass"
     user_states[message.chat.id] = st
@@ -7836,8 +8150,28 @@ def sms_panel_url_handler(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(ibtn("Agent", callback_data="sms_panel_type|agent", style="primary", icon="admin"))
     markup.add(ibtn("Client", callback_data="sms_panel_type|client", style="primary", icon="profile"))
+    markup.add(ibtn("🌐 API (Dream SMS)", callback_data="sms_panel_type|api", style="success", icon="key"))
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
-    bot.reply_to(message, pe("info_bw", "ℹ") + " Is this an Agent or Client panel?", parse_mode="HTML", reply_markup=markup)
+    bot.reply_to(message, pe("info_bw", "ℹ") + " Is this an Agent, Client, or API panel?", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "token" and is_admin(msg.from_user.id))
+def sms_panel_token_handler(message):
+    """API panels (Dream SMS): the token IS the username; no password needed."""
+    state = get_state(message)
+    token = (message.text or "").strip()
+    if not token:
+        bot.reply_to(message, "❌ Token cannot be empty. Send the API token:", parse_mode="HTML")
+        return
+    state["panel_username"] = token
+    state["panel_password"] = ""  # not used by API panels
+    state["add_sms_panel_step"] = "password"
+    set_state(message.chat.id, state)
+    # Jump straight to save: reuse the password handler with an empty password
+    try:
+        sms_panel_password_handler(message)
+    except Exception as e:
+        logger.error(f"API panel save error: {e}")
+        bot.reply_to(message, "❌ Error saving panel: " + str(e), parse_mode="HTML")
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "username" and is_admin(msg.from_user.id))
 def sms_panel_username_handler(message):
@@ -7845,6 +8179,10 @@ def sms_panel_username_handler(message):
     state["panel_username"] = message.text.strip()
     state["add_sms_panel_step"] = "password"
     set_state(message.chat.id, state)
+    if state.get("login_type") == "api":
+        # API panels: no password needed — go straight to save
+        sms_panel_password_handler(message)
+        return
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
     bot.reply_to(message, pe("lock", "🔐") + " Send the panel password:", parse_mode="HTML", reply_markup=markup)
