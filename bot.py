@@ -1675,6 +1675,86 @@ COUNTRY_FLAGS = {
 }
 
 
+# Name -> ISO2 aliases for countries/labels that appear in panel data but are
+# not exact COUNTRY_CODES names. Resolved by country_flag() after COUNTRY_CODES.
+_NAME_TO_ISO = {
+    "RUSSIA": "RU", "USA/CANADA": "US", "UNITED STATES": "US", "AMERICA": "US",
+    "UNITED KINGDOM": "GB", "GREAT BRITAIN": "GB", "ENGLAND": "GB",
+    "UAE": "AE", "DUBAI": "AE", "DR CONGO": "CD", "DRC": "CD", "CONGO": "CG",
+    "UK": "GB", "USA": "US", "U.S.": "US", "U.S.A.": "US", "CANADA": "CA",
+    "IVORY COAST": "CI", "COTE D'IVOIRE": "CI", "CAPE VERDE": "CV",
+    "SAO TOME": "ST", "EQUATORIAL GUINEA": "GQ", "GUINEA-BISSAU": "GW",
+    "CENTRAL AFRICAN REP": "CF", "SOUTH SUDAN": "SS", "SWAZILAND": "SZ",
+    "CZECH REPUBLIC": "CZ", "CZECHIA": "CZ", "NORTH MACEDONIA": "MK", "MACEDONIA": "MK",
+    "BOSNIA": "BA", "KOSOVO": "XK", "REUNION": "RE", "PALESTINE": "PS",
+    "TIMOR-LESTE": "TL", "EAST TIMOR": "TL", "IRAN": "IR", "SYRIA": "SY",
+    "MOLDOVA": "MD", "BURMA": "MM", "TOGO": "TG",
+    "BENIN": "BJ", "NIGER": "NE", "GAMBIA": "GM", "SENEGAL": "SN",
+    "CHAD": "TD", "CAMEROON": "CM", "GABON": "GA",
+    "ETHIOPIA": "ET", "SOMALIA": "SO", "DJIBOUTI": "DJ", "ERITREA": "ER",
+    "SUDAN": "SD", "SOUTH KOREA": "KR", "KOREA": "KR", "NORTH KOREA": "KP",
+    "HONG KONG": "HK", "MACAU": "MO", "TAIWAN": "TW", "VENEZUELA": "VE",
+    "BOLIVIA": "BO", "PARAGUAY": "PY", "URUGUAY": "UY", "CHILE": "CL",
+    "ECUADOR": "EC", "PERU": "PE", "GUATEMALA": "GT", "HONDURAS": "HN",
+    "EL SALVADOR": "SV", "NICARAGUA": "NI", "COSTA RICA": "CR", "PANAMA": "PA",
+    "CUBA": "CU", "DOMINICAN REPUBLIC": "DO", "PUERTO RICO": "PR", "JAMAICA": "JM",
+    "HAITI": "HT", "TRINIDAD": "TT", "TRINIDAD AND TOBAGO": "TT", "BARBADOS": "BB",
+    "BAHAMAS": "BS", "BELIZE": "BZ", "GUYANA": "GY", "SURINAME": "SR",
+    "NEW ZEALAND": "NZ", "FIJI": "FJ", "PAPUA NEW GUINEA": "PG",
+    "POLAND": "PL", "NETHERLANDS": "NL", "HOLLAND": "NL", "BELGIUM": "BE",
+    "GREECE": "GR", "ROMANIA": "RO", "HUNGARY": "HU", "PORTUGAL": "PT",
+    "SWEDEN": "SE", "NORWAY": "NO", "DENMARK": "DK", "FINLAND": "FI",
+    "IRELAND": "IE", "ICELAND": "IS", "SWITZERLAND": "CH", "AUSTRIA": "AT",
+    "UKRAINE": "UA", "BELARUS": "BY", "LITHUANIA": "LT", "LATVIA": "LV",
+    "ESTONIA": "EE", "GEORGIA": "GE", "ARMENIA": "AM", "AZERBAIJAN": "AZ",
+    "KAZAKHSTAN": "KZ", "UZBEKISTAN": "UZ", "TURKMENISTAN": "TM",
+    "TAJIKISTAN": "TJ", "KYRGYZSTAN": "KG", "MONGOLIA": "MN", "CHINA": "CN",
+    "JAPAN": "JP", "TANZANIA": "TZ", "KAZAKHSTAN": "KZ", "KAZAKHSTAN": "KZ",
+    "UNKNOWN": "UN",
+}
+
+
+def country_flag(value):
+    """Universal flag resolver: returns a flag emoji for a country name,
+    ISO-2 code, or dialing code. Works everywhere in the bot.
+    Always returns something usable (\U0001f30d as last resort)."""
+    if not value:
+        return "\U0001f30d"
+    v = str(value).strip()
+    if not v:
+        return "\U0001f30d"
+    up = v.upper().strip()
+    # 1) Name aliases first (covers UK, UAE, DRC, CONGO, USA/Canada, ...)
+    iso = _NAME_TO_ISO.get(up)
+    if iso and iso != "UN":
+        return flag_emoji_html(iso)
+    # 2) ISO-2 code
+    if len(v) == 2 and v.isalpha():
+        return flag_emoji_html(v.upper())
+    # 3) Exact COUNTRY_CODES country name
+    for _cc, (_name, _iso2) in COUNTRY_CODES.items():
+        if _name.upper() == up:
+            return flag_emoji_html(_iso2)
+    # 4) Dialing code / phone number -- only when the input itself is numeric
+    #    ("234", "+234", "2348099449578"), never digits scraped from text.
+    stripped = v.lstrip('+')
+    if stripped.isdigit():
+        _cname, _iso2, _x = get_country_info(stripped)
+        if _cname != "Unknown":
+            return flag_emoji_html(_iso2)
+    # 5) Panel strings like "NIGERIA - Melbet sep17": first alpha word
+    m = re.match(r'([A-Za-z]{3,})', up)
+    if m:
+        word = m.group(1)
+        iso = _NAME_TO_ISO.get(word)
+        if iso and iso != "UN":
+            return flag_emoji_html(iso)
+        for _cc, (_name, _iso2) in COUNTRY_CODES.items():
+            if _name.upper() == word:
+                return flag_emoji_html(_iso2)
+    return "\U0001f30d"
+
+
 def get_country_info(number):
     number = re.sub(r'\D', '', str(number))
     best = None
@@ -3079,8 +3159,7 @@ class ChoiceSMSForwarder:
                     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                     full_clean = self._clean_text(sms['full_text'])[:200]
                     masked = self._mask_number(sms['phone'])
-                    country_upper = sms['country'].upper()
-                    cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
+                    cflag = country_flag(sms['country'])
                     otp_display = sms.get('otp') or ''
                     if otp_display and len(otp_display) == 6:
                         otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
@@ -4005,6 +4084,8 @@ class SMSPanelForwarder:
                 country = country_m.group(1).capitalize()
             elif country_val.upper() in COUNTRY_FLAGS:
                 country = country_val.upper()
+            if country == "Unknown" and country_val:
+                country = country_val  # keep raw; resolver handles full range strings
             if country == "Unknown" and phone != "N/A":
                 cname, _iso, _x = get_country_info(phone)
                 if cname != "Unknown":
@@ -4578,8 +4659,7 @@ class SMSPanelForwarder:
                     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
                     full_clean = self._clean_text(sms['full_text'])[:200]
                     masked = self._mask_number(sms['phone'])
-                    country_upper = sms['country'].upper()
-                    cflag = COUNTRY_FLAGS.get(country_upper, '\U0001f30d')
+                    cflag = country_flag(sms['country'])
                     otp_display = sms.get('otp') or ''
                     if otp_display and len(otp_display) == 6:
                         otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
@@ -5116,7 +5196,8 @@ def show_traffic(chat_id):
             app = parts[0]
             ctry = parts[1] if len(parts) > 1 else ""
             app_emoji = app_emoji_html(app)
-            text += app_emoji + " <b>" + app + "</b> \u2014 " + ctry + ": <b>" + str(pct) + "%</b>\n"
+            cflag_t = country_flag(ctry) if ctry else ""
+            text += app_emoji + " <b>" + app + "</b> \u2014 " + (cflag_t + " " if cflag_t else "") + html_mod.escape(str(ctry)) + ": <b>" + str(pct) + "%</b>\n"
         text += "\n<b>Live Traffic:</b>\n"
     if not rows and not rates:
         text += "No data yet."
@@ -5129,7 +5210,7 @@ def show_traffic(chat_id):
                 rate_disp = " \u2022 " + str(r) + "%"
         except Exception:
             pass
-        text += app_emoji + " <b>" + app + "</b> \u2014 " + country + " (" + str(count) + ")" + rate_disp + "\n"
+        text += app_emoji + " <b>" + app + "</b> \u2014 " + country_flag(country) + " " + html_mod.escape(str(country)) + " (" + str(count) + ")" + rate_disp + "\n"
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Refresh", callback_data="refresh_traffic", style="success", icon="refresh"))
     markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
@@ -6413,7 +6494,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
                 f"ID: <code>{uid}</code>\n"
                 f"Name: {display_name}\n"
                 f"Username: {username_display}\n"
-                f"Country: {html_mod.escape(country_code)}\n"
+                f"Country: {country_flag(country_code)} {html_mod.escape(str(country_code))}\n"
                 f"Number: <code>{assigned_number_safe}</code>\n"
                 f"Balance: ${balance:.2f}\n"
                 f"OTPs: {otp_count} | Banned: {is_banned}\n"
@@ -7373,7 +7454,7 @@ def handle_combo_file(message):
         markup.add(ibtn("Cancel", callback_data="admin_combos", style="danger", icon="back"))
         bot.reply_to(message, f"{pe('fire', '🔥')} <b>FILE RECEIVED</b> {pe('fire', '🔥')}\n\n"
                               f"{pe('archive', '📦')} <b>Numbers:</b> {len(lines)}\n"
-                              f"{pe('earth', '🌍')} <b>Country:</b> {cc}\n\n"
+                              f"{pe('earth', '🌍')} <b>Country:</b> {country_flag(cc)} {html_mod.escape(str(COUNTRY_CODES.get(cc, (cc, cc))[0]))}\n\n"
                               f"{pe('dollar', '💰')} Next: select the app, then set the price per OTP:",
                      parse_mode="HTML", reply_markup=markup)
     except Exception as e:
@@ -8332,7 +8413,7 @@ def checkuser_handler(message):
         f"🆔 ID: <code>{uid}</code>\n"
         f"📛 Name: {display_name}\n"
         f"👤 Username: {username_display}\n"
-        f"🌍 Country: {country_code}\n"
+        f"{country_flag(country_code)} Country: {html_mod.escape(str(country_code))}\n"
         f"📱 Number: {assigned_number}\n"
         f"💰 Balance: ${balance}\n"
         f"📊 OTPs Received: {otp_count}\n"
@@ -8369,7 +8450,7 @@ def send_otp_to_admin(timestamp, number, otp, service="", country="", full_msg="
         f"{pe('phone', '📞')} <b>Number:</b> <code>{number}</code>\n"
         f"{owner_line}"
         f"{pe('star', '⭐')} <b>Service:</b> {service_upper}\n"
-        f"{pe('earth', '🌍')} <b>Country:</b> {country}\n"
+        f"{pe('earth', '🌍')} <b>Country:</b> {country_flag(country)} {html_mod.escape(str(country or 'Unknown'))}\n"
         f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
         f"{pe('calendar', '📅')} <b>Time:</b> {timestamp}"
     )
