@@ -1076,14 +1076,19 @@ def _cell_holds(cell, number):
     return False
 
 def assign_number_to_user(user_id, number):
-    """Assign number(s) to a user, APPENDING to any existing assignment (multi-number support)."""
+    """Assign number(s) to a user, APPENDING to any existing assignment (multi-number support).
+    Stores digits-only canonical form so matching against stock works regardless of +/spacing."""
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
         c.execute("SELECT assigned_number FROM users WHERE user_id=?", (user_id,))
         row = c.fetchone()
         current = _split_assigned(row[0]) if row else []
+        changed = False
         for num in _split_assigned(number):
+            n_key = _num_key(num)
+            if not n_key:
+                continue
             # Check if this specific number is held by ANOTHER user (match inside CSV cells too)
             c.execute("SELECT user_id, assigned_number FROM users WHERE user_id!=? AND assigned_number IS NOT NULL AND assigned_number != ''", (user_id,))
             conflict = False
@@ -1095,8 +1100,12 @@ def assign_number_to_user(user_id, number):
             if conflict:
                 conn.close()
                 return False
-            if num not in current:
-                current.append(num)
+            if n_key not in (_num_key(p) for p in current):
+                current.append(n_key)
+                changed = True
+        if not changed:
+            conn.close()
+            return True
         c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (",".join(current), user_id))
         conn.commit()
         conn.close()
@@ -1104,50 +1113,106 @@ def assign_number_to_user(user_id, number):
         _persist_db()
         return True
 
+def _num_key(number):
+    """Canonical digit-only key for matching a number across stock/assignments."""
+    return re.sub(r'\D', '', str(number or ''))
+
 def release_number(number):
     """Release number(s) from user AND delete them entirely from the stock.
-    Accepts a single number or a comma-separated cell of several numbers."""
+    Accepts a single number or a comma-separated cell of several numbers.
+    Matching is digit-normalized so +/-, spacing and formatting differences still hit."""
     if not number:
         return
+    target_keys = {k for k in (_num_key(t) for t in _split_assigned(number)) if k}
+    if not target_keys:
+        return
+    deleted_any = False
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
         # Remove from user assignments - handle CSV cells holding multiple numbers
-        target_nums = _split_assigned(number)
         c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
         for uid, cell in c.fetchall():
-            remaining = [p for p in _split_assigned(cell)
-                         if not any(_cell_holds(p, t) for t in target_nums)]
+            remaining = [p for p in _split_assigned(cell) if _num_key(p) not in target_keys]
             new_cell = ",".join(remaining)
             if new_cell != cell:
                 c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (new_cell if new_cell else None, uid))
-        # Delete from combo stock entirely
+        # Delete from combo stock entirely (digit-normalized match)
         c.execute("SELECT id, numbers FROM combos")
-        for row in c.fetchall():
-            combo_id, nums_json = row
+        for combo_id, nums_json in c.fetchall():
             try:
-                nums = json.loads(nums_json)
-                if number in nums:
-                    nums.remove(number)
-                    c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(nums), combo_id))
-                    logger.info(f"Deleted number {number} from stock combo {combo_id}")
+                nums = json.loads(nums_json) if nums_json else []
             except Exception:
-                pass
+                continue
+            kept = [n for n in nums if _num_key(n) not in target_keys]
+            if len(kept) != len(nums):
+                deleted_any = True
+                c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(kept), combo_id))
+                removed = len(nums) - len(kept)
+                logger.info(f"Deleted {removed} number(s) from stock combo {combo_id} (change/assign flow)")
         # Also delete from private combos
         c.execute("SELECT user_id, numbers FROM private_combos")
-        for row in c.fetchall():
-            uid, nums_json = row
+        for uid, nums_json in c.fetchall():
             try:
-                nums = json.loads(nums_json)
-                if number in nums:
-                    nums.remove(number)
-                    c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(nums), uid))
-                    logger.info(f"Deleted number {number} from private stock for user {uid}")
+                nums = json.loads(nums_json) if nums_json else []
             except Exception:
-                pass
+                continue
+            kept = [n for n in nums if _num_key(n) not in target_keys]
+            if len(kept) != len(nums):
+                deleted_any = True
+                c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(kept), uid))
+                logger.info(f"Deleted number(s) from private stock for user {uid}")
         conn.commit()
         conn.close()
         _persist_db()
+    if deleted_any:
+        purge_assigned_from_stock()
+
+def purge_assigned_from_stock():
+    """Self-heal: remove every stock entry that is currently assigned to any user.
+    Keeps stock counts truthful even for numbers added before this check existed,
+    and drops combos/private combos that end up empty."""
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        assigned = set()
+        c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+        for (cell,) in c.fetchall():
+            assigned.update(k for k in (_num_key(p) for p in _split_assigned(cell)) if k)
+        if not assigned:
+            conn.close()
+            return
+        c.execute("SELECT id, numbers FROM combos")
+        combos = c.fetchall()
+        removed = 0
+        for combo_id, nums_json in combos:
+            try:
+                nums = json.loads(nums_json) if nums_json else []
+            except Exception:
+                continue
+            kept = [n for n in nums if _num_key(n) not in assigned]
+            if len(kept) != len(nums):
+                removed += len(nums) - len(kept)
+                c.execute("UPDATE combos SET numbers=? WHERE id=?", (json.dumps(kept), combo_id))
+        c.execute("SELECT user_id, numbers FROM private_combos")
+        privates = c.fetchall()
+        for uid, nums_json in privates:
+            try:
+                nums = json.loads(nums_json) if nums_json else []
+            except Exception:
+                continue
+            kept = [n for n in nums if _num_key(n) not in assigned]
+            if len(kept) != len(nums):
+                removed += len(nums) - len(kept)
+                c.execute("UPDATE private_combos SET numbers=? WHERE user_id=?", (json.dumps(kept), uid))
+        conn.commit()
+        conn.close()
+        _persist_db()
+        if removed:
+            logger.info(f"Stock purge: removed {removed} assigned number(s) from stock")
+
+# Startup self-heal: drop stock entries that are already assigned to a user
+purge_assigned_from_stock()
 
 def get_combo(country_code, combo_index=1, user_id=None):
     conn = sqlite3.connect(DB_PATH)
@@ -1214,9 +1279,9 @@ def get_available_numbers(country_code, combo_index=1, user_id=None):
     c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
     used_numbers = set()
     for (cell,) in c.fetchall():
-        used_numbers.update(_split_assigned(cell))
+        used_numbers.update(k for k in (_num_key(p) for p in _split_assigned(cell)) if k)
     conn.close()
-    return [num for num in all_numbers if num not in used_numbers]
+    return [num for num in all_numbers if _num_key(num) not in used_numbers]
 
 def log_otp(number, otp, full_message, assigned_to=None):
     service = detect_service(full_message)
@@ -5822,9 +5887,9 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     c = conn.cursor()
     c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
     for (cell,) in c.fetchall():
-        used.update(_split_assigned(cell))
+        used.update(k for k in (_num_key(p) for p in _split_assigned(cell)) if k)
     conn.close()
-    available = [n for n in numbers if n not in used]
+    available = [n for n in numbers if _num_key(n) not in used]
     if not available:
         bot.edit_message_text("\u274c All numbers currently in use.", chat_id, message_id, parse_mode="HTML")
         return
@@ -5839,10 +5904,11 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
         num_per_req = 1
     num_per_req = max(1, min(num_per_req, len(available)))  # Clamp to available
 
-    # Release old number before assigning new ones
+    # Release old number(s) before assigning new ones — deletes them from stock entirely
     old_user = get_user(chat_id)
-    if old_user and len(old_user) > 5 and old_user[5]:
-        release_number(old_user[5])
+    old_cell = old_user[5] if (old_user and len(old_user) > 5) else ""
+    if old_cell:
+        release_number(old_cell)
 
     # Assign num_per_req numbers
     assigned_numbers = random.sample(available, min(num_per_req, len(available)))
