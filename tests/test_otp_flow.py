@@ -151,7 +151,8 @@ def test_group_send_in_bot():
 
     # Find the run() method's group-send logic
     assert "self._get_groups()" in src, "run() should call _get_groups()"
-    assert "bot.send_message(gid," in src, "run() should send to each group"
+    # send_html_safe() = HTML send with plain-text fallback on parse errors
+    assert "send_html_safe(gid, msg, kb)" in src, "run() should send to each group via send_html_safe"
 
     # _get_groups reads from otp_groups setting
     assert "'otp_groups'" in src, "_get_groups should read otp_groups"
@@ -186,7 +187,7 @@ def test_user_dm_in_bot():
 
     assert "get_user_by_number(phone_digits)" in src, "run() should match phone to user"
     assert "matched_user" in src, "run() should store matched user ID"
-    assert "bot.send_message(matched_user," in src, "run() should DM the matched user"
+    assert "send_html_safe(matched_user, dm_msg)" in src, "run() should DM the matched user via send_html_safe"
 
     # Balance increment: +$0.006 per OTP
     assert "0.006" in src, "Balance increment of $0.006 per OTP"

@@ -2708,11 +2708,11 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
                        ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
             msg = (f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
-                   f"{flag_emoji_html(iso)} <b>Country:</b> {country_name}\n"
-                   f"{app_emoji} <b>Service:</b> {service}\n"
-                   f"{pe('phone', '📱')} <b>Number:</b> {number}\n"
-                   f"{pe('key', '🔑')} <b>Code:</b> <code>{otp}</code>\n"
-                   f"{pe('info_bw', '⏰')} <b>Time:</b> {date_str}\n"
+                   f"{flag_emoji_html(iso)} <b>Country:</b> {html_mod.escape(str(country_name))}\n"
+                   f"{app_emoji} <b>Service:</b> {html_mod.escape(str(service))}\n"
+                   f"{pe('phone', '📱')} <b>Number:</b> {html_mod.escape(str(number))}\n"
+                   f"{pe('key', '🔑')} <b>Code:</b> <code>{html_mod.escape(str(otp))}</code>\n"
+                   f"{pe('info_bw', '⏰')} <b>Time:</b> {html_mod.escape(str(date_str))}\n"
                    f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance}")
             bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
             logger.info(f"OTP sent to user {user_id}")
@@ -2748,11 +2748,11 @@ def format_message(date_str, number, sms, flag_html, app_emoji):
     return (
         f"<b>Anonmatrixx</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"{flag_html} <b>{service_name}</b> 🟢\n"
-        f"📱 <code>{masked}</code>\n"
-        f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
-        f"📩 <b>Message:</b> <code>{msg_text[:200]}</code>\n"
-        f"⏰ {date_str}\n"
+        f"{flag_html} <b>{html_mod.escape(str(service_name))}</b> 🟢\n"
+        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
+        f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
+        f"📩 <b>Message:</b> <code>{html_mod.escape(msg_text[:200])}</code>\n"
+        f"⏰ {html_mod.escape(str(date_str))}\n"
         f"━━━━━━━━━━━━━━━"
     )
 
@@ -2797,6 +2797,30 @@ def send_to_telegram_group(text, otp_code, number):
             logger.error(f"[GROUP] Send error ({chat_id}): {e}")
     if sent_count == 0:
         logger.error(f"[GROUP] FAILED to send OTP to ANY group! chat_ids={chat_ids}")
+
+
+def strip_html_tags(text):
+    """Remove all HTML tags from a string (plain-text fallback)."""
+    return re.sub(r'<[^>]+>', '', str(text))
+
+
+def send_html_safe(chat_id, text, reply_markup=None):
+    """Send an HTML message; on Telegram parse-entity failure, retry plain.
+
+    Guarantees the OTP still lands in the group/DM even when the SMS body
+    contains characters that break Telegram's HTML parser.
+    """
+    try:
+        return bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e:
+        err = str(e).lower()
+        if 'parse' in err or 'entity' in err or 'html' in err or 'tag' in err:
+            try:
+                return bot.send_message(chat_id, strip_html_tags(text), reply_markup=reply_markup)
+            except Exception as e2:
+                logger.error(f"[SEND] Plain fallback failed for {chat_id}: {e2}")
+                raise
+        raise
 
 
 # =========================== CHOICE SMS FORWARDER ====================
@@ -3166,14 +3190,14 @@ class ChoiceSMSForwarder:
                     msg = (
                         f"<b>Anonmatrixx</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
-                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
-                        f"📱 <code>{masked}</code>\n"
+                        f"{cflag} <b>{html_mod.escape(str(sms['service']).upper())}</b> 🟢\n"
+                        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
                     )
                     if otp_display:
-                        msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        msg += f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
                     msg += (
-                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
-                        f"⏰ {sms['timestamp']}\n"
+                        f"📩 <b>Message:</b> <code>{html_mod.escape(full_clean)}</code>\n"
+                        f"⏰ {html_mod.escape(str(sms['timestamp']))}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -3185,7 +3209,7 @@ class ChoiceSMSForwarder:
                     sent = 0
                     for gid in groups:
                         try:
-                            bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                            send_html_safe(gid, msg, kb)
                             sent += 1
                         except Exception as e:
                             logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
@@ -3202,7 +3226,7 @@ class ChoiceSMSForwarder:
                                 logger.info(f"Choice SMS: Rate limited, waiting {retry_after}s...")
                                 time.sleep(retry_after)
                                 try:
-                                    bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                                    send_html_safe(gid, msg, kb)
                                     sent += 1
                                 except Exception as e2:
                                     logger.error(f"Choice SMS: Retry failed for {gid}: {e2}")
@@ -3235,14 +3259,14 @@ class ChoiceSMSForwarder:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
                                         f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
-                                        f"{cflag} <b>Country:</b> {sms['country']}\n"
-                                        f"{pe('settings_bw', '⚙')} <b>Service:</b> {sms['service']}\n"
-                                        f"{pe('phone', '📱')} <b>Number:</b> {sms['phone']}\n"
-                                        f"{pe('key', '🔑')} <b>Code:</b> <code>{otp_display}</code>\n"
-                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {sms['timestamp']}\n"
+                                        f"{cflag} <b>Country:</b> {html_mod.escape(str(sms['country']))}\n"
+                                        f"{pe('settings_bw', '⚙')} <b>Service:</b> {html_mod.escape(str(sms['service']))}\n"
+                                        f"{pe('phone', '📱')} <b>Number:</b> {html_mod.escape(str(sms['phone']))}\n"
+                                        f"{pe('key', '🔑')} <b>Code:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
+                                        f"{pe('info_bw', '⏰')} <b>Time:</b> {html_mod.escape(str(sms['timestamp']))}\n"
                                         f"{pe('dollar', '💰')} <b>Balance:</b> ${new_balance}"
                                     )
-                                    bot.send_message(matched_user, dm_msg, parse_mode="HTML")
+                                    send_html_safe(matched_user, dm_msg)
                                     logger.info(f"Choice SMS: DM sent to user {matched_user} for number {phone_digits}")
                                 except Exception as dm_err:
                                     logger.error(f"Choice SMS: DM to {matched_user} failed: {dm_err}")
@@ -3254,7 +3278,7 @@ class ChoiceSMSForwarder:
                     # Log OTP to admin panel
                     try:
                         log_otp(phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', ''), 
-                                otp_display, sms.get('message', ''), None)
+                                otp_display, sms.get('full_text', ''), None)
                     except Exception as log_err:
                         logger.error(f"Choice SMS: log_otp failed: {log_err}")
 
@@ -4667,14 +4691,14 @@ class SMSPanelForwarder:
                     msg = (
                         f"<b>Anonmatrixx</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
-                        f"{cflag} <b>{sms['service'].upper()}</b> 🟢\n"
-                        f"📱 <code>{masked}</code>\n"
+                        f"{cflag} <b>{html_mod.escape(str(sms['service']).upper())}</b> 🟢\n"
+                        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
                     )
                     if otp_display:
-                        msg += f"🔑 <b>OTP:</b> <code>{otp_display}</code>\n"
+                        msg += f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
                     msg += (
-                        f"📩 <b>Message:</b> <code>{full_clean}</code>\n"
-                        f"⏰ {sms['timestamp']}\n"
+                        f"📩 <b>Message:</b> <code>{html_mod.escape(full_clean)}</code>\n"
+                        f"⏰ {html_mod.escape(str(sms['timestamp']))}\n"
                         f"━━━━━━━━━━━━━━━"
                     )
                     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -4686,13 +4710,13 @@ class SMSPanelForwarder:
                     sent = 0
                     for gid in groups:
                         try:
-                            bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                            send_html_safe(gid, msg, kb)
                             sent += 1
                         except Exception as e:
                             if '429' in str(e):
                                 time.sleep(10)
                                 try:
-                                    bot.send_message(gid, msg, parse_mode="HTML", reply_markup=kb)
+                                    send_html_safe(gid, msg, kb)
                                     sent += 1
                                 except:
                                     pass
@@ -4722,14 +4746,14 @@ class SMSPanelForwarder:
                                 pe_dol = pe('dollar', '\U0001f4b0')
                                 dm_msg = (
                                     f"{pe_fire} <b>MATRIXX SMS V3</b> {pe_fire}\n"
-                                    f"{cflag} <b>Country:</b> {sms['country']}\n"
-                                    f"{pe_sw} <b>Service:</b> {sms['service']}\n"
-                                    f"{pe_ph} <b>Number:</b> {sms['phone']}\n"
-                                    f"{pe_key} <b>Code:</b> <code>{otp_display}</code>\n"
-                                    f"{pe_info} <b>Time:</b> {sms['timestamp']}\n"
+                                    f"{cflag} <b>Country:</b> {html_mod.escape(str(sms['country']))}\n"
+                                    f"{pe_sw} <b>Service:</b> {html_mod.escape(str(sms['service']))}\n"
+                                    f"{pe_ph} <b>Number:</b> {html_mod.escape(str(sms['phone']))}\n"
+                                    f"{pe_key} <b>Code:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
+                                    f"{pe_info} <b>Time:</b> {html_mod.escape(str(sms['timestamp']))}\n"
                                     f"{pe_dol} <b>Balance:</b> ${new_balance}"
                                 )
-                                bot.send_message(matched_user, dm_msg, parse_mode="HTML")
+                                send_html_safe(matched_user, dm_msg)
                             except Exception as dm_err:
                                 logger.error(f"Panel [{self.name}] DM failed: {dm_err}")
 
@@ -8434,7 +8458,7 @@ def send_otp_to_admin(timestamp, number, otp, service="", country="", full_msg="
     otp_display = otp
     if len(otp) == 6 and '-' not in otp:
         otp_display = f"{otp[:3]}-{otp[3:]}"
-    service_upper = (service or "UNKNOWN").upper()
+    service_upper = html_mod.escape(str(service or "UNKNOWN").upper())
     owner_line = ""
     try:
         pd = re.sub(r'\D', '', str(number))
