@@ -90,6 +90,22 @@ check("avail empty (all assigned)", avail == [], str(avail))
 print("[6] Conflict guard across formats")
 check("user1 cannot take user2's + number", botmod.assign_number_to_user(1, '+2349999999999') == False)
 
+print("[7] Ever-assigned guard: a number once given to user A never goes to user B")
+conn = sqlite3.connect(botmod.DB_PATH)
+conn.execute("INSERT OR REPLACE INTO users (user_id,username,first_name,assigned_number,balance) VALUES (1,'u','U','',0)")
+conn.execute("INSERT OR REPLACE INTO users (user_id,username,first_name,assigned_number,balance) VALUES (2,'v','V','',0)")
+conn.execute("INSERT INTO combos (country_code, combo_index, numbers, app_name) VALUES ('NG',4,?,'1xBet')",
+             (json.dumps(['2348012222201', '2348012222202']),))
+conn.commit(); conn.close()
+check("user1 gets 2348012222201", botmod.assign_number_to_user(1, '2348012222201'))
+botmod.release_number('2348012222201')  # user1 changes number
+check("user2 rejected 2348012222201 (ever-assigned)",
+      botmod.assign_number_to_user(2, '2348012222201') == False)
+check("user1 can still reuse own old number", botmod.assign_number_to_user(1, '2348012222201'))
+botmod.release_number('2348012222201')
+avail2 = botmod.get_available_numbers('NG', 4, 2)
+check("ever-assigned num hidden from user2 availability", '2348012222201' not in avail2, str(avail2))
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} -> {failures}")

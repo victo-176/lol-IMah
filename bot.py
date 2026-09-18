@@ -1085,6 +1085,7 @@ def assign_number_to_user(user_id, number):
         row = c.fetchone()
         current = _split_assigned(row[0]) if row else []
         changed = False
+        new_keys = []
         for num in _split_assigned(number):
             n_key = _num_key(num)
             if not n_key:
@@ -1100,13 +1101,28 @@ def assign_number_to_user(user_id, number):
             if conflict:
                 conn.close()
                 return False
+            # EVER-ASSIGNED guard: never give a number to a user if it was ever
+            # assigned to a DIFFERENT user before (even if since released/changed)
+            c.execute("SELECT DISTINCT user_id FROM number_history WHERE number=?", (n_key,))
+            for (h_uid,) in c.fetchall():
+                if h_uid != user_id:
+                    logger.warning(f"Number {num} was previously assigned to user {h_uid}, rejecting assignment to {user_id}")
+                    conflict = True
+                    break
+            if conflict:
+                conn.close()
+                return False
             if n_key not in (_num_key(p) for p in current):
                 current.append(n_key)
                 changed = True
+                new_keys.append(n_key)
         if not changed:
             conn.close()
             return True
         c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (",".join(current), user_id))
+        # Record in the ever-assigned ledger so this number can never go to another user
+        for k in new_keys:
+            c.execute("INSERT INTO number_history (user_id, number) VALUES (?, ?)", (user_id, k))
         conn.commit()
         conn.close()
         log_user_activity(user_id, "number_assigned", f"Numbers {number} assigned")
@@ -1137,6 +1153,9 @@ def release_number(number):
             new_cell = ",".join(remaining)
             if new_cell != cell:
                 c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (new_cell if new_cell else None, uid))
+        # Mark history rows released (rows are kept forever for the ever-assigned guard)
+        for k in target_keys:
+            c.execute("UPDATE number_history SET released_at=CURRENT_TIMESTAMP WHERE number=? AND released_at IS NULL", (k,))
         # Delete from combo stock entirely (digit-normalized match)
         c.execute("SELECT id, numbers FROM combos")
         for combo_id, nums_json in c.fetchall():
@@ -1211,8 +1230,33 @@ def purge_assigned_from_stock():
         if removed:
             logger.info(f"Stock purge: removed {removed} assigned number(s) from stock")
 
+def backfill_number_history():
+    """Seed number_history from current assignments so the ever-assigned guard
+    is effective immediately on existing databases."""
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT user_id, assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
+        rows = c.fetchall()
+        inserted = 0
+        for uid, cell in rows:
+            for p in _split_assigned(cell):
+                k = _num_key(p)
+                if not k:
+                    continue
+                c.execute("SELECT 1 FROM number_history WHERE user_id=? AND number=? LIMIT 1", (uid, k))
+                if not c.fetchone():
+                    c.execute("INSERT INTO number_history (user_id, number) VALUES (?, ?)", (uid, k))
+                    inserted += 1
+        conn.commit()
+        conn.close()
+        _persist_db()
+        if inserted:
+            logger.info(f"Backfilled {inserted} number history row(s) from current assignments")
+
 # Startup self-heal: drop stock entries that are already assigned to a user
 purge_assigned_from_stock()
+backfill_number_history()
 
 def get_combo(country_code, combo_index=1, user_id=None):
     conn = sqlite3.connect(DB_PATH)
@@ -1280,6 +1324,11 @@ def get_available_numbers(country_code, combo_index=1, user_id=None):
     used_numbers = set()
     for (cell,) in c.fetchall():
         used_numbers.update(k for k in (_num_key(p) for p in _split_assigned(cell)) if k)
+    # Exclude numbers ever assigned to another user (user_id=None excludes all history)
+    c.execute("SELECT DISTINCT number, user_id FROM number_history")
+    for hnum, huid in c.fetchall():
+        if hnum and (user_id is None or huid != user_id):
+            used_numbers.add(str(hnum))
     conn.close()
     return [num for num in all_numbers if _num_key(num) not in used_numbers]
 
@@ -5888,6 +5937,11 @@ def fetch_number_logic(chat_id, app_name, country_key, message_id):
     c.execute("SELECT assigned_number FROM users WHERE assigned_number IS NOT NULL AND assigned_number != ''")
     for (cell,) in c.fetchall():
         used.update(k for k in (_num_key(p) for p in _split_assigned(cell)) if k)
+    # Numbers ever assigned to a DIFFERENT user are never handed out again
+    c.execute("SELECT DISTINCT number, user_id FROM number_history")
+    for hnum, huid in c.fetchall():
+        if hnum and huid != chat_id:
+            used.add(str(hnum))
     conn.close()
     available = [n for n in numbers if _num_key(n) not in used]
     if not available:
