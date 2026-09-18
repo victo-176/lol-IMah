@@ -60,6 +60,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or base64.b64decode(_BOT_TOKEN_ENC).decode("u
 MAILTM_BASE = "https://api.mail.tm"
 TEMPMAILIO_BASE = "https://api.internal.temp-mail.io/api/v3"
 TEMP_EMAIL_POLL_SECONDS = 2  # fast polling
+TEMP_EMAIL_FULL_BODY = True  # deliver the complete email body, no OTP extraction
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8921746989"))
 EXTRA_ADMINS = []
 
@@ -2093,44 +2094,78 @@ def delete_user_temp_email(user_id, email):
         conn.close()
     te_delete_creds(email)
 
+def _email_body_text(full):
+    """Return the FULL email body as readable text.
+    Prefers the plain-text part; falls back to HTML converted to text.
+    Never truncates."""
+    if not full:
+        return ""
+    text = (full.get("text") or "").strip()
+    if text:
+        return text
+    html = full.get("html") or ""
+    if not html:
+        return ""
+    # Turn <br> and block-tag closings into newlines, strip the rest, unescape entities
+    html = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
+    html = re.sub(r'</(?:p|div|tr|h[1-6]|li|table)>', '\n', html, flags=re.IGNORECASE)
+    body = html_mod.unescape(strip_html_tags(html))
+    lines = [re.sub(r'[ \t]+', ' ', ln).rstrip() for ln in body.splitlines()]
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+
+
+def _send_email_full(chat_id, text, reply_markup=None):
+    """Send the FULL email, splitting across Telegram's 4096-char message limit."""
+    limit = 4000  # headroom below Telegram's 4096 for part labels
+    if len(text) <= limit:
+        send_html_safe(chat_id, text, reply_markup=reply_markup)
+        return
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, 1):
+        part = f"<b>({i}/{total})</b>\n{chunk}" if total > 1 else chunk
+        send_html_safe(chat_id, part,
+                       reply_markup=(reply_markup if i == total else None))
+
+
 def _email_format_message(m, full=None):
-    """Format a normalized message dict into the bot's HTML style. Returns (text, otp)."""
+    """Format a normalized message dict into the bot's HTML style.
+    Returns the FULL message text (no OTP extraction, no truncation)."""
     sender = m.get("from") or "unknown"
     name = m.get("from_name") or ""
     if name:
         sender = f"{name} <{sender}>"
     subject = m.get("subject") or "(no subject)"
-    body_text = ""
-    body_html = ""
-    if full:
-        body_text = full.get("text") or ""
-        body_html = full.get("html") or ""
-    preview = body_text or m.get("preview") or ""
-    if not preview and body_html:
-        preview = re.sub(r'<br\s*/?>', '\n', body_html, flags=re.IGNORECASE)
-        preview = re.sub(r'<[^>]+>', ' ', preview)
-    preview = re.sub(r'[ \t]+', ' ', preview)
-    preview = re.sub(r'\n{3,}', '\n\n', preview).strip()
-    if len(preview) > 1500:
-        preview = preview[:1500] + "\n... (truncated)"
-    otp = extract_otp_from_email(subject, preview)
+    body = _email_body_text(full) or (m.get("preview") or "")
+    body = re.sub(r'[ \t]+', ' ', body)
+    body = re.sub(r'\n{3,}', '\n\n', body).strip()
     ts = (m.get("created_at") or "")[:19].replace("T", " ")
     pe_m = pe('mail', '\U0001F4E7')
-    pe_k = pe('key', '\U0001F511')
     lines = [
         pe_m + " <b>NEW EMAIL</b>",
         "\u2501" * 19,
         f"\U0001F4E8 <b>From:</b> {html_mod.escape(str(sender))}",
         f"\U0001F4CC <b>Subject:</b> {html_mod.escape(str(subject))}",
+        "\u2501" * 19,
     ]
-    if otp:
-        lines.append(f"{pe_k} <b>Code:</b> <code>{otp}</code>")
-    lines.append("\u2501" * 19)
-    if preview:
-        lines.append(html_mod.escape(preview))
+    if body:
+        lines.append(html_mod.escape(body))
+    else:
+        lines.append("<i>(empty body)</i>")
     lines.append("\u2501" * 19)
     lines.append(f"\u23F0 {ts}")
-    return "\n".join(lines), otp
+    return "\n".join(lines)
+
 
 def show_temp_email(chat_id, user_id):
     """Render the TEMP EMAIL screen for a user."""
@@ -2207,12 +2242,9 @@ def temp_email_watcher_loop():
                     if mid in seen:
                         continue
                     full = te_get_full(email, mid)
-                    text, otp = _email_format_message(m, full)
-                    markup = types.InlineKeyboardMarkup()
-                    if otp:
-                        markup.add(ibtn(f"COPY: {otp}", copy_text_str=otp, style="success", icon="copy"))
+                    text = _email_format_message(m, full)
                     try:
-                        bot.send_message(user_id, text, parse_mode="HTML", reply_markup=markup)
+                        _send_email_full(user_id, text)
                     except Exception as e:
                         logger.warning(f"Temp email DM to {user_id} failed: {e}")
                     seen.add(mid)
@@ -5507,8 +5539,8 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
             "\u2501" * 19 +
             "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
-            "\U0001F4E5 Emails sent to this address arrive here automatically\n"
-            "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
+            "\U0001F4E5 <b>Full emails</b> sent to this address drop here automatically\n"
+            "\u23F3 No need to check \u2014 delivery is instant (2s polling)\n" +
             "\u2501" * 19
         )
         bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
@@ -5534,8 +5566,8 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             "\n\u300A " + _pe_mail + " <b>YOUR NEW TEMP EMAIL</b> \u300B\n" +
             "\u2501" * 19 +
             "\n\U0001F4EAE <b>Address:</b> <code>" + html_mod.escape(email) + "</code>\n"
-            "\U0001F4E5 Emails sent to this address arrive here automatically\n"
-            "\U0001F511 Verification codes are extracted & shown with a copy button\n" +
+            "\U0001F4E5 <b>Full emails</b> sent to this address drop here automatically\n"
+            "\u23F3 No need to check \u2014 delivery is instant (2s polling)\n" +
             "\u2501" * 19
         )
         bot.send_message(chat_id, _new_email_text, parse_mode="HTML", reply_markup=markup)
@@ -5554,11 +5586,8 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
             return
         for m in msgs[:5]:
             full = te_get_full(email, str(m.get("id")))
-            text, otp = _email_format_message(m, full)
-            mk = types.InlineKeyboardMarkup()
-            if otp:
-                mk.add(ibtn(f"COPY: {otp}", copy_text_str=otp, style="success", icon="copy"))
-            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=mk)
+            text = _email_format_message(m, full)
+            _send_email_full(chat_id, text)
         return
 
     if data.startswith("temail_delete|"):
