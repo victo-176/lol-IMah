@@ -56,6 +56,11 @@ from datetime import datetime
 
 import requests
 
+# Premium emoji ids for the group OTPs. Kept import-safe (no telebot, no DB),
+# and the maps are pinned identical to bot.py's by tests/test_otp_group_premium.py.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from premium_emoji import premiumize  # noqa: E402
+
 try:
     from bs4 import BeautifulSoup
     BS4_AVAILABLE = True
@@ -714,7 +719,9 @@ def fetch_otps():
 
 def _tg_send(chat_id, text, reply_markup=None):
     """POST one message; returns True on success. Never raises."""
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    # Raw API post, so nothing else upgrades these emoji: do it here or the
+    # OTP groups get plain unicode while the bot's own messages are premium.
+    payload = {"chat_id": chat_id, "text": premiumize(text), "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:

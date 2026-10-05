@@ -3402,6 +3402,10 @@ def send_to_telegram_group(text, otp_code, number):
         {"text": "📋 Copy OTP", "callback_data": f"copy_{otp_code}"},
         {"text": "🤖 BOT LINK", "url": bot_link}
     ]]}
+    # This posts through the raw Bot API, so it never reaches the send_message
+    # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
+    # the OTP groups get plain unicode while every other message is premium.
+    text = premiumize(text)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     if not chat_ids:
