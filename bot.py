@@ -285,6 +285,53 @@ GLOBAL_BODY_EMOJIS = {
     "👨‍⚖️": "5334763399299506604"
 }
 
+# Remaining glyphs the bot writes as literal text, paired with the ids that
+# already exist in emoji.txt (name in the comment). Lowest priority: these
+# never override an operator-supplied id above. Several mail glyphs share one
+# envelope id, and each still renders inside its own <tg-emoji> tag.
+EXTRA_BODY_EMOJIS = {
+    "\U0001F4CB": "5877597667231534929",   # list
+    "\U0001F4E8": "5967280668885913944",   # envelope
+    "\U0001F4E9": "5967280668885913944",   # envelope
+    "\U0001F4E7": "5967280668885913944",   # envelope
+    "\U0001F4EA": "5967280668885913944",   # envelope
+    "\U0001F4ED": "5967280668885913944",   # envelope
+    "\U0001F4DE": "5411604122321302582",   # telefon
+    "\U0001F511": "6005570495603282482",   # key
+    "\U0001F4E5": "5386367538735104399",   # download
+    "\U0001F916": "5931415565955503486",   # bot_ai
+    "\U0001F6A8": "5460755126761312667",   # red_flag
+    "\U0001F534": "5411225014148014586",   # record
+    "\U0001F50D": "5874960879434338403",   # search
+    "\U0001F504": "5375338737028841420",   # refresh
+    "\U0001F4F8": "5843506780931363129",   # image
+    "\U0001F3B5": "5891249688933305846",   # music
+    "\U0001F6E0\ufe0f": "5988023995125993550",  # wrench
+    "\U0001F512": "5296369303661067030",   # lock
+    "\U0001F4F0": "5456140674028019486",   # breaking
+    "\U0001F4E1": "5447410659077661506",   # internet
+    "\U0001F4DB": "5879770735999717115",   # profile
+    "\U0001F4C9": "5447183459602669338",   # chart_down
+    "\U0001F4BE": "5877485980901971030",   # data
+    "\U0001F4B6": "5409048419211682843",   # dollar
+    "\U0001F4AD": "5443038326535759644",   # chat
+    "\U0001F4A5": "5276032951342088188",   # explosion
+    "\U0001F465": "5942877472163892475",   # people
+    "\U0001F195": "5382357040008021292",   # new_badge
+    "❗": "5274099962655816924",        # exclamation
+    "❓": "5436113877181941026",        # question
+    "✍\ufe0f": "5395444784611480792",  # pencil
+    "\U0001F4E6": "5967456680940671207",   # archive
+    "\u2139\ufe0f": "5323442290708985472",   # info
+    "⬅\ufe0f": "5875082500023258804",   # back
+    "➡\ufe0f": "5875506366050734240",   # strelka_right
+    "✈\ufe0f": "5206208353751024833",   # telegram
+    # The shield is already mapped above under its bare form; this VS16 form
+    # must match whole so the trailing variation selector is not left outside
+    # the tag. Same id on purpose.
+    "\U0001F6E1\ufe0f": "5190447043545438788",  # c_shield
+}
+
 # Character -> premium id, used to upgrade plain emoji in message bodies.
 # Named entries are added first so they win over GLOBAL_BODY_EMOJIS for the
 # same character, and the first-named entry wins when two names share one.
@@ -293,6 +340,9 @@ for _n, (_c, _i) in PREMIUM_NAMED.items():
     if _c not in PREMIUM_BODY_IDS:
         PREMIUM_BODY_IDS[_c] = _i
 for _c, _i in GLOBAL_BODY_EMOJIS.items():
+    if _c not in PREMIUM_BODY_IDS:
+        PREMIUM_BODY_IDS[_c] = _i
+for _c, _i in EXTRA_BODY_EMOJIS.items():
     if _c not in PREMIUM_BODY_IDS:
         PREMIUM_BODY_IDS[_c] = _i
 

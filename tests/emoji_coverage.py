@@ -35,11 +35,14 @@ def load_dict(name):
 
 NAMED = load_dict("PREMIUM_NAMED")
 GLOBAL = load_dict("GLOBAL_BODY_EMOJIS")
+EXTRA = load_dict("EXTRA_BODY_EMOJIS")
 
 BODY_IDS = {}
 for _n, (_c, _i) in NAMED.items():
     BODY_IDS.setdefault(_c, _i)
 for _c, _i in GLOBAL.items():
+    BODY_IDS.setdefault(_c, _i)
+for _c, _i in EXTRA.items():
     BODY_IDS.setdefault(_c, _i)
 
 
@@ -105,6 +108,17 @@ def emoji_runs(s):
 def main():
     tree = ast.parse(SRC, filename=BOT)
 
+    # The premium maps are lookup data, not user-visible copy: their own glyph
+    # keys would otherwise be counted as "misses" and report false coverage.
+    map_nodes = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Dict):
+            for t in n.targets:
+                if isinstance(t, ast.Name) and t.id in (
+                        "PREMIUM_NAMED", "GLOBAL_BODY_EMOJIS",
+                        "EXTRA_BODY_EMOJIS", "UNICODE_FALLBACKS"):
+                    map_nodes.update(id(k) for k in n.value.keys)
+
     # Fallback args of pe(...) are already premium-eligible -> exclude them
     # from the "bare text" bucket.
     pe_fallbacks = set()
@@ -133,7 +147,7 @@ def main():
     bare = {}
     for n in ast.walk(tree):
         if isinstance(n, ast.Constant) and isinstance(n.value, str):
-            if n.value in pe_fallbacks:
+            if id(n) in map_nodes or n.value in pe_fallbacks:
                 continue
             for run in emoji_runs(n.value):
                 bare[run] = bare.get(run, 0) + 1
