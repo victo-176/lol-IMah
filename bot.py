@@ -222,6 +222,159 @@ UNICODE_FALLBACKS = {
     "archive": "\U0001F4C2", "hourglass": "\u23F3",
 }
 
+# =========================== PREMIUM EMOJI MAPS ===========================
+# These live in source (not only in the gitignored emoji.txt) so the IDs ship
+# with the repository and survive a fresh deploy.
+#
+# PREMIUM_NAMED maps a semantic icon name used by pe()/ibtn() to a
+# <tg-emoji> id and its plain-unicode fallback.
+PREMIUM_NAMED = {
+    "ok":     ("✅", "5352694861990501856"),
+    "no":     ("❌", "6267000941547885720"),
+    "warn":   ("⚠️", "5336944168944047463"),
+    "admin":  ("\U0001F4CA", "5353032893096567467"),
+    "user":   ("\U0001F464", "5352861489541714456"),
+    "file":   ("\U0001F4C1", "5352721946054268944"),
+    "rocket": ("\U0001F680", "5352597830089347330"),
+    "graph":  ("\U0001F4CA", "5352877703043258544"),
+    "money":  ("\U0001F4B8", "5348469219761626211"),
+    "gift":   ("\U0001F381", "5420396762189831222"),
+    "msg":    ("\U0001F4AC", "5337302974806922068"),
+    "gear":   ("⚙️", "5420155432272438703"),
+    "link":   ("\U0001F517", "5420517437885943844"),
+    "trash":  ("\U0001F5D1", "5422557736330106570"),
+    "upload": ("\U0001F4E4", "5353001161878182134"),
+    "world":  ("\U0001F310", "5336972142066047577"),
+    "lock":   ("\U0001F510", "5353022963132174959"),
+    "phone":  ("\U0001F4F1", "4969841369850840381"),
+    "num":    ("\U0001F522", "5352862640592949843"),
+    "pin":    ("\U0001F4CD", "5352922460897452503"),
+    "star":   ("✨", "5352552689983067014"),
+    "hi":     ("\U0001F44B", "5353027129250453493"),
+}
+
+# Every plain unicode emoji that should be upgraded to its premium twin in
+# outbound message bodies.
+GLOBAL_BODY_EMOJIS = {
+    "➖": "5870818207383686839", "🚫": "5334807341109908955", "😒": "5334763399299506604",
+    "🖥": "5334880948259427772", "🌐": "5334590977837403844", "🌟": "5337102391244263212",
+    "🕓": "5336983442125001376", "⌛": "4958503072801228000", "💬": "5337302974806922068",
+    "🔐": "5337255927735163754", "🍏": "5337132498965010628", "❔": "5336850036145823599",
+    "⚠️": "5336944168944047463", "🔥": "5337267511261960341", "💸": "5348469219761626211",
+    "🥚": "5348390922507817684", "👨‍⚖": "5334763399299506604", "🐁": "5348494358205207761",
+    "🧻": "5348486915026884464", "⚗": "5346311574221000149", "🛴": "5348075478634766440",
+    "📊": "5353032893096567467", "🔢": "5352862640592949843", "👤": "5352861489541714456",
+    "📁": "5352721946054268944", "🚀": "5352597830089347330", "💎": "5352838545826420397",
+    "📍": "5352922460897452503", "👋": "5353027129250453493", "✅": "5352694861990501856",
+    "1️⃣": "5352651766288652742", "2️⃣": "5355186458418257716", "3️⃣": "5352867219028091093",
+    "4️⃣": "5352566657216714037", "5️⃣": "5353086880835474989", "6️⃣": "5354859211975071385",
+    "7️⃣": "5352859127309707652", "8️⃣": "5352957533600389988", "9️⃣": "5353060913463204207",
+    "🔤": "5352727417842606016", "📣": "5352980533150259581", "📤": "5353001161878182134",
+    "✨": "5352552689983067014", "🔹": "5352638632278660622", "🎙": "5355102594886833928",
+    "💴": "5352985330628730418", "📅": "5352585194295564660", "📴": "5352974971167611327",
+    "✏️": "5395444784611480792", "📱": "5337132498965010628", "🔗": "5420517437885943844",
+    "❌": "5420130255174145507", "⚙️": "5420155432272438703", "🫂": "5420145051336485498",
+    "➕": "5420323438508155202", "🗑": "5422557736330106570", "🎁": "5420396762189831222",
+    "➤": "5420618897898381296", "🏢": "5420156334215565595", "💳": "5190899075968441286",
+    "📝": "5192739271886282680", "🛡": "5190447043545438788", "🤝": "5192805934073685937",
+    "💰": "5190576863226933563", "👀": "5190645917711114179", "🕹": "5193100774988617665",
+    "🟢": "5192812028632274956", "🧪": "5190781475468915802", "🎨": "5190751148704833975",
+    "📂": "5257969839313526622", "🌍": "5780471598922337683", "📌": "5318986077455795572",
+    "📢": "5789428375261023681", "🆔": "5352862640592949843", "📈": "5352877703043258544",
+    "🔔": "5352980533150259581", "🏦": "5348469219761626211", "🧾": "5192739271886282680",
+    "👨‍⚖️": "5334763399299506604"
+}
+
+# Character -> premium id, used to upgrade plain emoji in message bodies.
+# Named entries are added first so they win over GLOBAL_BODY_EMOJIS for the
+# same character, and the first-named entry wins when two names share one.
+PREMIUM_BODY_IDS = {}
+for _n, (_c, _i) in PREMIUM_NAMED.items():
+    if _c not in PREMIUM_BODY_IDS:
+        PREMIUM_BODY_IDS[_c] = _i
+for _c, _i in GLOBAL_BODY_EMOJIS.items():
+    if _c not in PREMIUM_BODY_IDS:
+        PREMIUM_BODY_IDS[_c] = _i
+
+# Named ids must also be reachable by name through premium_icon()/pe().
+PREMIUM_EMOJI_IDS.update({n: i for n, (_c, i) in PREMIUM_NAMED.items()})
+# Keep the degraded (non-premium) glyph in step with the premium one, so a
+# client without custom-emoji support still sees the intended symbol.
+for _n, (_c, _i) in PREMIUM_NAMED.items():
+    UNICODE_FALLBACKS.setdefault(_n, _c)
+    UNICODE_FALLBACKS[_n] = _c
+
+# Longest sequences first so multi-codepoint emoji (⚠️, ✏️, 👨‍⚖️) match whole.
+_BODY_EMOJI_RE = None
+if PREMIUM_BODY_IDS:
+    _alts = sorted(PREMIUM_BODY_IDS, key=len, reverse=True)
+    _BODY_EMOJI_RE = re.compile(
+        "(" + "|".join(re.escape(c) for c in _alts) + ")"
+    )
+
+_LOGGED = set()
+if _BODY_EMOJI_RE is not None:
+    for _n, (_c, _i) in PREMIUM_NAMED.items():
+        _g = GLOBAL_BODY_EMOJIS.get(_c)
+        if _g and _g != _i:
+            _LOGGED.add(f"premium emoji '{_n}' ({_c}): named={_i} overrides global={_g}")
+if _LOGGED:
+    logger.info("Premium emoji id resolutions: %s", " | ".join(sorted(_LOGGED)))
+
+_TG_EMOJI_ANY = re.compile(r'<tg-emoji emoji-id="\d+">.*?</tg-emoji>', re.S)
+_STASH_OPEN = "\ue000"
+_STASH_CLOSE = "\ue001"
+_HTML_MODES = {"HTML", "HTML_4", "html", "html4"}
+
+
+def premiumize(text, force=False):
+    """Upgrade plain unicode emoji in *text* to their premium <tg-emoji>.
+
+    Idempotent: text already inside a <tg-emoji> tag is stashed and restored
+    untouched, so it is never double-wrapped. Multi-codepoint emoji match whole.
+    """
+    if not PREMIUM_EMOJI_OK or _BODY_EMOJI_RE is None:
+        return text
+    if not isinstance(text, str) or not text:
+        return text
+    stash = None
+    work = text
+    if "<tg-emoji" in work:
+        stash = []
+        def _keep(m):
+            stash.append(m.group(0))
+            return f"{_STASH_OPEN}{len(stash) - 1}{_STASH_CLOSE}"
+        work = _TG_EMOJI_ANY.sub(_keep, work)
+    work = _BODY_EMOJI_RE.sub(
+        lambda m: f'<tg-emoji emoji-id="{PREMIUM_BODY_IDS[m.group(0)]}">'
+                  f'{m.group(0)}</tg-emoji>',
+        work,
+    )
+    if stash:
+        for i, original in enumerate(stash):
+            work = work.replace(f"{_STASH_OPEN}{i}{_STASH_CLOSE}", original)
+    return work
+
+
+def _premiumize_arg(text, kwargs):
+    """Premiumize one text value, but only when the send uses HTML parse_mode.
+
+    Injecting <tg-emoji> into a plain-text send would show the tag literally,
+    so anything not going out as HTML is left untouched.
+    """
+    mode = kwargs.get("parse_mode")
+    if mode is None or str(mode).upper() not in _HTML_MODES:
+        return text
+    return premiumize(text)
+
+def _premium_id_for_glyph(glyph):
+    """Return the premium id for a raw Unicode glyph, or None."""
+    if not isinstance(glyph, str) or not glyph or _BODY_EMOJI_RE is None:
+        return None
+    m = _BODY_EMOJI_RE.match(glyph)
+    return PREMIUM_BODY_IDS.get(m.group(0)) if m else None
+
+
 def premium_icon(name):
     if not name:
         return None
@@ -229,7 +382,12 @@ def premium_icon(name):
     # Check hardcoded IDs first
     if n.lower() in PREMIUM_EMOJI_IDS:
         return PREMIUM_EMOJI_IDS[n.lower()]
-    return PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
+    direct = PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
+    if direct:
+        return direct
+    # Last resort: the name's own Unicode glyph may carry a premium id in the
+    # body map (e.g. "earth" -> 🌍). Keeps names and glyphs from drifting.
+    return _premium_id_for_glyph(UNICODE_FALLBACKS.get(n.lower()) or n)
 
 def pe(name, fallback=None, emoji_id=None):
     """Return a safe <tg-emoji> tag with given ID or fallback.
@@ -250,6 +408,10 @@ def pe(name, fallback=None, emoji_id=None):
             eid = premium_icon(name)
     # Resolve the Unicode fallback from the dictionary
     fb = fallback or UNICODE_FALLBACKS.get(str(name).lower(), "•") if name else (fallback or "•")
+    if not eid:
+        # The resolved glyph itself may be in the premium body map even when the
+        # name is not (e.g. pe("minus", "➖") / pe("warning", "⚠️")).
+        eid = _premium_id_for_glyph(fb)
     if eid:
         return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
     return fb
@@ -307,12 +469,33 @@ types.KeyboardButton.to_dict = _new_kb_dict
 
 _BTN_STRIP_RE = re.compile(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>')
 
-def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, icon=None, icon_id=None):
-    # Fixed: Strip premium emoji HTML tags from button text (buttons don't support HTML)
+def _derive_icon_id(text):
+    """Return the premium id for the first emoji in *text* (label glyph)."""
+    if not isinstance(text, str) or not text or _BODY_EMOJI_RE is None:
+        return None
+    stripped = text.lstrip()
+    m = _BODY_EMOJI_RE.match(stripped)
+    return PREMIUM_BODY_IDS.get(m.group(0)) if m else None
+
+def _btn_text_and_icon(text, icon, icon_id):
+    """Strip <tg-emoji> from button text and resolve a premium icon id.
+
+    Buttons cannot render HTML, so the premium tag in a label is replaced by
+    its plain glyph and the id is carried on icon_custom_emoji_id instead.
+    When no icon is named, one is derived from the label's leading emoji so
+    buttons still get a premium icon.
+    """
     if isinstance(text, str):
         text = _BTN_STRIP_RE.sub(r'\1', text)
     if icon_id is None:
         icon_id = premium_icon(icon)
+    if icon_id is None:
+        icon_id = _derive_icon_id(text)
+    return text, icon_id
+
+def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, icon=None, icon_id=None):
+    # Fixed: Strip premium emoji HTML tags from button text (buttons don't support HTML)
+    text, icon_id = _btn_text_and_icon(text, icon, icon_id)
     kwargs = {"text": text}
     if copy_text_str:
         kwargs["callback_data"] = "fake_copy_btn"
@@ -340,10 +523,7 @@ def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, ico
 
 def rbtn(text, style=None, icon=None, icon_id=None):
     # Fixed: Strip premium emoji HTML tags from button text
-    if isinstance(text, str):
-        text = _BTN_STRIP_RE.sub(r'\1', text)
-    if icon_id is None:
-        icon_id = premium_icon(icon)
+    text, icon_id = _btn_text_and_icon(text, icon, icon_id)
     try:
         return types.KeyboardButton(text=text, style=style, icon_custom_emoji_id=icon_id)
     except TypeError:
@@ -2935,7 +3115,7 @@ def _premium_rejected(err):
 _orig_send_message = bot.send_message
 def _safe_send_message(chat_id, text, *args, **kwargs):
     try:
-        return _orig_send_message(chat_id, text, *args, **kwargs)
+        return _orig_send_message(chat_id, _premiumize_arg(text, kwargs), *args, **kwargs)
     except Exception as e:
         if not _premium_rejected(e):
             raise
@@ -2949,7 +3129,7 @@ bot.send_message = _safe_send_message
 _orig_edit_message_text = bot.edit_message_text
 def _safe_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
     try:
-        return _orig_edit_message_text(text, chat_id=chat_id, message_id=message_id, *args, **kwargs)
+        return _orig_edit_message_text(_premiumize_arg(text, kwargs), chat_id=chat_id, message_id=message_id, *args, **kwargs)
     except Exception as e:
         if not _premium_rejected(e):
             raise
@@ -2959,6 +3139,51 @@ def _safe_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs
             cleaned["reply_markup"] = _strip_markup_icons(cleaned["reply_markup"])
         return _orig_edit_message_text(_strip_premium_text(text), chat_id=chat_id, message_id=message_id, *args, **cleaned)
 bot.edit_message_text = _safe_edit_message_text
+
+# reply_to is used all over the bot but was previously unguarded, so plain
+# emoji in those replies never became premium. telebot's reply_to forwards to
+# send_message, so wrapping it keeps behaviour explicit and safe either way.
+_orig_reply_to = bot.reply_to
+def _safe_reply_to(message, text=None, *args, **kwargs):
+    try:
+        return _orig_reply_to(message, _premiumize_arg(text, kwargs), *args, **kwargs)
+    except Exception as e:
+        if not _premium_rejected(e):
+            raise
+        logger.warning(f"Telegram rejected premium emoji on reply_to: {e}")
+        return _orig_reply_to(message, _strip_premium_text(text), *args, **kwargs)
+bot.reply_to = _safe_reply_to
+
+# Media senders: captions are passed as a keyword in this codebase, so upgrade
+# that keyword and fall back the same way if Telegram refuses the premium tag.
+def _wrap_caption_method(name):
+    orig = getattr(bot, name, None)
+    if orig is None:
+        return
+    def wrapper(*args, **kwargs):
+        if isinstance(kwargs.get("caption"), str):
+            kwargs["caption"] = _premiumize_arg(kwargs["caption"], kwargs)
+        try:
+            return orig(*args, **kwargs)
+        except Exception as e:
+            if not _premium_rejected(e):
+                raise
+            logger.warning(f"Telegram rejected premium emoji on {name}: {e}")
+            if isinstance(kwargs.get("caption"), str):
+                kwargs["caption"] = _strip_premium_text(kwargs["caption"])
+            return orig(*args, **kwargs)
+    setattr(bot, name, wrapper)
+
+for _m in ("send_photo", "send_video", "send_document", "send_voice",
+           "send_audio", "send_animation", "send_video_note",
+           "send_paid_media", "copy_message"):
+    _wrap_caption_method(_m)
+
+logger.info(
+    "Premium emoji: body-upgrade map=%s glyphs, named icons=%s, %s",
+    len(PREMIUM_BODY_IDS), len(PREMIUM_NAMED),
+    "enabled" if PREMIUM_EMOJI_OK else "disabled",
+)
 
 # =========================== BROADCAST STOCK UPDATE (placed after bot init) ===========================
 def broadcast_stock_update(country_code, app_name, number_count, numbers=None):
