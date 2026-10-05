@@ -4,7 +4,7 @@ TEMP NUMBERS CLIENT PANEL OTP FORWARDER — Standalone Sub-Bot
 ============================================================
 Autonomous scraper for the Temp Numbers client panel:
 
-    http://tempnumbers.net/Client/SMSCDRReports
+    http://tempnumbers.net/client/SMSCDRStats
 
 It logs into the panel as a normal client user, scrapes the SMS report
 page every 7 seconds, and forwards every new OTP to:
@@ -18,14 +18,30 @@ bot's login/sesskey state in ``bot.py`` is never touched.
 Usage:
     python temp_numbers_panel.py
 
-Configuration (env var wins, bot.db ``bot_settings`` is the fallback):
-    DB_PATH           path to the bot database
-    POLL_INTERVAL     poll seconds (default 7)
-    BOT_TOKEN         Telegram bot token
-    FORWARD_USER_ID   Telegram user id that receives OTPs directly
+Configuration — every value comes from an env var first, then from the
+bot database, so nothing has to be hardcoded:
 
-Panel credentials are read from the ``sms_panels`` row whose URL points at
-tempnumbers.net (admin > SMS Panels, name "Number Panel").
+    TEMP_PANEL_URL         panel base url (default: the saved Number Panel)
+    TEMP_PANEL_USERNAME    panel login
+    TEMP_PANEL_PASSWORD    panel password
+    DB_PATH                bot database path
+    POLL_INTERVAL          poll seconds (default 7)
+    BOT_TOKEN              Telegram bot token
+    FORWARD_USER_ID        Telegram user id that receives OTPs directly
+
+Panel credentials are otherwise read from the ``sms_panels`` row whose name
+is "Number Panel"/"TEMP NUMBERS" or whose URL points at tempnumbers.net
+(admin > SMS Panels).
+
+Notes on the live panel (verified against tempnumbers.net):
+  * The login form posts to ``/signin`` with ``username``/``password``/
+    ``capt``. The captcha question lives in the label bound to the ``capt``
+    input ("What is 1 + 5 = ?"); scanning the whole page for the first
+    "a + b" picks up unrelated numbers and answers wrong.
+  * Login is rate limited to one attempt per minute ("Error 27: Session
+    invalid try after 1 minute"), so retries are throttled by LOGIN_COOLDOWN.
+  * The report page is ``/client/SMSCDRStats``. ``/Client/SMSCDRReports``
+    returns 404 on this panel and is only kept as a fallback.
 """
 
 import html as html_mod
@@ -200,12 +216,19 @@ PASSWORD = PANEL["password"]
 LOGIN_URL = f"{PANEL_URL}/login"
 SIGNIN_URL = f"{PANEL_URL}/signin"
 
-# The single page we scrape, plus harmless fallbacks for a renamed path.
+# The SMS report page. tempnumbers.net serves it at /client/SMSCDRStats
+# (the nav links confirm this); /Client/SMSCDRReports is kept as a fallback
+# for deployments that do expose it.
 REPORT_PAGES = [
+    f"{PANEL_URL}/client/SMSCDRStats",
     f"{PANEL_URL}/Client/SMSCDRReports",
     f"{PANEL_URL}/client/SMSCDRReports",
-    f"{PANEL_URL}/SMSCDRReports",
 ]
+
+# The panel refuses more than one login attempt per minute
+# ("Error 27: Session invalid try after 1 minute").
+LOGIN_COOLDOWN = 65
+_last_login_attempt = 0.0
 
 # =========================== SETUP ===========================
 logging.basicConfig(
@@ -549,24 +572,69 @@ def _parse_report_html(page_html):
 # =========================== LOGIN ===========================
 
 
-def login():
-    """Log into the panel as a client. Returns True on success."""
+def _solve_captcha(page_html):
+    """Solve the panel's arithmetic captcha.
+
+    The question lives in the label bound to the `capt` input
+    (``<label id="captcha-question">What is 1 + 5 = ?</label>``). Scanning the
+    whole page for the first "a + b" picks up unrelated numbers (phone
+    numbers, counts) and produces a wrong answer, so read the label first.
+    """
+    question = None
+    if BS4_AVAILABLE:
+        soup = BeautifulSoup(page_html, "html.parser")
+        inp = soup.find("input", {"name": "capt"})
+        label = None
+        if inp is not None:
+            if inp.get("id"):
+                label = soup.find("label", {"for": inp["id"]})
+            if label is None:
+                label = inp.find_previous("label")
+        if label is None:
+            el = soup.find(id="captcha-question") or soup.find(id="captcha-label")
+            if el is not None:
+                label = el
+        if label is not None:
+            question = label.get_text(" ", strip=True)
+
+    m = re.search(r"(\d+)\s*\+\s*(\d+)", question or "")
+    if not m:
+        # Fall back to the page-wide scan only when no label was found.
+        m = re.search(r"(\d+)\s*\+\s*(\d+)", page_html or "")
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return str(a + b), f"{a} + {b}"
+
+
+def login(force=False):
+    """Log into the panel as a client. Returns True on success.
+
+    Respects the panel's one-login-per-minute limit; a second attempt inside
+    the cooldown window is refused instead of burning the lockout.
+    """
+    global _last_login_attempt
+    now = time.time()
+    if not force and (now - _last_login_attempt) < LOGIN_COOLDOWN:
+        wait = LOGIN_COOLDOWN - (now - _last_login_attempt)
+        logger.info("Skipping login: panel rate limit, retry in %.0fs", wait)
+        return False
+    _last_login_attempt = time.time()
+
     logger.info("Logging in to %s (%s)...", PANEL_NAME, PANEL_URL)
     try:
         resp = session.get(LOGIN_URL, timeout=REQUEST_TIMEOUT)
 
-        # SMSCDRStats panels show "3 + 7 = ?" captcha; solve it when present.
-        nums = re.findall(r"(\d+)\s*\+\s*(\d+)", resp.text)
         data = {"username": USERNAME, "password": PASSWORD}
-        if nums:
-            data["capt"] = str(int(nums[0][0]) + int(nums[0][1]))
-            logger.info("Captcha: %s + %s = %s",
-                        nums[0][0], nums[0][1], data["capt"])
+        capt = _solve_captcha(resp.text)
+        if capt:
+            data["capt"], expression = capt
+            logger.info("Captcha: %s = %s", expression, data["capt"])
 
         # Some builds use a CSRF token instead of the arithmetic captcha.
-        if BS4_AVAILABLE and "capt" not in data:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            tok = soup.find("input", {"name": "_token"})
+        if "capt" not in data and BS4_AVAILABLE:
+            tok = BeautifulSoup(resp.text, "html.parser").find(
+                "input", {"name": "_token"})
             if tok and tok.get("value"):
                 data["_token"] = tok["value"]
 
@@ -575,24 +643,34 @@ def login():
         final_url = resp.url.lower()
         page = resp.text.lower()
 
-        if "smscdrreports" in final_url or "dashboard" in final_url:
+        if "login" in final_url or "signin" in final_url:
+            # Surface the panel's own reason — it rate-limits and can report
+            # bad credentials, and both are silent otherwise.
+            reason = ""
+            if BS4_AVAILABLE:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for sel in (".error", ".alert", "#message", ".text-danger"):
+                    for el in soup.select(sel):
+                        reason = el.get_text(" ", strip=True)[:160]
+                        break
+                    if reason:
+                        break
+            logger.warning("Login FAILED — %s", reason or f"final URL {resp.url[:80]}")
+            return False
+
+        # Not on a login page any more, so the session is established.
+        if "smscdrstats" in final_url or "smsdashboard" in final_url \
+                or "dashboard" in final_url:
             logger.info("Login OK (redirected to %s)", resp.url[:60])
             return True
-        if "signin" not in final_url and "login" not in final_url:
-            logger.info("Login OK (redirected away from login)")
-            return True
-        # URL may still say login while the body already shows the panel.
         if 'type="password"' not in page and (
-            "smscdrreports" in page or "side-nav" in page or "sms reports" in page
+            "smscdrstats" in page or "side-nav" in page or "sms reports" in page
         ):
             logger.info("Login OK (dashboard content in response)")
             return True
-        if session.cookies:
-            logger.info("Login OK (session cookies set)")
-            return True
 
-        logger.warning("Login FAILED — final URL: %s", resp.url[:80])
-        return False
+        logger.info("Login OK (redirected away from login: %s)", resp.url[:60])
+        return True
     except Exception as exc:
         logger.error("Login error: %s", exc)
         return False
@@ -613,9 +691,8 @@ def fetch_otps():
         # A redirect back to the login page means the session expired.
         if "login" in resp.url.lower() or "signin" in resp.url.lower():
             logger.warning("Session expired (redirected to login), re-logging in")
-            if not login():
-                return []
-            continue
+            login()  # self-limits via LOGIN_COOLDOWN
+            return []  # every page needs the session; don't probe the rest
 
         if resp.status_code != 200:
             logger.warning("%s returned HTTP %s", page_url, resp.status_code)

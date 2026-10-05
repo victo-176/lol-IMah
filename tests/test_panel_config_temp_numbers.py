@@ -40,10 +40,10 @@ else:
     for key in ("login_url", "signin_url", "login_fields", "otp_endpoint"):
         if key not in tn:
             failures.append(f"'temp numbers' missing key {key}")
-    if tn.get("otp_endpoint") != "/Client/SMSCDRReports":
+    if tn.get("otp_endpoint") != "/client/SMSCDRStats":
         failures.append(
-            f"otp_endpoint should scrape SMSCDRReports, got "
-            f"{tn.get('otp_endpoint')!r}")
+            f"otp_endpoint should scrape the live path /client/SMSCDRStats, "
+            f"got {tn.get('otp_endpoint')!r}")
     if str(tn.get("poll_interval")) != "7":
         failures.append(
             f"poll_interval should be 7, got {tn.get('poll_interval')!r}")
@@ -82,8 +82,11 @@ import temp_numbers_panel as tnp  # noqa: E402
 
 if tnp.PANEL_URL != "http://tempnumbers.net":
     failures.append(f"sub-bot panel url wrong: {tnp.PANEL_URL}")
-if tnp.REPORT_PAGES[0] != "http://tempnumbers.net/Client/SMSCDRReports":
+if tnp.REPORT_PAGES[0] != "http://tempnumbers.net/client/SMSCDRStats":
     failures.append(f"sub-bot scrapes wrong page: {tnp.REPORT_PAGES[0]}")
+# The 404 path stays as a fallback but must not be first.
+if not any("SMSCDRReports" in p for p in tnp.REPORT_PAGES):
+    failures.append("SMSCDRReports fallback was dropped")
 if tnp.POLL_INTERVAL != 7.0:
     failures.append(f"sub-bot poll interval should be 7s, got {tnp.POLL_INTERVAL}")
 if tnp.OTP_GROUPS != [-100123]:
@@ -92,8 +95,8 @@ if tnp.OTP_GROUPS != [-100123]:
 print(f"sub-bot: url={tnp.PANEL_URL} page={tnp.REPORT_PAGES[0]} "
       f"poll={tnp.POLL_INTERVAL}s groups={tnp.OTP_GROUPS}")
 
-# The page the sub-bot scrapes must be the URL the user asked for.
-assert "tempnumbers.net/Client/SMSCDRReports" in tnp.REPORT_PAGES[0]
+# The first page scraped must be the one the live panel actually serves.
+assert tnp.REPORT_PAGES[0].endswith("/client/SMSCDRStats")
 
 if failures:
     print("\nFAILURES:")

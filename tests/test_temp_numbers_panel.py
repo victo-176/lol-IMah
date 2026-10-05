@@ -13,6 +13,7 @@ Run:  python3 tests/test_temp_numbers_panel.py
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -79,11 +80,15 @@ class FakeHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/login":
             return self._send(
-                "<html><body>2 + 7 = ?"
+                "<html><body>"
+                "<label id=\"captcha-question\" for=\"captcha-answer\">"
+                "What is 2 + 7 = ?</label>"
+                "<input id=\"captcha-answer\" name=\"capt\" type=\"text\">"
                 "<form action='/signin' method='post'></form>"
                 "</body></html>"
             )
-        if path in ("/Client/SMSCDRReports", "/client/SMSCDRReports"):
+        if path in ("/client/SMSCDRStats", "/Client/SMSCDRReports",
+                    "/client/SMSCDRReports"):
             return self._send(build_page(self.rows))
         self.send_response(404)
         self.end_headers()
@@ -161,7 +166,8 @@ def main():
     tnp.PANEL_URL = panel_url
     tnp.LOGIN_URL = f"{panel_url}/login"
     tnp.SIGNIN_URL = f"{panel_url}/signin"
-    tnp.REPORT_PAGES = [f"{panel_url}/Client/SMSCDRReports"]
+    tnp.REPORT_PAGES = [f"{panel_url}/client/SMSCDRStats"]
+    tnp._last_login_attempt = 0.0
 
     print("--- config ---")
     check("panel discovered from sms_panels by host", tnp.PANEL is not None)
@@ -176,6 +182,27 @@ def main():
     print("\n--- login ---")
     ok = tnp.login()
     check("login with captcha solved", ok)
+
+    print("\n--- captcha comes from the label, not the first a+b ---")
+    tricky = (
+        "<html><body><p>Balance 10 + 5 items in stock</p>"
+        "<label id='captcha-question' for='captcha-answer'>What is 3 + 4 = ?</label>"
+        "<input id='captcha-answer' name='capt'></body></html>"
+    )
+    cap = tnp._solve_captcha(tricky)
+    check("label captcha wins over stray '10 + 5'",
+          cap == ("7", "3 + 4"), f"(got {cap})")
+    # The bug this guards: page-wide scan finds "10 + 5" first -> 15 (wrong).
+    naive = re.search(r"(\d+)\s*\+\s*(\d+)", tricky)
+    check("page-wide scan would have given the wrong answer",
+          str(int(naive.group(1)) + int(naive.group(2))) != "7",
+          f"(wrong={int(naive.group(1)) + int(naive.group(2))})")
+
+    print("\n--- login rate limit (1 attempt/minute) ---")
+    tnp._last_login_attempt = time.time()
+    check("second login inside cooldown is refused", tnp.login() is False)
+    check("cooldown constant is >= 60s", tnp.LOGIN_COOLDOWN >= 60,
+          f"({tnp.LOGIN_COOLDOWN})")
 
     print("\n--- scraping ---")
     rows = tnp.fetch_otps()
@@ -256,7 +283,8 @@ def main():
         tnp.PANEL_URL = panel_url
         tnp.LOGIN_URL = f"{panel_url}/login"
         tnp.SIGNIN_URL = f"{panel_url}/signin"
-        tnp.REPORT_PAGES = [f"{panel_url}/Client/SMSCDRReports"]
+        tnp.REPORT_PAGES = [f"{panel_url}/client/SMSCDRStats"]
+        tnp._last_login_attempt = 0.0
 
     try:
         tnp._tg_send("12345", "x" * 5000)

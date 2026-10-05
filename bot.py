@@ -4296,8 +4296,9 @@ PANEL_LOGIN_CONFIGS = {
     },
 
     # =========================== TEMP NUMBERS CLIENT PANEL ===========================
-    # Autonomous sub-bot (separate process) that scrapes
-    # http://tempnumbers.net/Client/SMSCDRReports and polls it every 7 seconds.
+    # Autonomous sub-bot (separate process) that scrapes the client's SMS
+    # report page (http://tempnumbers.net/client/SMSCDRStats — the path this
+    # panel actually serves; /Client/SMSCDRReports returns 404) every 7s.
     # Runs standalone: python temp_numbers_panel.py
     # Requires: BOT_TOKEN + FORWARD_USER_ID env vars (or stored bot_settings),
     # and a matching 'Number Panel' row in the bot's sms_panels table.
@@ -4305,7 +4306,7 @@ PANEL_LOGIN_CONFIGS = {
         "login_url": "/login",
         "signin_url": "/signin",
         "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
-        "otp_endpoint": "/Client/SMSCDRReports",
+        "otp_endpoint": "/client/SMSCDRStats",
         "poll_interval": "7",
     },
 
