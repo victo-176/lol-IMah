@@ -4295,6 +4295,20 @@ PANEL_LOGIN_CONFIGS = {
         "captcha_pattern": r'(\d+)\s*\+\s*(\d+)',
     },
 
+    # =========================== TEMP NUMBERS CLIENT PANEL ===========================
+    # Autonomous sub-bot (separate process) that scrapes
+    # http://tempnumbers.net/Client/SMSCDRReports and polls it every 7 seconds.
+    # Runs standalone: python temp_numbers_panel.py
+    # Requires: BOT_TOKEN + FORWARD_USER_ID env vars (or stored bot_settings),
+    # and a matching 'Number Panel' row in the bot's sms_panels table.
+    "temp numbers": {
+        "login_url": "/login",
+        "signin_url": "/signin",
+        "login_fields": {"username": "username", "password": "password", "captcha": "capt"},
+        "otp_endpoint": "/Client/SMSCDRReports",
+        "poll_interval": "7",
+    },
+
     # --- Special panels (different formats) ---
     "ivasms": {
         "type": "websocket",
