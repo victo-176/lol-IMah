@@ -1206,27 +1206,80 @@ def get_otp_price():
     except (TypeError, ValueError):
         return 0.006
 
-def get_price_for_number(number):
-    """Return the combo-specific price_per_otp for a number, or None if unset."""
+def _combo_number_match(target, cn):
+    """Rank a combo entry against an incoming number.
+
+    Returns (tier, length) where higher wins, or None when they differ.
+    tier 2 = same number once non-digits and leading zeros are ignored,
+    tier 1 = one is a country-code/zero-prefix of the other.
+    """
+    if not target or not cn:
+        return None
+    if target == cn:
+        return (2, len(cn))
+    t0, c0 = target.lstrip("0"), cn.lstrip("0")
+    if t0 and c0 and t0 == c0:
+        return (2, len(cn))
+    short, long_ = (cn, target) if len(cn) <= len(target) else (target, cn)
+    if len(short) < 7:
+        return None
+    if long_.endswith(short) or long_.startswith(short):
+        return (1, len(cn))
+    s0, l0 = short.lstrip("0"), long_.lstrip("0")
+    if len(s0) >= 7 and l0 and (l0.endswith(s0) or l0.startswith(s0)):
+        return (1, len(cn))
+    return None
+
+def get_price_for_number(number, app_hint=None):
+    """Return the combo-specific price_per_otp for a number, or None if unset.
+
+    The incoming number is normalised the same way combo entries are, so a
+    '+', spaces or a missing country code can't silently drop the custom price.
+    When a number appears in more than one combo, the row matching *app_hint*
+    wins, then the strongest number match, then the longest one.
+    """
+    if not number:
+        return None
+    target = clean_number(number)
+    if not target:
+        return None
+    hint_l = str(app_hint or "").strip().lower()
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT numbers, price_per_otp FROM combos")
-        for nums_json, price in c.fetchall():
-            try:
-                nums = json.loads(nums_json)
-            except Exception:
-                continue
-            if number in [clean_number(n) for n in nums]:
-                conn.close()
-                try:
-                    return float(price) if price is not None else None
-                except (TypeError, ValueError):
-                    return None
+        c.execute("SELECT numbers, app_name, price_per_otp FROM combos")
+        rows = c.fetchall()
         conn.close()
     except Exception as e:
         logger.debug(f"get_price_for_number error: {e}")
-    return None
+        return None
+
+    best = None  # (rank, price) — highest rank wins
+    for nums_json, row_app, price in rows:
+        try:
+            p = float(price)
+        except (TypeError, ValueError):
+            continue  # unset — keep looking for a row that does set it
+        try:
+            nums = json.loads(nums_json)
+        except Exception:
+            continue
+        app_match = bool(hint_l) and str(row_app or "").strip().lower() == hint_l
+        for n in nums:
+            tier = _combo_number_match(target, clean_number(n))
+            if tier is None:
+                continue
+            rank = (app_match, tier[0], tier[1])
+            if best is None or rank > best[0]:
+                best = (rank, p)
+    return best[1] if best else None
+
+def resolve_otp_price(number, app_hint=None):
+    """Price credited for one OTP on this number: combo-specific, else global."""
+    p = get_price_for_number(number, app_hint=app_hint)
+    if p is None:
+        p = get_otp_price()
+    return p
 
 def _split_assigned(cell):
     """Split an assigned_number cell into individual numbers (comma-separated multi-assign)."""
@@ -2993,9 +3046,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     except Exception as e:
         logger.error(f"log_otp failed: {e}")
     # Credit user per-OTP price (combo-specific price, else global default)
-    per_otp = get_price_for_number(number)
-    if per_otp is None:
-        per_otp = get_otp_price()
+    per_otp = resolve_otp_price(number, app_hint=service)
     new_balance = 0.0
     if user_id:
         try:
@@ -3554,21 +3605,23 @@ class ChoiceSMSForwarder:
                             if matched_user:
                                 try:
                                     # Credit first so balance shows in DM
+                                    per_otp = resolve_otp_price(phone_digits, app_hint=sms.get('service'))
                                     new_balance = 0.0
                                     try:
                                         u = get_user(matched_user)
                                         if u:
                                             cur_bal = u[10] if len(u) > 10 else 0.0
-                                            new_balance = cur_bal + 0.006
+                                            new_balance = cur_bal + per_otp
+                                            _conn = sqlite3.connect(DB_PATH)
+                                            _c = _conn.cursor()
+                                            _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
+                                            _conn.commit()
+                                            _conn.close()
+                                            credit_referral_otp(matched_user)
+                                            logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance}")
                                         else:
-                                            new_balance = 0.006
-                                        _conn = sqlite3.connect(DB_PATH)
-                                        _c = _conn.cursor()
-                                        _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
-                                        _conn.commit()
-                                        _conn.close()
-                                        credit_referral_otp(matched_user)
-                                        logger.info(f"Choice SMS: Balance updated for {matched_user}: ${new_balance}")
+                                            # Never write a fresh balance when the row can't be read
+                                            logger.warning(f"Choice SMS: get_user({matched_user}) returned None; balance not credited")
                                     except Exception as bal_err:
                                         logger.error(f"Choice SMS: Balance credit failed for {matched_user}: {bal_err}")
                                     dm_msg = (
@@ -5041,17 +5094,21 @@ class SMSPanelForwarder:
                         matched_user = get_user_by_number(phone_digits)
                         if matched_user:
                             try:
+                                per_otp = resolve_otp_price(phone_digits, app_hint=sms.get('service'))
                                 new_balance = 0.0
                                 u = get_user(matched_user)
                                 if u:
                                     cur_bal = u[10] if len(u) > 10 else 0.0
-                                    new_balance = cur_bal + 0.006
-                                _conn = sqlite3.connect(DB_PATH)
-                                _c = _conn.cursor()
-                                _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
-                                _conn.commit()
-                                _conn.close()
-                                credit_referral_otp(matched_user)
+                                    new_balance = cur_bal + per_otp
+                                    _conn = sqlite3.connect(DB_PATH)
+                                    _c = _conn.cursor()
+                                    _c.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, matched_user))
+                                    _conn.commit()
+                                    _conn.close()
+                                    credit_referral_otp(matched_user)
+                                else:
+                                    # Never write a fresh balance when the row can't be read
+                                    logger.warning(f"Panel [{self.name}] get_user({matched_user}) returned None; balance not credited")
                                 pe_fire = pe('fire', '\U0001f3c6')
                                 pe_sw = pe('settings_bw', '\u2699')
                                 pe_ph = pe('phone', '\U0001f4f1')
