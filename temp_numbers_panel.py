@@ -744,11 +744,12 @@ def main():
         logger.error("Login failed! Check the panel credentials in bot admin.")
         sys.exit(1)
 
-    _tg_send(
-        OTP_GROUPS[0] if OTP_GROUPS else None,
-        f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
-        f"Polling every {POLL_INTERVAL}s",
-    ) if OTP_GROUPS else None
+    if OTP_GROUPS:
+        _tg_send(
+            OTP_GROUPS[0],
+            f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
+            f"Polling every {POLL_INTERVAL}s",
+        )
     logger.info("Monitoring OTPs...")
 
     first_run = True
