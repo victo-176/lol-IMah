@@ -170,20 +170,33 @@ PREMIUM_EMOJI_IDS = {
     # Add more if needed
 }
 
-def load_premium_emojis(path=EMOJI_FILE):
+def load_premium_emojis(path=None):
+    """Load premium emoji ids from emoji.txt.
+
+    Without an explicit path every candidate file is merged: the persistent
+    copy is read first and the repo copy last, so a repo emoji.txt update
+    always wins over an older persisted copy.
+    """
     icons, flags = {}, {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
-    except Exception:
-        return icons, flags
-    for key, val in re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"(\d{15,})"', content):
-        if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
-            flags[key.split('_')[0]] = val
-        else:
+    if path is not None:
+        paths = [path]
+    else:
+        paths = [p for p in dict.fromkeys(_EMOJI_CANDIDATES) if os.path.isfile(p)]
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+        for m in re.finditer(r'(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*"(\d{15,})"', content):
+            key = m.group(1) or m.group(2)
+            val = m.group(3)
+            if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
+                flags[key.split('_')[0]] = val
+            else:
+                icons[key.lower()] = val
+        for val, key in re.findall(r'(\d{15,})\s+-\s+([A-Za-z0-9_]+)', content):
             icons[key.lower()] = val
-    for val, key in re.findall(r'(\d{15,})\s+-\s+([A-Za-z0-9_]+)', content):
-        icons[key.lower()] = val
     return icons, flags
 
 PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
@@ -424,6 +437,12 @@ def _premium_id_for_glyph(glyph):
     m = _BODY_EMOJI_RE.match(glyph)
     return PREMIUM_BODY_IDS.get(m.group(0)) if m else None
 
+UNICODE_FALLBACKS.update({
+    "mail": "\U0001F4E7", "minus": "\u2796",
+    "england": "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F",
+    "scotland": "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F",
+    "wales": "\U0001F3F4\U000E0067\U000E0062\U000E0077\U000E006C\U000E0073\U000E007F",
+})
 
 def premium_icon(name):
     if not name:
@@ -467,6 +486,8 @@ def pe(name, fallback=None, emoji_id=None):
     return fb
 
 def flag_icon_id(iso):
+    if iso is not None and len(str(iso).strip()) == 2 and str(iso).strip().isalpha():
+        return PREMIUM_FLAGS.get(str(iso).strip().upper()) or premium_icon("XX")
     return premium_icon(iso) or premium_icon("XX")
 
 def app_icon_id(app_name):
@@ -475,10 +496,15 @@ def app_icon_id(app_name):
             or premium_icon("fire"))
 
 def flag_emoji_html(iso):
-    """Return unicode flag emoji for the country ISO code."""
+    """Return the premium <tg-emoji> country flag for an ISO code,
+    falling back to the plain unicode regional-indicator flag."""
     if iso and len(str(iso)) == 2:
         code = str(iso).upper()
-        return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in code)
+        uni = "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in code)
+        eid = PREMIUM_FLAGS.get(code)
+        if eid and PREMIUM_EMOJI_OK:
+            return '<tg-emoji emoji-id="%s">%s</tg-emoji>' % (eid, uni)
+        return uni
     return "🌍"
 
 def app_emoji_html(app_name):
@@ -2276,7 +2302,7 @@ _NAME_TO_ISO = {
     "KAZAKHSTAN": "KZ", "UZBEKISTAN": "UZ", "TURKMENISTAN": "TM",
     "TAJIKISTAN": "TJ", "KYRGYZSTAN": "KG", "MONGOLIA": "MN", "CHINA": "CN",
     "JAPAN": "JP", "TANZANIA": "TZ", "KAZAKHSTAN": "KZ", "KAZAKHSTAN": "KZ",
-    "UNKNOWN": "UN",
+    "EUROPE": "EU", "UNKNOWN": "UN",
 }
 
 
@@ -2290,6 +2316,9 @@ def country_flag(value):
     if not v:
         return "\U0001f30d"
     up = v.upper().strip()
+    # 0) UK nations resolve to their own subdivision flag (premium emoji)
+    if up in ("ENGLAND", "SCOTLAND", "WALES"):
+        return pe(up.lower())
     # 1) Name aliases first (covers UK, UAE, DRC, CONGO, USA/Canada, ...)
     iso = _NAME_TO_ISO.get(up)
     if iso and iso != "UN":
@@ -3430,7 +3459,7 @@ def send_to_telegram_group(text, otp_code, number):
                 # FIXED: Retry without parse_mode if HTML fails
                 if 'parse' in resp_text.lower() or 'html' in resp_text.lower():
                     try:
-                        payload2 = {"chat_id": chat_id, "text": text, "reply_markup": json.dumps(kb)}
+                        payload2 = {"chat_id": chat_id, "text": strip_html_tags(text), "reply_markup": json.dumps(kb)}
                         resp2 = requests.post(url, data=payload2, timeout=30)
                         if resp2.status_code == 200:
                             logger.info(f"[GROUP] Retry (no HTML) sent to {chat_id}")

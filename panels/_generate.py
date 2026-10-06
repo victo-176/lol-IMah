@@ -258,6 +258,16 @@ def send_to_groups(text, reply_markup=None):
             r = requests.post(f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendMessage", data=payload, timeout=10)
             if r.status_code == 200:
                 sent += 1
+            elif "parse" in (r.text or "").lower() or "html" in (r.text or "").lower():
+                # Telegram rejected the HTML/premium flag - retry as plain text
+                payload.pop("parse_mode", None)
+                payload["text"] = re.sub(r"<[^>]+>", "", text)
+                plain_url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+                try:
+                    if requests.post(plain_url, data=payload, timeout=10).status_code == 200:
+                        sent += 1
+                except Exception:
+                    pass
         except Exception as exc:
             logger.error(f"Telegram error to {{gid}}: {{exc}}")
     return sent > 0
@@ -274,7 +284,11 @@ def send_otp(sms):
         if m:
             country = m.group(1).upper()
 
-    flag = COUNTRY_FLAGS.get(country, "\\U0001f30d")
+    try:
+        from _premium_flag import flag_html as _flag_html
+    except ImportError:
+        from panels._premium_flag import flag_html as _flag_html
+    flag = _flag_html(COUNTRY_FLAGS, country)
     phone = sms.get("number", "N/A")
     otp = sms["otp"]
     service = sms.get("service", "Unknown")
