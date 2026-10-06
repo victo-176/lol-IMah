@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Verify the OTP group-forwarding fix.
 
-1. Every dynamic field in OTP messages is HTML-escaped (no raw < > &).
+1. Every dynamic field the group sees is HTML-escaped (no raw < > &).
 2. send_html_safe() falls back to plain text when Telegram rejects HTML.
-3. The exact message builders produce parse-safe HTML for hostile inputs.
+3. The shared reference-format builder produces parse-safe HTML for
+   hostile inputs and always carries the REAL otp on the copy button.
 """
 import sys, types as _t, re
 
@@ -33,17 +34,41 @@ check("send_html_safe exists", hasattr(bot, 'send_html_safe'))
 s = bot.strip_html_tags("<b>hi</b> & <code>644-92</code> <#>")
 check("strip_html_tags removes tags", s == "hi & 644-92 ", f"got {s!r}")
 
-# ------------------------------------------------ 3) format_message escapes
+# ------------------------------------------------ 3) reference group builder
+from premium_emoji import build_otp_group_message  # noqa: E402
+
 raw_sms = 'Your code is 64492. Terms & Conditions <support@x.com> <#> do not share'
-fm = bot.format_message("2026-09-18 10:00:00", "2349154635248", raw_sms,
-                        "\U0001f1f3\U0001f1ec", "\U0001f525")
+fm, fk = build_otp_group_message("2349154635248", "64492", "PayPal", "NG",
+                                 number_link="https://t.me/x",
+                                 channel_link="https://t.me/y")
 bad = re.findall(r'&(?!amp;|lt;|gt;|quot;|#)', fm)
-check("format_message has no unescaped &", not bad, f"bad={bad}")
-check("format_message has no raw <", "<support@" not in fm)
-check("format_message OTP intact (5-digit: no hyphen)", "64492" in fm)
-check("format_message 6-digit gets hyphen", "644-92" in bot.format_message(
-    "2026-09-18 10:00:00", "2349154635248", "Your code is 644921",
-    "\U0001f1f3\U0001f1ec", "\U0001f525"))
+check("group text has no unescaped &", not bad, f"bad={bad}")
+check("group text has no raw < outside <tg-emoji>",
+      "<support@" not in fm and "<#>" not in fm,
+      f"fm={fm!r}")
+check("flag / #ISO / tag line present",
+      "#NG" in fm and "#EN" in fm, f"fm={fm!r}")
+check("SMS body never leaks into the group post",
+      "64492. Terms" not in fm and "support@" not in fm)
+copy_btn = fk["inline_keyboard"][0][0]
+check("copy button carries the REAL otp (5-digit, unhyphenated)",
+      copy_btn.get("copy_text", {}).get("text") == "64492",
+      f"btn={copy_btn}")
+check("copy button label shows the service | otp",
+      "PayPal | 64492" in copy_btn["text"], f"text={copy_btn['text']!r}")
+row2 = fk["inline_keyboard"][1]
+check("NUMBER and CHANNEL buttons are url buttons",
+      row2[0].get("url") == "https://t.me/x"
+      and row2[1].get("url") == "https://t.me/y",
+      f"row2={row2}")
+fm2, _fk2 = build_otp_group_message("234<&915", "644921", "PayPal", "NG")
+check("hostile number is HTML-escaped", "<&" not in fm2, f"fm2={fm2!r}")
+check("6-digit otp stays whole on the copy button",
+      _fk2["inline_keyboard"][0][0]["copy_text"]["text"] == "644921")
+check("callback fallback mode builds copy_<otp>",
+      build_otp_group_message("2349154635248", "644921", "PayPal", "NG",
+                              copy_mode="callback")[1]["inline_keyboard"][0][0]
+      .get("callback_data") == "copy_644921")
 
 # ------------------------------------------------ 4) send_html_safe fallback
 sent = {}

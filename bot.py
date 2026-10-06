@@ -187,6 +187,13 @@ def load_premium_emojis(path=EMOJI_FILE):
     return icons, flags
 
 PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
+
+# The OTP group post format (text + inline keyboard) is built by the shared
+# dep-free module so every sender — bot.py's three forwarders and
+# temp_numbers_panel.py — posts exactly the same layout with the same ids.
+from premium_emoji import (build_otp_group_message, APP_GLYPHS,
+                           APP_ICON_ALIASES, ENVELOPE_APPS,
+                           kb_without_copy as _kb_without_copy)
 # Toggle for premium emoji – set to False if Telegram keeps rejecting custom emoji
 PREMIUM_EMOJI_OK = os.getenv("PREMIUM_EMOJI", "1") == "1"
 
@@ -325,11 +332,23 @@ EXTRA_BODY_EMOJIS = {
     "\u2139\ufe0f": "5323442290708985472",   # info
     "⬅\ufe0f": "5875082500023258804",   # back
     "➡\ufe0f": "5875506366050734240",   # strelka_right
-    "✈\ufe0f": "5206208353751024833",   # telegram
+    "✈\ufe0f": "5330237710655306682",   # telegram
     # The shield is already mapped above under its bare form; this VS16 form
     # must match whole so the trailing variation selector is not left outside
     # the tag. Same id on purpose.
     "\U0001F6E1\ufe0f": "5190447043545438788",  # c_shield
+}
+
+# Icon names used by ibtn()/rbtn()/pe() that no emoji.txt entry covers, mapped
+# to the id of the same picture already used in the body map above.
+ICON_ALIASES = {
+    "mail": "5967280668885913944",        # envelope  (📧)
+    "clipboard": "5877597667231534929",   # list
+    "bot": "5931415565955503486",         # bot_ai   (🤖)
+    "call": "5411604122321302582",        # telefon  (📞)
+    "flag": "5460755126761312667",        # red_flag (🚨)
+    "flag_green": "5192812028632274956",  # 🟢
+    "clock_alarm": "5879785854284599288",  # info_bw, used as ⏰ elsewhere
 }
 
 # Character -> premium id, used to upgrade plain emoji in message bodies.
@@ -339,15 +358,30 @@ PREMIUM_BODY_IDS = {}
 for _n, (_c, _i) in PREMIUM_NAMED.items():
     if _c not in PREMIUM_BODY_IDS:
         PREMIUM_BODY_IDS[_c] = _i
+UNICODE_FALLBACKS.setdefault("mail", "\U0001F4E7")
+UNICODE_FALLBACKS.setdefault("clipboard", "\U0001F4CB")
+UNICODE_FALLBACKS.setdefault("bot", "\U0001F916")
+UNICODE_FALLBACKS.setdefault("call", "\U0001F4DE")
+UNICODE_FALLBACKS.setdefault("flag", "\U0001F6A8")
+UNICODE_FALLBACKS.setdefault("flag_green", "\U0001F7E2")
+UNICODE_FALLBACKS.setdefault("clock_alarm", "⏰")
 for _c, _i in GLOBAL_BODY_EMOJIS.items():
     if _c not in PREMIUM_BODY_IDS:
         PREMIUM_BODY_IDS[_c] = _i
 for _c, _i in EXTRA_BODY_EMOJIS.items():
     if _c not in PREMIUM_BODY_IDS:
         PREMIUM_BODY_IDS[_c] = _i
+# Country flags from emoji.txt ("NG": "id" entries) become body glyphs too, so
+# a flag written anywhere in a message is upgraded, not just flag_icon_id().
+for _iso, _fid in PREMIUM_FLAGS.items():
+    if isinstance(_iso, str) and len(_iso) == 2 and _iso.isalpha():
+        _glyph = "".join(chr(0x1F1E6 + ord(c.upper()) - ord("A")) for c in _iso)
+        if _glyph not in PREMIUM_BODY_IDS:
+            PREMIUM_BODY_IDS[_glyph] = _fid
 
 # Named ids must also be reachable by name through premium_icon()/pe().
 PREMIUM_EMOJI_IDS.update({n: i for n, (_c, i) in PREMIUM_NAMED.items()})
+PREMIUM_EMOJI_IDS.update(ICON_ALIASES)
 # Keep the degraded (non-premium) glyph in step with the premium one, so a
 # client without custom-emoji support still sees the intended symbol.
 for _n, (_c, _i) in PREMIUM_NAMED.items():
@@ -432,6 +466,8 @@ def premium_icon(name):
     # Check hardcoded IDs first
     if n.lower() in PREMIUM_EMOJI_IDS:
         return PREMIUM_EMOJI_IDS[n.lower()]
+    if n in ICON_ALIASES:
+        return ICON_ALIASES[n]
     direct = PREMIUM_FLAGS.get(n) or PREMIUM_ICONS.get(n.lower())
     if direct:
         return direct
@@ -469,28 +505,56 @@ def pe(name, fallback=None, emoji_id=None):
 def flag_icon_id(iso):
     return premium_icon(iso) or premium_icon("XX")
 
+def _norm_app(name):
+    """Service label -> emoji.txt key: `Apple Music` -> `apple_music`."""
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+
 def app_icon_id(app_name):
-    # Custom apps (not in the known list) get the fire premium emoji everywhere
-    return (premium_icon(app_name) or premium_icon(str(app_name).lower())
-            or premium_icon("fire"))
+    """Premium id for an app/service: the emoji.txt app-icon ids win, then
+    the generic maps, then the envelope for unknown/email-style OTPs (the
+    reference format uses an envelope there), then fire. Mirrors
+    premium_emoji.app_icon_id() with bot's own id maps."""
+    key = _norm_app(app_name)
+    if not key:
+        return premium_icon("fire")
+    target = APP_ICON_ALIASES.get(key, key)
+    eid = PREMIUM_ICONS.get(key) or PREMIUM_ICONS.get(target)
+    if not eid:
+        eid = premium_icon(str(app_name).strip())
+    if not eid and (key in ENVELOPE_APPS or target in ENVELOPE_APPS):
+        eid = ICON_ALIASES.get("mail")
+    if not eid:
+        eid = premium_icon(target)
+    return eid or premium_icon("fire")
 
 def flag_emoji_html(iso):
-    """Return unicode flag emoji for the country ISO code."""
+    """Return the country's flag, as a premium <tg-emoji> when an id exists."""
+    glyph = flag_unicode(iso)
+    eid = flag_icon_id(iso) if iso else None
+    if eid and PREMIUM_EMOJI_OK:
+        return f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>'
+    return glyph
+
+
+def flag_unicode(iso):
+    """Plain unicode flag for the country ISO code."""
     if iso and len(str(iso)) == 2:
         code = str(iso).upper()
         return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in code)
-    return "🌍"
+    return "\U0001F30D"
 
 def app_emoji_html(app_name):
+    """The app's icon as <tg-emoji> when an id exists, else its plain glyph."""
+    key = _norm_app(app_name)
+    target = APP_ICON_ALIASES.get(key, key)
+    if key in ENVELOPE_APPS:
+        fb = APP_GLYPHS["envelope"]
+    else:
+        fb = APP_GLYPHS.get(target) or APP_GLYPHS["default"]
     eid = app_icon_id(app_name)
     if eid and PREMIUM_EMOJI_OK:
-        fb = {"whatsapp": "💬", "telegram": "✈️", "facebook": "📘", "tiktok": "🎵",
-              "google": "🔍", "instagram": "📸", "twitter": "🐦", "discord": "🎮",
-              "default": "📱"}.get(str(app_name).lower(), "🔥")
         return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
-    return {"whatsapp": "💬", "telegram": "✈️", "facebook": "📘", "tiktok": "🎵",
-            "google": "🔍", "instagram": "📸", "twitter": "🐦", "discord": "🎮",
-            "default": "📱"}.get(str(app_name).lower() if app_name else "", "🔥")
+    return fb
 
 # =========================== LIVE CHAT STEP HANDLERS ===========================
 # =========================== CUSTOM BUTTON HELPERS ===========================
@@ -548,7 +612,10 @@ def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, ico
     text, icon_id = _btn_text_and_icon(text, icon, icon_id)
     kwargs = {"text": text}
     if copy_text_str:
-        kwargs["callback_data"] = "fake_copy_btn"
+        # Fallback path only: if this telebot cannot attach a copy_text
+        # button the click still lands somewhere sensible (handled in
+        # handle_callback); prefer a caller-supplied callback when given.
+        kwargs["callback_data"] = callback_data or "fake_copy_btn"
     else:
         if callback_data:
             kwargs["callback_data"] = callback_data
@@ -3360,8 +3427,11 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
             logger.error(f"DM failed: {e}")
 
     try:
-        text = format_message(date_str, number, sms, flag_html, app_emoji)
-        send_to_telegram_group(text, otp, number)
+        number_link, channel_link = _otp_group_links()
+        text, kb = build_otp_group_message(number, otp, service, iso,
+                                           number_link=number_link,
+                                           channel_link=channel_link)
+        send_to_telegram_group(text, otp, number, kb)
     except Exception as e:
         logger.error(f"send_to_telegram_group failed: {e}")
 
@@ -3371,74 +3441,150 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     except Exception as rt_err:
         logger.debug(f"Real-time OTP to admin failed: {rt_err}")
 
-def format_message(date_str, number, sms, flag_html, app_emoji):
-    masked = mask_number(number)
-    otp = extract_otp(sms)
-    service_name = detect_service(sms).upper()
-    msg_text = sms[:200] if sms else ""
-    # Strip disclaimer text from SMS - be aggressive, remove any occurrence
-    msg_text = re.sub(r"(?i)Don'?t\s+share\s+this\s+code\s+with\s+others\.?", '', msg_text).strip()
-    msg_text = re.sub(r"(?i)please\s+do\s+not\s+disclose\s+it\s+to\s+anyone\.?", '', msg_text).strip()
-    msg_text = re.sub(r"(?i)disclose\s+it\s+to\s+anyone\.?", '', msg_text).strip()
-    msg_text = re.sub(r"\s+", ' ', msg_text).strip()  # collapse multiple spaces
-    # Format OTP with hyphen if 6 digits
-    otp_display = otp
-    if len(otp) == 6:
-        otp_display = f"{otp[:3]}-{otp[3:]}"
-    return (
-        f"<b>Anonmatrixx</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{flag_html} <b>{html_mod.escape(str(service_name))}</b> 🟢\n"
-        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
-        f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
-        f"📩 <b>Message:</b> <code>{html_mod.escape(msg_text[:200])}</code>\n"
-        f"⏰ {html_mod.escape(str(date_str))}\n"
-        f"━━━━━━━━━━━━━━━"
-    )
-
-def send_to_telegram_group(text, otp_code, number):
+def _otp_group_links():
+    """URLs for the OTP group's NUMBER / CHANNEL buttons."""
     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
-    kb = {"inline_keyboard": [[
-        {"text": "📋 Copy OTP", "callback_data": f"copy_{otp_code}"},
-        {"text": "🤖 BOT LINK", "url": bot_link}
-    ]]}
+    number_link = get_setting('number_link') or bot_link
+    channel_link = get_setting('channel_link') or 'https://t.me/Anonmatrixx_channel'
+    return number_link, channel_link
+
+
+def _otp_group_iso(number, hint=None):
+    """ISO-2 for the group post: a clean panel hint wins, then the number's
+    dialling prefix, then the hint resolved as a country name/dial code."""
+    h = str(hint or "").strip()
+    if len(h) == 2 and h.isalpha():
+        return h.upper()
+    _name, iso, _x = get_country_info(str(number or ""))
+    if iso and iso != "UN":
+        return iso
+    if h:
+        up = h.upper()
+        iso = _NAME_TO_ISO.get(up)
+        if iso and iso != "UN":
+            return iso
+        for _dial, (_n, _i) in COUNTRY_CODES.items():
+            if _n.upper() == up:
+                return _i
+        _n2, iso2, _x2 = get_country_info(h)
+        if iso2 and iso2 != "UN":
+            return iso2
+    return ""
+
+
+def _tg_post(url, payload):
+    """POST one raw Bot API call; returns (status_code, body_text)."""
+    try:
+        resp = requests.post(url, data=payload, timeout=30)
+        return resp.status_code, resp.text or ""
+    except Exception as e:
+        return 0, str(e)
+
+
+def _tg_msg_id(body):
+    """message_id from a sendMessage response body, or 0."""
+    try:
+        return int(json.loads(body)["result"]["message_id"])
+    except Exception:
+        return 0
+
+
+def _retry_after(body):
+    """Seconds to wait from a 429 response (default 10)."""
+    m = re.search(r"retry after (\d+)", str(body))
+    return int(m.group(1)) + 1 if m else 10
+
+
+def post_otp_group(chat_id, text, kb, otp="", tag="GROUP"):
+    """Post one OTP-group message over the raw Bot API with fallbacks.
+
+    Tries the full keyboard, then the same keyboard with copy buttons as
+    `copy_<otp>` callbacks; on a parse error it retries the plain text with
+    tags stripped — the OTP must always land. Returns (ok, retry_after,
+    message_id); retry_after > 0 means HTTP 429, already computed for the
+    caller to sleep out.
+    """
     # This posts through the raw Bot API, so it never reaches the send_message
     # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
     # the OTP groups get plain unicode while every other message is premium.
     text = premiumize(text)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    attempts = [kb] if kb else [None]
+    if kb:
+        no_copy = _kb_without_copy(kb, otp)
+        if no_copy != kb:
+            attempts.append(no_copy)
+    last_err = ""
+    for markup in attempts:
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if markup:
+            payload["reply_markup"] = json.dumps(markup)
+        status, body = _tg_post(url, payload)
+        if status == 200:
+            return True, 0, _tg_msg_id(body)
+        if status == 429:
+            return False, _retry_after(body), 0
+        if status == 0:
+            last_err = body
+            continue
+        last_err = f"HTTP {status} - {body[:300]}"
+        low = body.lower()
+        if "parse" in low or "html" in low or "entity" in low:
+            # Hostile SMS HTML: drop parse_mode and the tags, keep the
+            # keyboard — and never publish the raw <tg-emoji> tags.
+            payload2 = {"chat_id": chat_id, "text": strip_html_tags(text),
+                        "reply_markup": json.dumps(markup) if markup else None}
+            status2, body2 = _tg_post(url, payload2)
+            if status2 == 200:
+                return True, 0, _tg_msg_id(body2)
+            if status2 == 429:
+                return False, _retry_after(body2), 0
+            last_err = f"HTTP {status2} - {body2[:300]}"
+    logger.error("[%s] OTP post failed to %s: %s", tag, chat_id, last_err)
+    return False, 0, 0
+
+
+def send_to_telegram_group(text, otp_code, number, kb=None):
+    """Post one OTP-group message to every configured group.
+
+    `kb` is the reference-format keyboard from build_otp_group_message();
+    without it a plain copy/bot-link fallback keyboard is built.
+    """
+    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
+    if not kb:
+        kb = {"inline_keyboard": [[
+            {"text": "⧉ Copy OTP", "copy_text": {"text": str(otp_code)}}],
+            [{"text": "🤖 BOT LINK", "url": bot_link}]]}
+    # This posts through the raw Bot API, so it never reaches the send_message
+    # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
+    # the OTP groups get plain unicode while every other message is premium.
+    text = premiumize(text)
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     if not chat_ids:
         chat_ids = ['-1003904867859']
         logger.warning("[GROUP] No OTP groups configured, using default group")
     sent_count = 0
     for chat_id in chat_ids:
-        try:
-            payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": json.dumps(kb)}
-            resp = requests.post(url, data=payload, timeout=30)
-            if resp.status_code == 200:
-                logger.info(f"[GROUP] OTP sent to group {chat_id}")
-                sent_count += 1
-                msg_id = resp.json()["result"]["message_id"]
-                threading.Thread(target=lambda: time.sleep(300) or requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
-                    data={"chat_id": chat_id, "message_id": msg_id}, timeout=10
-                ), daemon=True).start()
-            else:
-                resp_text = resp.text[:300] if resp.text else ''
-                logger.error(f"[GROUP] Send failed ({chat_id}): HTTP {resp.status_code} - {resp_text}")
-                # FIXED: Retry without parse_mode if HTML fails
-                if 'parse' in resp_text.lower() or 'html' in resp_text.lower():
-                    try:
-                        payload2 = {"chat_id": chat_id, "text": text, "reply_markup": json.dumps(kb)}
-                        resp2 = requests.post(url, data=payload2, timeout=30)
-                        if resp2.status_code == 200:
-                            logger.info(f"[GROUP] Retry (no HTML) sent to {chat_id}")
-                            sent_count += 1
-                    except Exception as retry_err:
-                        logger.error(f"[GROUP] Retry failed: {retry_err}")
-        except Exception as e:
-            logger.error(f"[GROUP] Send error ({chat_id}): {e}")
+        ok, rate, msg_id = post_otp_group(chat_id, text, kb, otp_code, tag="GROUP")
+        if not ok and rate:
+            logger.info(f"[GROUP] Rate limited on {chat_id}, waiting {rate}s")
+            time.sleep(min(rate, 35))
+            ok, rate, msg_id = post_otp_group(chat_id, text, kb, otp_code, tag="GROUP")
+        if not ok:
+            continue
+        logger.info(f"[GROUP] OTP sent to group {chat_id}")
+        sent_count += 1
+        if msg_id:
+            # Delete the post after 5 minutes (existing behaviour). The ids
+            # are bound as default args so concurrent groups never delete
+            # each other's messages when the threads wake up.
+            threading.Thread(
+                target=lambda cid=chat_id, mid=msg_id: (
+                    time.sleep(300),
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                        data={"chat_id": cid, "message_id": mid}, timeout=10)),
+                daemon=True).start()
     if sent_count == 0:
         logger.error(f"[GROUP] FAILED to send OTP to ANY group! chat_ids={chat_ids}")
 
@@ -3823,57 +3969,32 @@ class ChoiceSMSForwarder:
                     if is_otp_seen(uid):
                         continue
                     mark_otp_seen(uid)
-                    # Forward the OTP
-                    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
-                    full_clean = self._clean_text(sms['full_text'])[:200]
-                    masked = self._mask_number(sms['phone'])
-                    cflag = country_flag(sms['country'])
-                    otp_display = sms.get('otp') or ''
+                    # Forward the OTP in the reference group format: the
+                    # service comes from the panel's own record, the number
+                    # drives the flag/#ISO line, and the copy button carries
+                    # the real (unformatted) OTP.
+                    otp_plain = str(sms.get('otp') or '')
+                    otp_display = otp_plain
                     if otp_display and len(otp_display) == 6:
                         otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
-                    msg = (
-                        f"<b>Anonmatrixx</b>\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"{cflag} <b>{html_mod.escape(str(sms['service']).upper())}</b> 🟢\n"
-                        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
-                    )
-                    if otp_display:
-                        msg += f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
-                    msg += (
-                        f"📩 <b>Message:</b> <code>{html_mod.escape(full_clean)}</code>\n"
-                        f"⏰ {html_mod.escape(str(sms['timestamp']))}\n"
-                        f"━━━━━━━━━━━━━━━"
-                    )
-                    kb = types.InlineKeyboardMarkup(row_width=2)
-                    kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=_copy_cb(full_clean)),
-                        types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
-                    )
+                    cflag = country_flag(sms['country'])
+                    iso = _otp_group_iso(sms.get('phone'), sms.get('country'))
+                    number_link, channel_link = _otp_group_links()
+                    msg, kb = build_otp_group_message(
+                        sms.get('phone'), otp_plain, sms.get('service'), iso,
+                        number_link=number_link, channel_link=channel_link)
                     groups = self._get_groups()
                     sent = 0
                     for gid in groups:
-                        try:
-                            send_html_safe(gid, msg, kb)
+                        ok, rate, _mid = post_otp_group(gid, msg, kb, otp_plain,
+                                                        tag="Choice SMS")
+                        if not ok and rate:
+                            logger.info(f"Choice SMS: Rate limited, waiting {rate}s...")
+                            time.sleep(min(rate, 35))
+                            ok, _rate2, _mid = post_otp_group(gid, msg, kb, otp_plain,
+                                                              tag="Choice SMS")
+                        if ok:
                             sent += 1
-                        except Exception as e:
-                            logger.error(f"Choice SMS: Failed to send to {gid}: {e}")
-                            # If rate limited, wait and retry once
-                            if '429' in str(e):
-                                retry_after = 10
-                                try:
-                                    import re as _re
-                                    m = _re.search(r'retry after (\d+)', str(e))
-                                    if m:
-                                        retry_after = int(m.group(1)) + 1
-                                except:
-                                    pass
-                                logger.info(f"Choice SMS: Rate limited, waiting {retry_after}s...")
-                                time.sleep(retry_after)
-                                try:
-                                    send_html_safe(gid, msg, kb)
-                                    sent += 1
-                                except Exception as e2:
-                                    logger.error(f"Choice SMS: Retry failed for {gid}: {e2}")
                     logger.info(f"Choice SMS: Message forwarded ({sms.get('otp') or 'no OTP'}) to {sent}/{len(groups)} groups")
 
                     # === Match number to user and DM them ===
@@ -5341,46 +5462,31 @@ class SMSPanelForwarder:
                         continue
                     mark_otp_seen(uid_key)
 
-                    bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
-                    full_clean = self._clean_text(sms['full_text'])[:200]
-                    masked = self._mask_number(sms['phone'])
-                    cflag = country_flag(sms['country'])
-                    otp_display = sms.get('otp') or ''
+                    # Reference group format: panel service, watermark
+                    # number, real OTP on the copy button.
+                    otp_plain = str(sms.get('otp') or '')
+                    otp_display = otp_plain
                     if otp_display and len(otp_display) == 6:
                         otp_display = f"{otp_display[:3]}-{otp_display[3:]}"
+                    cflag = country_flag(sms['country'])
+                    iso = _otp_group_iso(sms.get('phone'), sms.get('country'))
+                    number_link, channel_link = _otp_group_links()
+                    msg, kb = build_otp_group_message(
+                        sms.get('phone'), otp_plain, sms.get('service'), iso,
+                        number_link=number_link, channel_link=channel_link)
 
-                    msg = (
-                        f"<b>Anonmatrixx</b>\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"{cflag} <b>{html_mod.escape(str(sms['service']).upper())}</b> 🟢\n"
-                        f"📱 <code>{html_mod.escape(str(masked))}</code>\n"
-                    )
-                    if otp_display:
-                        msg += f"🔑 <b>OTP:</b> <code>{html_mod.escape(str(otp_display))}</code>\n"
-                    msg += (
-                        f"📩 <b>Message:</b> <code>{html_mod.escape(full_clean)}</code>\n"
-                        f"⏰ {html_mod.escape(str(sms['timestamp']))}\n"
-                        f"━━━━━━━━━━━━━━━"
-                    )
-                    kb = types.InlineKeyboardMarkup(row_width=2)
-                    kb.add(
-                        types.InlineKeyboardButton("\U0001f4cb Copy Message", callback_data=_copy_cb(full_clean)),
-                        types.InlineKeyboardButton("\U0001f916 BOT LINK", url=bot_link)
-                    )
                     groups = self._get_groups()
                     sent = 0
                     for gid in groups:
-                        try:
-                            send_html_safe(gid, msg, kb)
+                        ok, rate, _mid = post_otp_group(gid, msg, kb, otp_plain,
+                                                        tag=f"Panel [{self.name}]")
+                        if not ok and rate:
+                            logger.info(f"Panel [{self.name}] rate limited, waiting {rate}s")
+                            time.sleep(min(rate, 35))
+                            ok, _rate2, _mid = post_otp_group(gid, msg, kb, otp_plain,
+                                                              tag=f"Panel [{self.name}]")
+                        if ok:
                             sent += 1
-                        except Exception as e:
-                            if '429' in str(e):
-                                time.sleep(10)
-                                try:
-                                    send_html_safe(gid, msg, kb)
-                                    sent += 1
-                                except:
-                                    pass
 
                     # Match number to user and DM
                     phone_digits = re.sub(r'\D', '', sms.get('phone', ''))
@@ -5993,7 +6099,7 @@ def show_leaderboard(chat_id):
     if not rows:
         text += "No data yet."
     else:
-        medals = ['🥇', '🥈', '🥉']
+        medals = ['1️⃣', '2️⃣', '3️⃣']
         for i, (uid, name, cnt) in enumerate(rows, 1):
             rank = medals[i-1] if i <= 3 else f"{i}."
             safe_name = html_mod.escape(str(name or uid))
@@ -8214,6 +8320,12 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn(f"{pe('back', '⬅️')} Cancel", callback_data="admin_all_panels", style="danger", icon="back"))
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    # A copy button on a client that could not attach native copy_text:
+    # explain instead of falling through to "Unknown action."
+    if data == "fake_copy_btn":
+        bot.answer_callback_query(call.id, "Press and hold the button to copy.", show_alert=True)
         return
 
     # Handle copy OTP buttons from OTP groups

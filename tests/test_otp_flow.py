@@ -151,8 +151,8 @@ def test_group_send_in_bot():
 
     # Find the run() method's group-send logic
     assert "self._get_groups()" in src, "run() should call _get_groups()"
-    # send_html_safe() = HTML send with plain-text fallback on parse errors
-    assert "send_html_safe(gid, msg, kb)" in src, "run() should send to each group via send_html_safe"
+    # post_otp_group() = raw HTML send with plain-text + copy-button fallbacks
+    assert "post_otp_group(gid, msg, kb" in src, "run() should send to each group via post_otp_group"
 
     # _get_groups reads from otp_groups setting
     assert "'otp_groups'" in src, "_get_groups should read otp_groups"

@@ -342,8 +342,15 @@ def main():
     check("main() delivered it once per destination",
           sum("445566" in t for t in delivered_texts) == 2,
           f"({sum('445566' in t for t in delivered_texts)} posts)")
-    check("OTP formatted as 445-566",
-          any("445-566" in t for t in delivered_texts))
+    # Reference format: the OTP rides on the green copy button (label +
+    # copy_text payload), and the body carries the watermark number, flag
+    # and #ISO / #EN tag lines instead of the old boxed layout.
+    check("copy button carries the real OTP 445566",
+          any("copy_text" in t and "445566" in t
+              for t in delivered_texts))
+    check("group post uses the reference format (flag + #GH + #EN)",
+          any("#GH" in t and "#EN" in t for t in delivered_texts),
+          f"({sum('#GH' in t for t in delivered_texts)} posts)")
     check("header rule is not duplicated",
           not any(t.count("Anonmatrixx") > 1 for t in delivered_texts))
 

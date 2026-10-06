@@ -59,7 +59,7 @@ import requests
 # Premium emoji ids for the group OTPs. Kept import-safe (no telebot, no DB),
 # and the maps are pinned identical to bot.py's by tests/test_otp_group_premium.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from premium_emoji import premiumize  # noqa: E402
+from premium_emoji import premiumize, build_otp_group_message, kb_without_copy  # noqa: E402
 
 try:
     from bs4 import BeautifulSoup
@@ -738,11 +738,20 @@ def _tg_send(chat_id, text, reply_markup=None):
     return False
 
 
-def send_to_groups(text, reply_markup=None):
-    """Send the OTP to every configured OTP group."""
+def send_to_groups(text, reply_markup=None, otp=""):
+    """Send the OTP to every configured OTP group.
+
+    If a group rejects the copy_text button, retry once with the same
+    keyboard downgraded to a `copy_<otp>` callback so the OTP still lands.
+    """
     sent = 0
     for gid in OTP_GROUPS:
-        if _tg_send(gid, text, reply_markup):
+        ok = _tg_send(gid, text, reply_markup)
+        if not ok and reply_markup:
+            fallback = kb_without_copy(reply_markup, otp)
+            if fallback != reply_markup:
+                ok = _tg_send(gid, text, fallback)
+        if ok:
             sent += 1
             logger.info("Group %s: sent", gid)
     return sent > 0
@@ -770,29 +779,19 @@ def send_otp(sms):
     """Format and deliver one OTP to the group(s) and the owner's chat."""
     service = _clean(sms.get("service", "Temp Numbers")) or "Temp Numbers"
     phone = sms.get("number", "N/A")
-    otp = sms["otp"]
-    ts = sms.get("timestamp", "")
-    body = _clean(sms.get("full_text", ""))[:300]
+    otp = str(sms["otp"])
 
-    otp_display = f"{otp[:3]}-{otp[3:]}" if len(otp) == 6 else otp
-    rule = "\u2501" * 15
-    msg = (
-        "<b>Anonmatrixx</b>\n"
-        f"{rule}\n"
-        f"\U0001F4CD <b>{html_mod.escape(service.upper())}</b> \U0001F7E2\n"
-        f"\U0001F4F1 <code>{html_mod.escape(phone)}</code>\n"
-        f"\U0001F511 <b>OTP:</b> <code>{html_mod.escape(otp_display)}</code>\n"
-        f"\U0001F4E9 <b>Message:</b> <code>{html_mod.escape(body)}</code>\n"
-        f"\u23F0 {html_mod.escape(ts)}\n"
-        f"{rule}"
+    # Same reference format the main bot posts: flag + #ISO + app icon +
+    # watermark number, #AR/#EN tag line, green copy button carrying the
+    # real OTP, blue NUMBER/CHANNEL links.
+    number_link = get_setting("number_link") or BOT_LINK
+    channel_link = get_setting("channel_link") or "https://t.me/Anonmatrixx_channel"
+    msg, kb = build_otp_group_message(
+        phone, otp, service,
+        number_link=number_link, channel_link=channel_link,
     )
-    kb = {"inline_keyboard": [[
-        {"text": "\U0001F4CB Copy Message",
-         "callback_data": f"copy_{otp}"},
-        {"text": "\U0001F916 BOT LINK", "url": BOT_LINK},
-    ]]}
 
-    sent_groups = send_to_groups(msg, kb)
+    sent_groups = send_to_groups(msg, kb, otp)
     sent_main = forward_to_main_bot(msg, otp)
     return sent_groups or sent_main
 
