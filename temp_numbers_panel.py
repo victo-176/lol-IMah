@@ -59,7 +59,13 @@ import requests
 # Premium emoji ids for the group OTPs. Kept import-safe (no telebot, no DB),
 # and the maps are pinned identical to bot.py's by tests/test_otp_group_premium.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from premium_emoji import premiumize  # noqa: E402
+from premium_emoji import (  # noqa: E402
+    group_otp_body,
+    group_otp_buttons,
+    iso_from_flag,
+    premiumize,
+)
+from panels._premium_flag import flag_html  # noqa: E402,E401
 
 try:
     from bs4 import BeautifulSoup
@@ -495,6 +501,11 @@ def _build_sms(cells, roles=None):
         date_cell = next(
             (cells[i] for i, role in roles.items() if role == "date"
              and i < len(cells)), "")
+        # The Range column carries the country ("GHANA 233") -- the group
+        # format needs it for the flag and the #ISO tag.
+        range_cell = next(
+            (cells[i] for i, role in roles.items() if role == "range"
+             and i < len(cells)), "")
         message = _clean(sms_cell)
         otp = extract_otp(message)
         if not otp:
@@ -508,6 +519,7 @@ def _build_sms(cells, roles=None):
             "number": number or "N/A",
             "full_text": message[:500],
             "timestamp": timestamp,
+            "country": range_cell,
         }
 
     message = _pick_message(cells)
@@ -767,30 +779,26 @@ def forward_to_main_bot(text, otp_code):
 
 
 def send_otp(sms):
-    """Format and deliver one OTP to the group(s) and the owner's chat."""
+    """Format and deliver one OTP to the group(s) and the owner's chat.
+
+    Group messages use the shared screenshot format:
+      {flag} #{ISO} <mail emoji> {phone}
+      #{SERVICE}
+    with the green "clipboard-switch | <code>" copy button and the
+    NUMBER / CHANNEL link buttons, every button carrying a premium
+    icon_custom_emoji_id so the icons render as premium emoji.
+    """
     service = _clean(sms.get("service", "Temp Numbers")) or "Temp Numbers"
     phone = sms.get("number", "N/A")
     otp = sms["otp"]
-    ts = sms.get("timestamp", "")
-    body = _clean(sms.get("full_text", ""))[:300]
 
-    otp_display = f"{otp[:3]}-{otp[3:]}" if len(otp) == 6 else otp
-    rule = "\u2501" * 15
-    msg = (
-        "<b>Anonmatrixx</b>\n"
-        f"{rule}\n"
-        f"\U0001F4CD <b>{html_mod.escape(service.upper())}</b> \U0001F7E2\n"
-        f"\U0001F4F1 <code>{html_mod.escape(phone)}</code>\n"
-        f"\U0001F511 <b>OTP:</b> <code>{html_mod.escape(otp_display)}</code>\n"
-        f"\U0001F4E9 <b>Message:</b> <code>{html_mod.escape(body)}</code>\n"
-        f"\u23F0 {html_mod.escape(ts)}\n"
-        f"{rule}"
-    )
-    kb = {"inline_keyboard": [[
-        {"text": "\U0001F4CB Copy Message",
-         "callback_data": f"copy_{otp}"},
-        {"text": "\U0001F916 BOT LINK", "url": BOT_LINK},
-    ]]}
+    # Country comes from the report's Range column ("GHANA 233").
+    words = str(sms.get("country") or "").split()
+    country = words[0].upper() if words else ""
+    flag = flag_html(COUNTRY_FLAGS, country)
+    iso = iso_from_flag(COUNTRY_FLAGS.get(country) or "")
+    msg = group_otp_body(flag, iso, phone, service)
+    kb = {"inline_keyboard": group_otp_buttons(otp, BOT_LINK)}
 
     sent_groups = send_to_groups(msg, kb)
     sent_main = forward_to_main_bot(msg, otp)

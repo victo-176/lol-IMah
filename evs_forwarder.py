@@ -24,6 +24,13 @@ import sqlite3
 import requests
 from datetime import datetime, timedelta
 
+# Premium group-forward format, shared with bot.py's OTP groups.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from premium_emoji import (  # noqa: E402
+    group_otp_body, group_otp_buttons, iso_from_flag, premiumize,
+)
+from panels._premium_flag import flag_html  # noqa: E402,E401
+
 # ═══════════════════════════ CONFIG ═══════════════════════════
 PANEL_NAME = "EVS SMS"
 DEFAULT_LOGIN_TYPE = "client"
@@ -209,7 +216,7 @@ def send_to_groups(text, reply_markup=None):
     sent = 0
     for gid in OTP_GROUPS:
         try:
-            payload = {"chat_id": gid, "text": text, "parse_mode": "HTML"}
+            payload = {"chat_id": gid, "text": premiumize(text), "parse_mode": "HTML"}
             if reply_markup:
                 payload["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else reply_markup
             r = requests.post(
@@ -235,8 +242,8 @@ def forward_to_main_bot(text, otp_code):
             {"text": f"📋 {otp_code}", "callback_data": f"copy_{otp_code}"},
         ]]}
         payload = {
-            "chat_id": int(FORWARD_USER),
-            "text": text,
+        "chat_id": int(FORWARD_USER),
+        "text": premiumize(text),
             "parse_mode": "HTML",
             "reply_markup": json.dumps(kb),
         }
@@ -266,24 +273,17 @@ def send_otp(sms):
         if m:
             country = m.group(1).upper()
 
-    flag = COUNTRY_FLAGS.get(country, "🌍")
+    flag = flag_html(COUNTRY_FLAGS, country)
     phone = sms.get("number", "N/A")
     otp = sms["otp"]
     service = sms.get("service", "Unknown")
     ts = sms.get("timestamp", "")
-    clean = re.sub(r"\s+", " ", sms.get("full_text", "")).strip()[:300]
 
-    msg = (
-        f"🔥 <b>{country} {service.upper()} OTP!</b> 🔥\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 {ts}\n"
-        f"🗺️ {country} {flag}\n"
-        f"📱 {service}\n"
-        f"📞 <code>{phone}</code>\n"
-        f"🔑 <b><code>{otp}</code></b>\n\n"
-        f"✉️ {clean}"
-    )
-    kb = {"inline_keyboard": [[{"text": "🤖 BOT", "url": BOT_LINK}]]}
+    # Group post: the shared forward format (flag, #ISO, mail + number,
+    # #SERVICE) with the premium-icon keyboard (Switch / NUMBER / CHANNEL).
+    iso = iso_from_flag(COUNTRY_FLAGS.get(country) or "")
+    msg = group_otp_body(flag, iso, phone, service)
+    kb = {"inline_keyboard": group_otp_buttons(otp, BOT_LINK)}
 
     # Send to groups
     sent_groups = send_to_groups(msg, kb)

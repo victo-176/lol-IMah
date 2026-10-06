@@ -33,17 +33,39 @@ check("send_html_safe exists", hasattr(bot, 'send_html_safe'))
 s = bot.strip_html_tags("<b>hi</b> & <code>644-92</code> <#>")
 check("strip_html_tags removes tags", s == "hi & 644-92 ", f"got {s!r}")
 
-# ------------------------------------------------ 3) format_message escapes
+# ------------------------------------------------ 3) group body format (screenshot)
 raw_sms = 'Your code is 64492. Terms & Conditions <support@x.com> <#> do not share'
 fm = bot.format_message("2026-09-18 10:00:00", "2349154635248", raw_sms,
                         "\U0001f1f3\U0001f1ec", "\U0001f525")
 bad = re.findall(r'&(?!amp;|lt;|gt;|quot;|#)', fm)
 check("format_message has no unescaped &", not bad, f"bad={bad}")
 check("format_message has no raw <", "<support@" not in fm)
-check("format_message OTP intact (5-digit: no hyphen)", "64492" in fm)
-check("format_message 6-digit gets hyphen", "644-92" in bot.format_message(
-    "2026-09-18 10:00:00", "2349154635248", "Your code is 644921",
-    "\U0001f1f3\U0001f1ec", "\U0001f525"))
+check("format_message keeps flag + #ISO tag",
+      "\U0001f1f3\U0001f1ec" in fm and "#NG" in fm, repr(fm))
+check("format_message shows the number", "2349154635248" in fm, repr(fm))
+check("format_message uses the premium mail emoji",
+      "5967280668885913944" in fm and "\U0001F4E7" in fm, repr(fm))
+check("format_message has a #SERVICE line",
+      re.search(r"\n#[A-Z0-9_]+", fm) is not None, repr(fm))
+check("format_message no longer embeds the raw SMS body",
+      "Terms" not in fm and "64492" not in fm, repr(fm))
+
+# ------------------------------------------------ 3b) group keyboard (premium icons)
+rows = bot.group_otp_buttons("64492")
+check("otp row is one wide button", len(rows[0]) == 1, str(rows))
+check("otp button copies the code", rows[0][0].get("callback_data") == "copy_64492", str(rows))
+check("otp button label matches the screenshot",
+      rows[0][0]["text"] == "⧉ Switch | 64492", rows[0][0]["text"])
+check("otp button is green (success)", rows[0][0].get("style") == "success", str(rows))
+check("second row is NUMBER + CHANNEL",
+      [b["text"] for b in rows[1]] == ["NUMBER", "CHANNEL"], str(rows))
+check("every button carries a premium icon id",
+      all(b.get("icon_custom_emoji_id") for r in rows for b in r), str(rows))
+check("link buttons are primary/blue",
+      all(b.get("style") == "primary" for b in rows[1]), str(rows))
+markup = bot.group_otp_markup("64492")
+check("markup keyboard matches the raw rows",
+      markup.to_dict().get("inline_keyboard") == rows, str(markup.to_dict()))
 
 # ------------------------------------------------ 4) send_html_safe fallback
 sent = {}

@@ -7,6 +7,15 @@ to the panel's plain unicode flag whenever no premium id exists.
 """
 import os
 import re
+import sys
+
+# The shared group-forward format (body + keyboard with premium button icons)
+# lives in premium_emoji.py at the repo root; re-export it here so panel
+# scripts can import everything from this one helper, however they are run.
+_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PARENT not in sys.path:
+    sys.path.insert(0, _PARENT)
+from premium_emoji import group_otp_body, group_otp_buttons, iso_from_flag  # noqa: E402,F401
 
 _FLAG_ID_RE = re.compile(r'(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*"(\d{15,})"')
 _IDS = None

@@ -342,8 +342,17 @@ def main():
     check("main() delivered it once per destination",
           sum("445566" in t for t in delivered_texts) == 2,
           f"({sum('445566' in t for t in delivered_texts)} posts)")
-    check("OTP formatted as 445-566",
-          any("445-566" in t for t in delivered_texts))
+    check("group body uses the forward format (#GH + number)",
+          any("#GH" in t and "233241234567" in t for t in delivered_texts),
+          f"({[t[:120] for t in delivered_texts]})")
+    check("OTP shown raw on the Switch copy button",
+          any("Switch | 445566" in t for t in delivered_texts))
+    grp_posts = [t for t in delivered_texts
+                 if "#GH" in t and "Switch" in t]  # group post only, not the owner DM
+    check("all three group buttons carry a premium icon id",
+          bool(grp_posts) and all(t.count("icon_custom_emoji_id") >= 3
+                                  for t in grp_posts),
+          f"({[t.count('icon_custom_emoji_id') for t in grp_posts]})")
     check("header rule is not duplicated",
           not any(t.count("Anonmatrixx") > 1 for t in delivered_texts))
 

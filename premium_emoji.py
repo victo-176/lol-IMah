@@ -206,3 +206,83 @@ def premiumize(text):
         for i, original in enumerate(stash):
             work = work.replace(f"{_STASH_OPEN}{i}{_STASH_CLOSE}", original)
     return work
+
+
+# ============== OTP GROUP FORWARD FORMAT (shared) ===============
+# Every sender that posts OTPs to the groups with plain requests builds the
+# same message and the same keyboard:
+#
+#   Body:   {premium flag} #{ISO} 📧 {phone}
+#             #{SERVICE}
+#   Keys:   [green] ⧉ Switch | <code>   -> copies the OTP (premium mail icon)
+#           [blue]  NUMBER | CHANNEL     -> bot + channel links (premium icons)
+#
+# bot.py carries its own copy of this layout (its tests extract the source
+# region); the standalone forwarders and the panel scripts import it from here.
+
+import html as _html  # stdlib; only needed by the group body builder
+
+DEFAULT_BOT_LINK = "https://t.me/Anon_MatrixxV3bot"
+DEFAULT_CHANNEL_LINK = "https://t.me/Anonmatrixx_channel"
+
+
+def iso_from_flag(flag):
+    """Regional-indicator pair -> ISO-2 code ('UN' when not a flag)."""
+    ris = []
+    for ch in flag or "":
+        cp = ord(ch)
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            ris.append(chr(cp - 0x1F1E6 + 65))
+    return "".join(ris) if len(ris) == 2 else "UN"
+
+
+def group_otp_body(flag, iso, phone, service):
+    """Group OTP body: {flag} #{ISO} 📧 {phone}\n#{SERVICE}.
+
+    *flag* may already be a premium <tg-emoji> tag (passed through untouched)
+    or a plain unicode flag. The 📧 is upgraded to premium by premiumize().
+    """
+    code = str(iso or "UN").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        code = "UN"
+    line = ("%s #%s \U0001F4E7 %s" % (str(flag or "").strip(), code,
+                                       _html.escape(str(phone)))).strip()
+    tag = re.sub(r"[^A-Z0-9_]+", "_", str(service or "").upper().strip()).strip("_")
+    if tag:
+        line += "\n#" + tag
+    return line
+
+
+def group_otp_buttons(otp_code, bot_link=None, channel_link=None):
+    """Raw inline-keyboard rows for a group OTP post (Bot API dict shape).
+
+    Row 1 is the wide green copy button "⧉ Switch | <code>", row 2 holds the
+    NUMBER and CHANNEL link buttons. Every button carries a premium
+    icon_custom_emoji_id so the icons render as premium emoji in the group.
+    """
+    bot_link = bot_link or DEFAULT_BOT_LINK
+    channel_link = channel_link or DEFAULT_CHANNEL_LINK
+    otp = str(otp_code or "").strip()
+    mail_id = premium_icon("\U0001F4E7")
+    phone_id = premium_icon("phone")
+    horn_id = premium_icon("\U0001F4E3")
+
+    def _btn(text, url=None, callback_data=None, style=None, icon_id=None):
+        b = {"text": text}
+        if url:
+            b["url"] = url
+        if callback_data:
+            b["callback_data"] = callback_data
+        if style:
+            b["style"] = style
+        if icon_id:
+            b["icon_custom_emoji_id"] = icon_id
+        return b
+
+    first = _btn("⧉ Switch | %s" % (otp or "—"),
+                 url=None if otp else bot_link,
+                 callback_data=("copy_%s" % otp) if otp else None,
+                 style="success", icon_id=mail_id)
+    return [[first],
+            [_btn("NUMBER", url=bot_link, style="primary", icon_id=phone_id),
+             _btn("CHANNEL", url=channel_link, style="primary", icon_id=horn_id)]]
