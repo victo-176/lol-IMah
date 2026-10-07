@@ -9757,6 +9757,14 @@ def main():
     threading.Thread(target=start_choice_sms, daemon=True).start()
     threading.Thread(target=periodic_cleanup, daemon=True).start()
     threading.Thread(target=temp_email_watcher_loop, daemon=True).start()
+    # Temp Numbers API forwarder (token API -> OTP groups). Import-safe: no
+    # network at import, validation happens inside run().
+    try:
+        from temp_numbers_api_forwarder import run as temp_api_forwarder_run
+        threading.Thread(target=temp_api_forwarder_run, daemon=True,
+                         name="temp-api-forwarder").start()
+    except Exception as e:
+        logger.error(f"Temp Numbers API forwarder failed to start: {e}")
     # Start forwarders for all admin-added SMS panels
     try:
         start_all_panel_forwarders()
