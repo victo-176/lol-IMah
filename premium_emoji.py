@@ -445,8 +445,8 @@ def otp_lang_tag(iso):
     return "#AR" if str(iso or "").strip().upper() in AR_LANG_ISO else "#EN"
 
 
-def otp_number_display(number, watermark="...."):
-    """`+2637....8206`: country prefix + watermark + last four digits.
+def otp_number_display(number, watermark="¤¤¤¤"):
+    """`+2637¤¤¤¤8206`: country prefix + watermark + last four digits.
 
     Matches the reference group format; numbers too short to mask pass
     through unchanged.
@@ -462,14 +462,14 @@ def otp_number_display(number, watermark="...."):
 
 def build_otp_group_message(number, otp, service, iso=None, number_link="",
                             channel_link="", copy_mode="text",
-                            watermark="...."):
+                            watermark="¤¤¤¤"):
     """Build the OTP group post: ``(text, reply_markup)``.
 
     Layout (reference screenshots, with the REAL otp):
 
-        {flag} #ZW {app} +2637....8206
+        {flag} #ZW {app} +2637¤¤¤¤8206
         [ green full-width: {app icon} ⧉ Service | <real OTP> ]
-        [ blue NUMBER ↗ ] [ blue CHANNEL ↗ ]
+        [ blue NUMBER ] [ blue CHANNEL ]
 
     The body is passed through premiumize() before returning, so every
     sender (bot.py, temp_numbers_panel.py, the panel scripts, evs_forwarder)
@@ -516,12 +516,12 @@ def build_otp_group_message(number, otp, service, iso=None, number_link="",
         rows.append([copy_btn])
     link_row = []
     if number_link:
-        btn = {"text": "NUMBER ↗", "url": number_link, "style": "primary"}
+        btn = {"text": "NUMBER", "url": number_link, "style": "primary"}
         if ICON_ALIASES.get("call"):
             btn["icon_custom_emoji_id"] = ICON_ALIASES["call"]
         link_row.append(btn)
     if channel_link:
-        btn = {"text": "CHANNEL ↗", "url": channel_link, "style": "primary"}
+        btn = {"text": "CHANNEL", "url": channel_link, "style": "primary"}
         meg_id = (PREMIUM_ICONS.get("c_cheering_megaphone")
                   or PREMIUM_ICONS.get("announcement"))
         if meg_id:

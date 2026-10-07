@@ -149,7 +149,7 @@ def main():
         fails.append(f"builder text misses #ZW or still has a language tag: {text!r}")
     if "<tg-emoji" not in text:
         fails.append(f"builder text has no premium emoji: {text!r}")
-    if "+2637....8206" not in text:
+    if "+2637¤¤¤¤8206" not in text:
         fails.append(f"builder text misses the watermark number: {text!r}")
     if text.count("\n") != 0:
         fails.append(f"builder text should be exactly one line: {text!r}")

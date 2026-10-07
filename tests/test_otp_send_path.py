@@ -53,7 +53,7 @@ body = payload.get("text", "")
 check("body has one line (no language tag)", body.count("\n") == 0, repr(body))
 check("body premiumized", "<tg-emoji" in body, body[:120])
 check("body has #ZW, no #EN/#AR tag", "#ZW" in body and "#EN" not in body and "#AR" not in body, body)
-check("body has watermark number", "+2637....8206" in body, body)
+check("body has watermark number", "+2637¤¤¤¤8206" in body, body)
 check("parse_mode kept", payload.get("parse_mode") == "HTML")
 
 markup = json.loads(payload["reply_markup"])
