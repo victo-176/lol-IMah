@@ -46,8 +46,8 @@ check("group text has no unescaped &", not bad, f"bad={bad}")
 check("group text has no raw < outside <tg-emoji>",
       "<support@" not in fm and "<#>" not in fm,
       f"fm={fm!r}")
-check("flag / #ISO / tag line present",
-      "#NG" in fm and "#EN" in fm, f"fm={fm!r}")
+check("flag / #ISO present, language tag removed",
+      "#NG" in fm and "#EN" not in fm and "#AR" not in fm, f"fm={fm!r}")
 check("SMS body never leaks into the group post",
       "64492. Terms" not in fm and "support@" not in fm)
 copy_btn = fk["inline_keyboard"][0][0]

@@ -799,7 +799,7 @@ def send_otp(sms):
     # watermark number, #AR/#EN tag line, green copy button carrying the
     # real OTP, blue NUMBER/CHANNEL links.
     number_link = get_setting("number_link") or BOT_LINK
-    channel_link = get_setting("channel_link") or "https://t.me/Anonmatrixx_channel"
+    channel_link = get_setting("channel_link") or "https://t.me/AnonmatrixxOtp"
     msg, kb = build_otp_group_message(
         phone, otp, service,
         number_link=number_link, channel_link=channel_link,

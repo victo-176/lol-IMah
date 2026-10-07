@@ -145,18 +145,18 @@ def main():
     text, kb = premium_emoji.build_otp_group_message(
         "+263771238206", "030061", "paypal", "ZW",
         number_link="https://t.me/num", channel_link="https://t.me/ch")
-    if "#ZW" not in text or not text.endswith("\n#EN"):
-        fails.append(f"builder text misses #ZW/#EN: {text!r}")
+    if "#ZW" not in text or "#EN" in text or "#AR" in text:
+        fails.append(f"builder text misses #ZW or still has a language tag: {text!r}")
     if "<tg-emoji" not in text:
         fails.append(f"builder text has no premium emoji: {text!r}")
-    if "+2637PM KHAN8206" not in text:
+    if "+2637....8206" not in text:
         fails.append(f"builder text misses the watermark number: {text!r}")
-    if text.count("\n") != 1:
-        fails.append(f"builder text should be exactly two lines: {text!r}")
-    if "030061" in text.split("\n")[0]:
+    if text.count("\n") != 0:
+        fails.append(f"builder text should be exactly one line: {text!r}")
+    if "030061" in text:
         fails.append(f"the demo OTP leaked into the message body: {text!r}")
     else:
-        print("PASS: reference layout = flag #ISO app watermark-number + #EN")
+        print("PASS: reference layout = flag #ISO app watermark-number")
 
     # 11. Green copy button with the REAL otp; blue NUMBER/CHANNEL buttons.
     copy_btn = kb["inline_keyboard"][0][0]
@@ -177,11 +177,13 @@ def main():
     else:
         print("PASS: green copy button (real OTP) + blue NUMBER/CHANNEL buttons")
 
-    # 12. The language tag follows the country.
+    # 12. The language tag (#AR/#EN) is no longer posted.
     t_jo, _ = premium_emoji.build_otp_group_message("+962781239030", "123456", "PayPal")
-    if not t_jo.endswith("\n#AR"):
-        fails.append(f"Jordan post is not tagged #AR: {t_jo!r}")
-    print("PASS: #AR for Arabic countries, #EN otherwise")
+    if "#AR" in t_jo or "#EN" in t_jo:
+        fails.append(f"language tag still present: {t_jo!r}")
+    if "#JO" not in t_jo:
+        fails.append(f"Jordan post misses #JO: {t_jo!r}")
+    print("PASS: language tag removed (#AR/#EN never posted)")
 
     # 13. Every id in the app-icon fixture loads through the shared loader.
     expected = {}

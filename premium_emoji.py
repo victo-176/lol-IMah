@@ -445,8 +445,8 @@ def otp_lang_tag(iso):
     return "#AR" if str(iso or "").strip().upper() in AR_LANG_ISO else "#EN"
 
 
-def otp_number_display(number, watermark="PM KHAN"):
-    """`+2637PM KHAN8206`: country prefix + watermark + last four digits.
+def otp_number_display(number, watermark="...."):
+    """`+2637....8206`: country prefix + watermark + last four digits.
 
     Matches the reference group format; numbers too short to mask pass
     through unchanged.
@@ -462,15 +462,18 @@ def otp_number_display(number, watermark="PM KHAN"):
 
 def build_otp_group_message(number, otp, service, iso=None, number_link="",
                             channel_link="", copy_mode="text",
-                            watermark="PM KHAN"):
+                            watermark="...."):
     """Build the OTP group post: ``(text, reply_markup)``.
 
     Layout (reference screenshots, with the REAL otp):
 
-        {flag} #ZW {app} +2637PM KHAN8206
-        #EN
+        {flag} #ZW {app} +2637....8206
         [ green full-width: {app icon} ⧉ Service | <real OTP> ]
         [ blue NUMBER ↗ ] [ blue CHANNEL ↗ ]
+
+    The body is passed through premiumize() before returning, so every
+    sender (bot.py, temp_numbers_panel.py, the panel scripts, evs_forwarder)
+    emits fully premium <tg-emoji> even on the plain-glyph fallback paths.
 
     ``copy_mode="text"`` attaches a copy_text button (one tap copies the
     OTP); ``"callback"`` swaps it for a ``copy_<otp>`` callback for clients
@@ -498,7 +501,7 @@ def build_otp_group_message(number, otp, service, iso=None, number_link="",
     else:
         parts = ["\U0001F30D"]  # 🌍 when the country cannot be derived
     parts += [app_emoji_html(svc), num_disp]
-    text = " ".join(parts) + "\n" + otp_lang_tag(iso)
+    text = premiumize(" ".join(parts))
 
     app_id = app_icon_id(svc)
     rows = []
@@ -559,7 +562,7 @@ def kb_without_copy(kb, otp=""):
 # NUMBER / CHANNEL link buttons. The copy label is never hardcoded to "Switch".
 
 DEFAULT_BOT_LINK = "https://t.me/Anon_MatrixxV3bot"
-DEFAULT_CHANNEL_LINK = "https://t.me/Anonmatrixx_channel"
+DEFAULT_CHANNEL_LINK = "https://t.me/AnonmatrixxOtp"
 
 # group_otp_buttons() has no service parameter at the original call sites
 # (panels call body, then buttons), so it picks the label up from here.
@@ -582,7 +585,7 @@ def group_otp_body(flag, iso, phone, service):
     *flag* is only used to derive the ISO code when *iso* is missing or
     invalid (a premium <tg-emoji> tag still works — the regional indicators
     inside it decode). The body itself is built by build_otp_group_message()
-    so the layout, watermark and #AR/#EN tag line match every other sender,
+    so the layout, watermark and #ISO line match every other sender,
     and the service comes from the panel's own record.
     """
     svc = str(service or "").strip() or "Unknown"

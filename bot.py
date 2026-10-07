@@ -3672,7 +3672,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         try:
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
-                       ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
+                       ibtn("Channel", url="https://t.me/AnonmatrixxOtp", style="primary", icon="announcement"))
             msg = (f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
                    f"{flag_emoji_html(iso)} <b>Country:</b> {html_mod.escape(str(country_name))}\n"
                    f"{app_emoji} <b>Service:</b> {html_mod.escape(str(service))}\n"
@@ -3704,7 +3704,7 @@ def _otp_group_links():
     """URLs for the OTP group's NUMBER / CHANNEL buttons."""
     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
     number_link = get_setting('number_link') or bot_link
-    channel_link = get_setting('channel_link') or 'https://t.me/Anonmatrixx_channel'
+    channel_link = get_setting('channel_link') or 'https://t.me/AnonmatrixxOtp'
     return number_link, channel_link
 
 
@@ -3813,14 +3813,14 @@ def send_to_telegram_group(text, otp_code, number, kb=None):
     if not kb:
         kb = {"inline_keyboard": [[
             {"text": "⧉ Copy OTP", "copy_text": {"text": str(otp_code)}}],
-            [{"text": "🤖 BOT LINK", "url": bot_link}]]}
+            [{"text": "BOT LINK", "url": bot_link}]]}
     # This posts through the raw Bot API, so it never reaches the send_message
     # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
     # the OTP groups get plain unicode while every other message is premium.
     text = premiumize(text)
     chat_ids = json.loads(get_setting('otp_groups') or '[]')
     if not chat_ids:
-        chat_ids = ['-1003904867859']
+        chat_ids = ['-1004435037471']
         logger.warning("[GROUP] No OTP groups configured, using default group")
     sent_count = 0
     for chat_id in chat_ids:
@@ -3886,7 +3886,7 @@ class ChoiceSMSForwarder:
     DEFAULT_PANEL_URL = 'http://51.77.52.79/ints'
     DEFAULT_USERNAME = 'Anon571'
     DEFAULT_PASSWORD = 'Anon571'
-    DEFAULT_GROUP_ID = '-1003904867859'
+    DEFAULT_GROUP_ID = '-1004435037471'
 
     def __init__(self):
         self.session = requests.Session()
@@ -6811,7 +6811,7 @@ def _show_number_display(chat_id, message_id, number, country_key, app_name, ext
         msg_text += f"\n\n📋 <b>All Assigned Numbers:</b>\n" + "\n".join(lines)
 
     markup = types.InlineKeyboardMarkup()
-    markup.add(ibtn("View OTP", url="https://t.me/animatrixx_otp", style="primary", icon="eye"))
+    markup.add(ibtn("View OTP", url="https://t.me/AnonmatrixxOtp", style="primary", icon="eye"))
     markup.row(
         ibtn(cc_btn_text, callback_data=f"toggle_cc|{app_name}|{country_key}|{number}", style="success", icon="earth"),
         ibtn("Change Number", callback_data=f"chg_local|{app_name}|{country_key}", style="danger", icon="refresh"),
@@ -7485,7 +7485,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         set_state(chat_id, "add_otp_group")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn("Cancel", callback_data="admin_otp_groups", style="danger", icon="back"))
-        bot.edit_message_text("Send the group chat ID (e.g., -1001234567890):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text("Send the group chat ID (e.g., -1004435037471):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
     if data == "admin_remove_otp_group":
