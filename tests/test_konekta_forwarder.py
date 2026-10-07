@@ -5,6 +5,8 @@ Run:  python3 tests/test_konekta_forwarder.py
 """
 import os
 import sys
+import threading
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -261,14 +263,81 @@ finally:
     else:
         os.environ["KONEKTA_FORWARDER"] = real_env
 
+# Missing config must NOT abort the forwarder (the old early return left
+# the group completely silent): run() logs once and retries every poll.
 os.environ.pop("KONEKTA_FORWARDER", None)
-real_token2, real_groups2 = kf.BOT_TOKEN, kf.OTP_GROUPS
-kf.BOT_TOKEN, kf.OTP_GROUPS = None, []
+real_rc, real_poll = kf.resolve_config, kf.POLL_INTERVAL
+kf.resolve_config = lambda: (None, [])
+kf.POLL_INTERVAL = 0.05
+retry_thread = threading.Thread(target=kf.run, daemon=True)
+retry_thread.start()
+time.sleep(0.3)
+check("run() retries instead of exiting on missing config",
+      retry_thread.is_alive(),
+      "thread died" if not retry_thread.is_alive() else "")
+check("resolve_config with no settings still yields the default group",
+      real_rc()[1] == [-1004435037471], str(real_rc()[1]))
+# the daemon thread stays parked on the never-ready config; process exit
+# cleans it up.
+
+print("\n=== default group fallback (bot.py seeds otp_groups as '[]') ===")
+import temp_numbers_api_forwarder as tf_mod  # noqa: E402
+real_gs = tf_mod.get_setting
+tf_mod.get_setting = lambda k, d=None: "[]" if k == "otp_groups" else None
 try:
-    kf.run()
-    check("missing config returns without looping", True)
+    fb_groups = kf.get_otp_groups()
 finally:
-    kf.BOT_TOKEN, kf.OTP_GROUPS = real_token2, real_groups2
+    tf_mod.get_setting = real_gs
+check("empty otp_groups falls back to bot.py's default group",
+      fb_groups == [-1004435037471], str(fb_groups))
+
+print("\n=== _tg_send retries without premium tags on HTTP 400 ===")
+
+
+class _Resp:
+    def __init__(self, code, body):
+        self.status_code = code
+        self.text = body
+
+
+post_calls = []
+
+
+def _fake_post(url, data=None, timeout=None):
+    post_calls.append(dict(data))
+    if len(post_calls) == 1:
+        return _Resp(400, "Bad Request: cannot parse entities")
+    return _Resp(200, "OK")
+
+
+real_post, real_token3 = kf.requests.post, kf.BOT_TOKEN
+kf.BOT_TOKEN = "TEST:TOKEN"
+kf.requests.post = _fake_post
+try:
+    premium_text = ('<tg-emoji emoji-id="5294422158762592930">🇿🇼</tg-emoji>'
+                    ' #ZW +2637●○●○0515')
+    ok_retry = kf._tg_send(-1001, premium_text, {"inline_keyboard": []})
+finally:
+    kf.requests.post = real_post
+check("retried and delivered", ok_retry is True, str(ok_retry))
+check("two API calls made", len(post_calls) == 2, str(len(post_calls)))
+check("retry stripped the tg-emoji tags",
+      len(post_calls) == 2 and "<tg-emoji" not in post_calls[1]["text"],
+      str(post_calls[1].get("text")) if len(post_calls) > 1 else "")
+check("retry kept the plain glyphs",
+      len(post_calls) == 2 and "🇿🇼" in post_calls[1]["text"],
+      str(post_calls[1].get("text")) if len(post_calls) > 1 else "")
+
+post_calls.clear()
+kf.requests.post = _fake_post
+try:
+    ok_plain = kf._tg_send(-1001, "plain text without premium tags")
+finally:
+    kf.requests.post = real_post
+    kf.BOT_TOKEN = real_token3
+check("plain-text failure does not retry",
+      ok_plain is False and len(post_calls) == 1,
+      f"{ok_plain} {len(post_calls)}")
 
 print()
 if fails:

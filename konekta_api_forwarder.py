@@ -53,6 +53,7 @@ validation happens in main()/run(), so bot.py can safely import it.
 import json
 import logging
 import os
+import re
 import sys
 import time
 
@@ -168,11 +169,22 @@ def fetch_records():
 # =========================== TELEGRAM ===========================
 
 
+# Premium <tg-emoji> entities Telegram may reject (e.g. an emoji id the
+# bot can't use): stripped for the plain-text retry below.
+_TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="\d+">([^<]*)</tg-emoji>')
+
+
 def _tg_send(chat_id, text, reply_markup=None):
-    """POST one message; returns True on success. Never raises."""
-    # Raw API post, so nothing else upgrades these emoji: do it here or the
-    # OTP groups get plain unicode while the bot's own messages are premium.
-    payload = {"chat_id": chat_id, "text": premiumize(text), "parse_mode": "HTML"}
+    """POST one message; returns True on success. Never raises.
+
+    Raw API post, so nothing else upgrades these emoji: do it here or the
+    OTP groups get plain unicode while the bot's own messages are premium.
+    If Telegram rejects the premium <tg-emoji> entities (HTTP 400), retry
+    once with the tags stripped so the OTP still lands as plain glyphs —
+    a rejected emoji id must never lose the message entirely.
+    """
+    sent_text = premiumize(text)
+    payload = {"chat_id": chat_id, "text": sent_text, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
@@ -182,8 +194,22 @@ def _tg_send(chat_id, text, reply_markup=None):
         )
         if r.status_code == 200:
             return True
+        desc = (r.text or "")[:160]
+        if r.status_code == 400 and "<tg-emoji" in sent_text:
+            plain = _TG_EMOJI_RE.sub(r"\1", sent_text)
+            if plain != sent_text:
+                payload["text"] = plain
+                r = requests.post(
+                    f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/sendMessage",
+                    data=payload, timeout=15,
+                )
+                if r.status_code == 200:
+                    logger.info("Sent to %s with premium tags stripped "
+                                "(rejected emoji id)", chat_id)
+                    return True
+                desc = (r.text or "")[:160]
         logger.warning("Telegram send to %s failed: HTTP %s — %s",
-                       chat_id, r.status_code, (r.text or "")[:120])
+                       chat_id, r.status_code, desc)
     except Exception as exc:
         logger.error("Telegram send to %s error: %s", chat_id, exc)
     return False
@@ -279,38 +305,66 @@ def handle_rows(rows):
 
 
 def _heartbeat():
-    """Post a startup notice so the group shows the forwarder is live."""
-    if OTP_GROUPS:
-        _tg_send(
-            OTP_GROUPS[0],
-            f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
-            f"Polling every {POLL_INTERVAL}s",
-        )
+    """Post a startup notice so the group shows the forwarder is live.
+
+    Returns True once it has actually been delivered; run() keeps trying
+    every poll until it lands, so the group always ends up showing life.
+    """
+    if not OTP_GROUPS:
+        return False
+    return _tg_send(
+        OTP_GROUPS[0],
+        f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
+        f"Polling every {POLL_INTERVAL}s",
+    )
+
+
+def resolve_config():
+    """Fresh (bot token, group ids) for the current poll.
+
+    Re-read every loop instead of trusting the import-time snapshot:
+    bot.py seeds 'otp_groups' as '[]' (the default-group fallback lives
+    in get_otp_groups) and settings written after boot must be picked up
+    without a restart.
+    """
+    return get_bot_token(), get_otp_groups()
 
 
 def run():
-    """Poll forever (thread target used by bot.py). Never raises."""
+    """Poll forever (thread target used by bot.py). Never raises.
+
+    Missing config no longer aborts the forwarder: it logs once and keeps
+    retrying every poll, so a settings row written after boot, or a bot
+    token that appears later, still starts delivery without a restart.
+    """
+    global BOT_TOKEN, OTP_GROUPS
     if os.environ.get("KONEKTA_FORWARDER", "1").strip().lower() in (
             "0", "false", "off", "no"):
         logger.info("Konekta API forwarder disabled (KONEKTA_FORWARDER)")
         return
 
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN missing — set it via bot admin > Settings "
-                     "or as an env var; Konekta forwarder not started")
-        return
-    if not OTP_GROUPS:
-        logger.error("No OTP groups — add one via bot admin > OTP Groups; "
-                     "Konekta forwarder not started")
-        return
-
-    logger.info("Konekta API forwarder: polling %s every %ss "
-                "(records=%s, groups=%s)",
-                API_URL, POLL_INTERVAL, RECORDS, len(OTP_GROUPS))
-    _heartbeat()
-
+    heartbeat_sent = False
+    config_warned = False
+    first = True
     while True:
         try:
+            BOT_TOKEN, OTP_GROUPS = resolve_config()
+            if not BOT_TOKEN or not OTP_GROUPS:
+                if not config_warned:
+                    logger.error(
+                        "Config not ready (bot_token=%s, groups=%s) — "
+                        "retrying every %ss instead of exiting",
+                        bool(BOT_TOKEN), len(OTP_GROUPS), POLL_INTERVAL)
+                    config_warned = True
+                continue
+            config_warned = False
+            if first:
+                logger.info("Konekta API forwarder: polling %s every %ss "
+                            "(records=%s, groups=%s)",
+                            API_URL, POLL_INTERVAL, RECORDS, len(OTP_GROUPS))
+                first = False
+            if not heartbeat_sent:
+                heartbeat_sent = bool(_heartbeat())
             rows = fetch_records()
             handle_rows(rows)
             if len(_seen) > 5000:

@@ -131,6 +131,12 @@ def get_forward_user_id():
     return os.environ.get("FORWARD_USER_ID") or get_setting("forward_user_id")
 
 
+# Mirror of bot.py's fallback: 'otp_groups' is seeded as '[]' and bot.py
+# posts to this group when the setting is empty, so forwarders must do the
+# same or they silently never start.
+DEFAULT_GROUP_ID = "-1004435037471"
+
+
 def get_otp_groups():
     raw = get_setting("otp_groups", "[]") or "[]"
     try:
@@ -144,6 +150,8 @@ def get_otp_groups():
                 groups = [int(default_grp)]
             except (TypeError, ValueError):
                 groups = []
+    if not groups:
+        groups = [int(DEFAULT_GROUP_ID)]
     return groups
 
 
