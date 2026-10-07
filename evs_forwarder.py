@@ -279,11 +279,12 @@ def send_otp(sms):
     service = sms.get("service", "Unknown")
     ts = sms.get("timestamp", "")
 
-    # Group post: the shared forward format (flag, #ISO, mail + number,
-    # #SERVICE) with the premium-icon keyboard (Switch / NUMBER / CHANNEL).
+    # Group post: the shared reference format (flag, #ISO, app icon +
+    # watermark number, #AR/#EN tag) with the premium-icon keyboard
+    # (green copy button with the real OTP, NUMBER / CHANNEL links).
     iso = iso_from_flag(COUNTRY_FLAGS.get(country) or "")
     msg = group_otp_body(flag, iso, phone, service)
-    kb = {"inline_keyboard": group_otp_buttons(otp, BOT_LINK)}
+    kb = {"inline_keyboard": group_otp_buttons(otp, BOT_LINK, service=service)}
 
     # Send to groups
     sent_groups = send_to_groups(msg, kb)

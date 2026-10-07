@@ -41,6 +41,10 @@ def build_namespace():
         "PREMIUM_EMOJI_OK": True,
         "UNICODE_FALLBACKS": {},
         "PREMIUM_EMOJI_IDS": {},
+        # The shipped map region reads these; the real values are re-bound
+        # below before premium_icon()'s region is exec'd.
+        "PREMIUM_ICONS": {},
+        "PREMIUM_FLAGS": {},
         "premium_icon": premium_icon,
         "logger": pytypes.SimpleNamespace(
             info=lambda *a, **k: None, warning=lambda *a, **k: None,

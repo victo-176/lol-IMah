@@ -32,9 +32,9 @@ PANELS = [
     #         "username": "user",
     #         "password": "pass",
     #         "telegram_token": "BOT:TOKEN",
-    #         "group_chat_id": -1001234567890,
+    #         "group_chat_id": -1004435037471,
     #         "bot_link": "https://t.me/mybot",
-    #         "otp_group_link": "https://t.me/mygroup",
+    #         "otp_group_link": "https://t.me/AnonmatrixxOtp",
     #         "poll_interval": 15,
     #     }
     # },

@@ -59,13 +59,7 @@ import requests
 # Premium emoji ids for the group OTPs. Kept import-safe (no telebot, no DB),
 # and the maps are pinned identical to bot.py's by tests/test_otp_group_premium.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from premium_emoji import (  # noqa: E402
-    group_otp_body,
-    group_otp_buttons,
-    iso_from_flag,
-    premiumize,
-)
-from panels._premium_flag import flag_html  # noqa: E402,E401
+from premium_emoji import premiumize, build_otp_group_message, kb_without_copy  # noqa: E402
 
 try:
     from bs4 import BeautifulSoup
@@ -750,11 +744,20 @@ def _tg_send(chat_id, text, reply_markup=None):
     return False
 
 
-def send_to_groups(text, reply_markup=None):
-    """Send the OTP to every configured OTP group."""
+def send_to_groups(text, reply_markup=None, otp=""):
+    """Send the OTP to every configured OTP group.
+
+    If a group rejects the copy_text button, retry once with the same
+    keyboard downgraded to a `copy_<otp>` callback so the OTP still lands.
+    """
     sent = 0
     for gid in OTP_GROUPS:
-        if _tg_send(gid, text, reply_markup):
+        ok = _tg_send(gid, text, reply_markup)
+        if not ok and reply_markup:
+            fallback = kb_without_copy(reply_markup, otp)
+            if fallback != reply_markup:
+                ok = _tg_send(gid, text, fallback)
+        if ok:
             sent += 1
             logger.info("Group %s: sent", gid)
     return sent > 0
@@ -790,17 +793,19 @@ def send_otp(sms):
     """
     service = _clean(sms.get("service", "Temp Numbers")) or "Temp Numbers"
     phone = sms.get("number", "N/A")
-    otp = sms["otp"]
+    otp = str(sms["otp"])
 
-    # Country comes from the report's Range column ("GHANA 233").
-    words = str(sms.get("country") or "").split()
-    country = words[0].upper() if words else ""
-    flag = flag_html(COUNTRY_FLAGS, country)
-    iso = iso_from_flag(COUNTRY_FLAGS.get(country) or "")
-    msg = group_otp_body(flag, iso, phone, service)
-    kb = {"inline_keyboard": group_otp_buttons(otp, BOT_LINK)}
+    # Same reference format the main bot posts: flag + #ISO + app icon +
+    # watermark number, #AR/#EN tag line, green copy button carrying the
+    # real OTP, blue NUMBER/CHANNEL links.
+    number_link = get_setting("number_link") or BOT_LINK
+    channel_link = get_setting("channel_link") or "https://t.me/AnonmatrixxOtp"
+    msg, kb = build_otp_group_message(
+        phone, otp, service,
+        number_link=number_link, channel_link=channel_link,
+    )
 
-    sent_groups = send_to_groups(msg, kb)
+    sent_groups = send_to_groups(msg, kb, otp)
     sent_main = forward_to_main_bot(msg, otp)
     return sent_groups or sent_main
 

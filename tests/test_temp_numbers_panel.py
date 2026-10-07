@@ -342,13 +342,17 @@ def main():
     check("main() delivered it once per destination",
           sum("445566" in t for t in delivered_texts) == 2,
           f"({sum('445566' in t for t in delivered_texts)} posts)")
-    check("group body uses the forward format (#GH + number)",
-          any("#GH" in t and "233241234567" in t for t in delivered_texts),
-          f"({[t[:120] for t in delivered_texts]})")
-    check("OTP shown raw on the Switch copy button",
-          any("Switch | 445566" in t for t in delivered_texts))
-    grp_posts = [t for t in delivered_texts
-                 if "#GH" in t and "Switch" in t]  # group post only, not the owner DM
+    # Reference format: the OTP rides on the green copy button (label +
+    # copy_text payload), and the body carries the watermark number, flag
+    # and #ISO line instead of the old boxed layout.
+    check("copy button carries the real OTP 445566",
+          any("copy_text" in t and "445566" in t
+              for t in delivered_texts))
+    check("group post uses the reference format (flag + #GH, no language tag)",
+          any("#GH" in t and "#EN" not in t and "#AR" not in t
+              for t in delivered_texts),
+          f"({sum('#GH' in t for t in delivered_texts)} posts)")
+    grp_posts = [t for t in delivered_texts if "copy_text" in t]
     check("all three group buttons carry a premium icon id",
           bool(grp_posts) and all(t.count("icon_custom_emoji_id") >= 3
                                   for t in grp_posts),
