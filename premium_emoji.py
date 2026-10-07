@@ -550,3 +550,62 @@ def kb_without_copy(kb, otp=""):
             new_row.append(btn)
         rows.append(new_row)
     return {"inline_keyboard": rows} if changed else kb
+# ============== OTP GROUP FORWARD FORMAT (compat wrappers) ===============
+# The standalone forwarders (evs_forwarder.py) and the 41 panel scripts import
+# group_otp_body / group_otp_buttons / iso_from_flag from here. They delegate
+# to build_otp_group_message() so every sender gets the reference layout —
+# flag + #ISO + app icon + watermark number, the #AR/#EN tag line, a green
+# copy button carrying the panel's OWN service and the real OTP, and the blue
+# NUMBER / CHANNEL link buttons. The copy label is never hardcoded to "Switch".
+
+DEFAULT_BOT_LINK = "https://t.me/Anon_MatrixxV3bot"
+DEFAULT_CHANNEL_LINK = "https://t.me/Anonmatrixx_channel"
+
+# group_otp_buttons() has no service parameter at the original call sites
+# (panels call body, then buttons), so it picks the label up from here.
+_LAST_SERVICE = ["Unknown"]
+
+
+def iso_from_flag(flag):
+    """Regional-indicator pair -> ISO-2 code ('UN' when not a flag)."""
+    ris = []
+    for ch in flag or "":
+        cp = ord(ch)
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            ris.append(chr(cp - 0x1F1E6 + 65))
+    return "".join(ris) if len(ris) == 2 else "UN"
+
+
+def group_otp_body(flag, iso, phone, service):
+    """Reference-format body for callers that already hold a rendered flag.
+
+    *flag* is only used to derive the ISO code when *iso* is missing or
+    invalid (a premium <tg-emoji> tag still works — the regional indicators
+    inside it decode). The body itself is built by build_otp_group_message()
+    so the layout, watermark and #AR/#EN tag line match every other sender,
+    and the service comes from the panel's own record.
+    """
+    svc = str(service or "").strip() or "Unknown"
+    _LAST_SERVICE[0] = svc
+    code = str(iso or "").strip().upper()
+    if code == "UN" or not (len(code) == 2 and code.isalpha()):
+        code = iso_from_flag(flag)
+    text, _kb = build_otp_group_message(phone, "", svc, iso=code)
+    return text
+
+
+def group_otp_buttons(otp_code, bot_link=None, channel_link=None, service=None):
+    """Reference keyboard rows for callers that build the body separately.
+
+    Row 1 is the green full-width copy button ``⧉ Service | <otp>`` (the
+    panel-supplied service — never a hardcoded label — plus the real OTP),
+    row 2 the blue NUMBER / CHANNEL links. Delegates to
+    build_otp_group_message() so icons, styles and copy_text match the
+    other senders.
+    """
+    _, kb = build_otp_group_message(
+        "", otp_code, service or _LAST_SERVICE[0], iso="",
+        number_link=bot_link or DEFAULT_BOT_LINK,
+        channel_link=channel_link or DEFAULT_CHANNEL_LINK,
+        copy_mode="text")
+    return kb.get("inline_keyboard") or []

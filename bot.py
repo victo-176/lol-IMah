@@ -170,23 +170,34 @@ PREMIUM_EMOJI_IDS = {
     # Add more if needed
 }
 
-def load_premium_emojis(path=EMOJI_FILE):
-    icons, flags = {}, {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
-    except Exception:
-        return icons, flags
-    for key, val in re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"(\d{15,})"', content):
-        if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
-            flags[key.split('_')[0]] = val
-        else:
-            icons[key.lower()] = val
-    for val, key in re.findall(r'(\d{15,})\s+-\s+([A-Za-z0-9_]+)', content):
-        icons[key.lower()] = val
-    return icons, flags
+def load_premium_emojis(path=None):
+    """Load premium emoji ids from emoji.txt.
 
-PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
+    Without an explicit path every candidate file is merged: the persistent
+    copy is read first and the repo copy last, so a repo emoji.txt update
+    always wins over an older persisted copy.
+    """
+    icons, flags = {}, {}
+    if path is not None:
+        paths = [path]
+    else:
+        paths = [p for p in dict.fromkeys(_EMOJI_CANDIDATES) if os.path.isfile(p)]
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+        for m in re.finditer(r'(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*"(\d{15,})"', content):
+            key = m.group(1) or m.group(2)
+            val = m.group(3)
+            if re.fullmatch(r"[A-Z]{2}(?:_2)?", key):
+                flags[key.split('_')[0]] = val
+            else:
+                icons[key.lower()] = val
+        for val, key in re.findall(r'(\d{15,})\s+-\s+([A-Za-z0-9_]+)', content):
+            icons[key.lower()] = val
+    return icons, flags
 
 # The OTP group post format (text + inline keyboard) is built by the shared
 # dep-free module so every sender — bot.py's three forwarders and
@@ -194,6 +205,211 @@ PREMIUM_ICONS, PREMIUM_FLAGS = load_premium_emojis()
 from premium_emoji import (build_otp_group_message, APP_GLYPHS,
                            APP_ICON_ALIASES, ENVELOPE_APPS,
                            kb_without_copy as _kb_without_copy)
+
+PREMIUM_ICONS, _flags_loaded = load_premium_emojis()
+
+# Built-in country premium flags (ISO-2 → Telegram custom emoji id)
+_DEFAULT_PREMIUM_FLAGS = {
+    "AD": "5294215205763434181",
+    "AE": "5294314831824835370",
+    "AF": "5291937511591925566",
+    "AG": "5294005972136647964",
+    "AI": "5292186323342350940",
+    "AL": "5294202819077756005",
+    "AM": "5291978717508164018",
+    "AO": "5294516785482062829",
+    "AR": "5292208210495689627",
+    "AS": "5291994273879709721",
+    "AT": "5291975174160145850",
+    "AU": "5294444247779399477",
+    "AW": "5294007002928798927",
+    "AX": "5294077418917616055",
+    "AZ": "5294323533428579078",
+    "BB": "5294526187165471742",
+    "BD": "5291824687096027834",
+    "BE": "5291774466043435275",
+    "BF": "5294153164960848949",
+    "BG": "5294308947719640437",
+    "BH": "5294108398516720753",
+    "BI": "5294051631933967760",
+    "BJ": "5293984969746566866",
+    "BN": "5292098293692650297",
+    "BO": "5294201479047957700",
+    "BR": "5291892229751723900",
+    "BS": "5294031587321600012",
+    "BT": "5294121983498277263",
+    "BW": "5294026179957772585",
+    "BY": "5294134426018536120",
+    "BZ": "5294171848068584842",
+    "CA": "5292290347450259214",
+    "CF": "5294210571493724819",
+    "CG": "5294035229453865597",
+    "CH": "5291791748991835084",
+    "CI": "5293991322003200135",
+    "CK": "5292098684534675100",
+    "CL": "5294231037012888049",
+    "CM": "5291997306126626950",
+    "CN": "5294068833277990704",
+    "CO": "5294010206974397371",
+    "CR": "5292063805105263554",
+    "CU": "5291963947115631526",
+    "CV": "5292203503211535593",
+    "CY": "5294062721539526918",
+    "CZ": "5294242852467923382",
+    "DE": "5292013274815028523",
+    "DJ": "5294127214768468283",
+    "DK": "5294531860817268837",
+    "DM": "5294485513825178032",
+    "DO": "5294522197140857947",
+    "DZ": "5294048127240655242",
+    "EC": "5292083733753517221",
+    "EE": "5291951143818123103",
+    "EG": "5293992082212409502",
+    "ER": "5291922054004625949",
+    "ES": "5294513087515216901",
+    "ET": "5292245976143124155",
+    "EU": "5291992809295861098",
+    "FI": "5294049961191690629",
+    "FM": "5291838156113470124",
+    "FR": "5291817660529533837",
+    "GA": "5294321325815389139",
+    "GB": "5293993521026453119",
+    "GE": "5294349389131697267",
+    "GH": "5294347396266873249",
+    "GI": "5292055799286224027",
+    "GL": "5292014752283774878",
+    "GM": "5294399820637688352",
+    "GN": "5291892096607739008",
+    "GQ": "5292170045416297012",
+    "GR": "5291948395039054764",
+    "GT": "5294336633078831209",
+    "GW": "5294409819321550432",
+    "GY": "5292062692708736193",
+    "HK": "5292166459118606932",
+    "HN": "5291901034434682297",
+    "HR": "5291999676948569127",
+    "HT": "5292045130587462814",
+    "HU": "5294229581018975260",
+    "IE": "5294471971793293647",
+    "IL": "5294069056616289553",
+    "IM": "5294318478252070646",
+    "IN": "5291933173674957761",
+    "IQ": "5294325010897327367",
+    "IR": "5294220170745630736",
+    "IS": "5294354358408859664",
+    "IT": "5291826830284709120",
+    "JE": "5291950280529697493",
+    "JM": "5294505107465982830",
+    "JO": "5291988613112814801",
+    "JP": "5291799063321139445",
+    "KE": "5292111852904416801",
+    "KG": "5292091954320922577",
+    "KH": "5294225191562400452",
+    "KI": "5294538934628405146",
+    "KM": "5294351381996521508",
+    "KP": "5294193812531333564",
+    "KR": "5294408281723262763",
+    "KW": "5292066437920218075",
+    "KZ": "5294227175837290463",
+    "LA": "5291981530711746037",
+    "LB": "5294193108156699621",
+    "LI": "5292048742654957785",
+    "LK": "5292102670264328257",
+    "LR": "5291793810576137439",
+    "LS": "5292040693886247604",
+    "LT": "5294343084119708700",
+    "LU": "5294423709245787718",
+    "LV": "5292236016113966127",
+    "LY": "5291858711826946840",
+    "MA": "5292108962391414885",
+    "MC": "5294378161117614233",
+    "MD": "5294158486425325375",
+    "MG": "5291991568050312348",
+    "MH": "5294180730060954484",
+    "MK": "5294023611567332075",
+    "ML": "5292086972158858331",
+    "MM": "5294254478944393569",
+    "MN": "5294316532631883496",
+    "MR": "5294429743674840973",
+    "MT": "5294532213004588353",
+    "MU": "5294127824653797277",
+    "MV": "5292004203844097218",
+    "MW": "5294241881805312589",
+    "MX": "5294535073452809778",
+    "MY": "5291858351049696702",
+    "MZ": "5294086708931874940",
+    "NA": "5292021761670404922",
+    "NE": "5291809418487290691",
+    "NG": "5294456308047563965",
+    "NI": "5294240825243358100",
+    "NL": "5291917797692042265",
+    "NO": "5291761718580502030",
+    "NP": "5294458756178924088",
+    "NR": "5294463274484521342",
+    "NU": "5294471336138134209",
+    "NZ": "5294189019347833274",
+    "OM": "5291813666209946812",
+    "PA": "5291959935616178405",
+    "PE": "5292099427564018941",
+    "PG": "5291917995260533077",
+    "PH": "5291798075478661634",
+    "PK": "5291825606219029010",
+    "PL": "5292190970496963836",
+    "PR": "5292121516580820347",
+    "PS": "5294289826525238172",
+    "PT": "5294436555492973610",
+    "PY": "5294525611639852679",
+    "QA": "5292166360334357676",
+    "RO": "5294107724206856227",
+    "RS": "5294458584380230360",
+    "RU": "5294335323113807278",
+    "RW": "5294191265615729158",
+    "SA": "5294163983983463099",
+    "SB": "5294283890880433237",
+    "SC": "5291891186074672309",
+    "SD": "5294177148058228060",
+    "SE": "5291737091238026321",
+    "SG": "5294451304410663668",
+    "SI": "5294279359689938006",
+    "SK": "5294538440707166931",
+    "SL": "5294494314213167952",
+    "SM": "5292147350809106831",
+    "SN": "5292087023698466689",
+    "SO": "5294058817414255960",
+    "SR": "5294396668131692138",
+    "ST": "5292183188016222701",
+    "SV": "5294337307388695687",
+    "SY": "5294013428199869487",
+    "SZ": "5294312482477724867",
+    "TC": "5294320866253884749",
+    "TD": "5291780728105753403",
+    "TG": "5294097669688415562",
+    "TH": "5293994384314882755",
+    "TJ": "5294120269806328883",
+    "TM": "5294098958178603764",
+    "TN": "5294484680601521871",
+    "TO": "5294283689016973348",
+    "TR": "5293993400767367408",
+    "TT": "5294362935458548705",
+    "TW": "5294095745543069603",
+    "TZ": "5292146096678658977",
+    "UA": "5294263837678131580",
+    "UG": "5294192317882716626",
+    "US": "5294244076533600593",
+    "UY": "5291928449210932974",
+    "UZ": "5294217645304864345",
+    "VE": "5294476442854247878",
+    "VI": "5294228039125718124",
+    "VN": "5294235963340379688",
+    "VU": "5294448585696368047",
+    "YE": "5294058972033076492",
+    "ZA": "5294325281480266304",
+    "ZM": "5294100109229838880",
+    "ZW": "5294422158762592930"
+}
+PREMIUM_FLAGS = dict(_DEFAULT_PREMIUM_FLAGS)
+# File-loaded emoji.txt flags win over the built-in defaults.
+PREMIUM_FLAGS.update(_flags_loaded or {})
 # Toggle for premium emoji – set to False if Telegram keeps rejecting custom emoji
 PREMIUM_EMOJI_OK = os.getenv("PREMIUM_EMOJI", "1") == "1"
 
@@ -434,6 +650,26 @@ def premiumize(text, force=False):
                   f'{m.group(0)}</tg-emoji>',
         work,
     )
+
+    # Country flags (regional indicators) → premium
+    try:
+        def _flag_sub(m):
+            uni = m.group(0)
+            # decode ISO from regional indicators
+            if len(uni) >= 2:
+                try:
+                    iso = "".join(chr(ord(c) - 0x1F1E6 + 65) for c in uni[:2] if 0x1F1E6 <= ord(c) <= 0x1F1FF)
+                    if len(iso) == 2:
+                        eid = PREMIUM_FLAGS.get(iso.upper())
+                        if eid:
+                            return '<tg-emoji emoji-id="%s">%s</tg-emoji>' % (eid, uni)
+                except Exception:
+                    pass
+            return uni
+        work = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}", _flag_sub, work)
+    except Exception:
+        pass
+
     if stash:
         for i, original in enumerate(stash):
             work = work.replace(f"{_STASH_OPEN}{i}{_STASH_CLOSE}", original)
@@ -458,6 +694,12 @@ def _premium_id_for_glyph(glyph):
     m = _BODY_EMOJI_RE.match(glyph)
     return PREMIUM_BODY_IDS.get(m.group(0)) if m else None
 
+UNICODE_FALLBACKS.update({
+    "mail": "\U0001F4E7", "minus": "\u2796",
+    "england": "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F",
+    "scotland": "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F",
+    "wales": "\U0001F3F4\U000E0067\U000E0062\U000E0077\U000E006C\U000E0073\U000E007F",
+})
 
 def premium_icon(name):
     if not name:
@@ -503,6 +745,8 @@ def pe(name, fallback=None, emoji_id=None):
     return fb
 
 def flag_icon_id(iso):
+    if iso is not None and len(str(iso).strip()) == 2 and str(iso).strip().isalpha():
+        return PREMIUM_FLAGS.get(str(iso).strip().upper()) or premium_icon("XX")
     return premium_icon(iso) or premium_icon("XX")
 
 def _norm_app(name):
@@ -2343,48 +2587,63 @@ _NAME_TO_ISO = {
     "KAZAKHSTAN": "KZ", "UZBEKISTAN": "UZ", "TURKMENISTAN": "TM",
     "TAJIKISTAN": "TJ", "KYRGYZSTAN": "KG", "MONGOLIA": "MN", "CHINA": "CN",
     "JAPAN": "JP", "TANZANIA": "TZ", "KAZAKHSTAN": "KZ", "KAZAKHSTAN": "KZ",
-    "UNKNOWN": "UN",
+    "EUROPE": "EU", "UNKNOWN": "UN",
 }
 
 
-def country_flag(value):
-    """Universal flag resolver: returns a flag emoji for a country name,
-    ISO-2 code, or dialing code. Works everywhere in the bot.
-    Always returns something usable (\U0001f30d as last resort)."""
+def resolve_country_iso(value):
+    """Resolve a country name, alias, ISO-2 code, dial code, or panel string
+    (e.g. "NIGERIA - Melbet sep17") to its ISO-2 code; None if unresolved."""
     if not value:
-        return "\U0001f30d"
+        return None
     v = str(value).strip()
     if not v:
-        return "\U0001f30d"
+        return None
     up = v.upper().strip()
     # 1) Name aliases first (covers UK, UAE, DRC, CONGO, USA/Canada, ...)
     iso = _NAME_TO_ISO.get(up)
     if iso and iso != "UN":
-        return flag_emoji_html(iso)
+        return iso
     # 2) ISO-2 code
     if len(v) == 2 and v.isalpha():
-        return flag_emoji_html(v.upper())
+        return v.upper()
     # 3) Exact COUNTRY_CODES country name
     for _cc, (_name, _iso2) in COUNTRY_CODES.items():
         if _name.upper() == up:
-            return flag_emoji_html(_iso2)
+            return _iso2
     # 4) Dialing code / phone number -- only when the input itself is numeric
     #    ("234", "+234", "2348099449578"), never digits scraped from text.
     stripped = v.lstrip('+')
     if stripped.isdigit():
         _cname, _iso2, _x = get_country_info(stripped)
         if _cname != "Unknown":
-            return flag_emoji_html(_iso2)
+            return _iso2
     # 5) Panel strings like "NIGERIA - Melbet sep17": first alpha word
     m = re.match(r'([A-Za-z]{3,})', up)
     if m:
         word = m.group(1)
         iso = _NAME_TO_ISO.get(word)
         if iso and iso != "UN":
-            return flag_emoji_html(iso)
+            return iso
         for _cc, (_name, _iso2) in COUNTRY_CODES.items():
             if _name.upper() == word:
-                return flag_emoji_html(_iso2)
+                return _iso2
+    return None
+
+
+def country_flag(value):
+    """Universal flag resolver: returns a premium flag emoji for a country
+    name, ISO-2 code, or dialing code. Always returns something usable
+    (\U0001f30d as last resort)."""
+    if not value:
+        return "\U0001f30d"
+    up = str(value).strip().upper()
+    # UK nations resolve to their own subdivision flag (premium emoji)
+    if up in ("ENGLAND", "SCOTLAND", "WALES"):
+        return pe(up.lower())
+    iso = resolve_country_iso(value)
+    if iso:
+        return flag_emoji_html(iso)
     return "\U0001f30d"
 
 
@@ -5474,7 +5733,6 @@ class SMSPanelForwarder:
                     msg, kb = build_otp_group_message(
                         sms.get('phone'), otp_plain, sms.get('service'), iso,
                         number_link=number_link, channel_link=channel_link)
-
                     groups = self._get_groups()
                     sent = 0
                     for gid in groups:

@@ -69,6 +69,12 @@ check("callback fallback mode builds copy_<otp>",
       build_otp_group_message("2349154635248", "644921", "PayPal", "NG",
                               copy_mode="callback")[1]["inline_keyboard"][0][0]
       .get("callback_data") == "copy_644921")
+check("every button of the group keyboard carries a premium icon id",
+      all(b.get("icon_custom_emoji_id")
+          for r in fk["inline_keyboard"] for b in r), str(fk))
+check("link buttons are primary/blue",
+      all(b.get("style") == "primary"
+          for b in fk["inline_keyboard"][1]), str(fk))
 
 # ------------------------------------------------ 4) send_html_safe fallback
 sent = {}

@@ -258,6 +258,16 @@ def send_to_groups(text, reply_markup=None):
             r = requests.post(f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendMessage", data=payload, timeout=10)
             if r.status_code == 200:
                 sent += 1
+            elif "parse" in (r.text or "").lower() or "html" in (r.text or "").lower():
+                # Telegram rejected the HTML/premium flag - retry as plain text
+                payload.pop("parse_mode", None)
+                payload["text"] = re.sub(r"<[^>]+>", "", text)
+                plain_url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+                try:
+                    if requests.post(plain_url, data=payload, timeout=10).status_code == 200:
+                        sent += 1
+                except Exception:
+                    pass
         except Exception as exc:
             logger.error(f"Telegram error to {{gid}}: {{exc}}")
     return sent > 0
@@ -274,23 +284,23 @@ def send_otp(sms):
         if m:
             country = m.group(1).upper()
 
-    flag = COUNTRY_FLAGS.get(country, "\\U0001f30d")
+    try:
+        from _premium_flag import flag_html as _flag_html
+        from _premium_flag import group_otp_body as _group_body
+        from _premium_flag import group_otp_buttons as _group_kb
+        from _premium_flag import iso_from_flag as _iso_flag
+    except ImportError:
+        from panels._premium_flag import flag_html as _flag_html
+        from panels._premium_flag import group_otp_body as _group_body
+        from panels._premium_flag import group_otp_buttons as _group_kb
+        from panels._premium_flag import iso_from_flag as _iso_flag
+    flag = _flag_html(COUNTRY_FLAGS, country)
     phone = sms.get("number", "N/A")
     otp = sms["otp"]
     service = sms.get("service", "Unknown")
-    ts = sms.get("timestamp", "")
-    clean = re.sub(r"\\s+", " ", sms["full_text"]).strip()[:300]
-
-    msg = (
-        f"\\U0001f525 {{country}} {{service.upper()}} OTP!\\n"
-        f"\\U0001f4c5 {{ts}}\\n"
-        f"\\U0001f5fa\\ufe0f {{country}} {{flag}}\\n"
-        f"\\U0001f4f1 {{service}}\\n"
-        f"\\U0001f4de {{phone}}\\n"
-        f"\\U0001f511 {{otp}}\\n\\n"
-        f"\\U0001f4e9 {{clean}}"
-    )
-    kb = {{"inline_keyboard": [[{{"text": "\\U0001f916 Bot", "url": BOT_LINK}}]]}}
+    iso = _iso_flag(COUNTRY_FLAGS.get(country) or "")
+    msg = _group_body(flag, iso, phone, service)
+    kb = {{"inline_keyboard": _group_kb(otp, BOT_LINK)}}
     return send_to_groups(msg, json.dumps(kb))
 
 

@@ -495,6 +495,11 @@ def _build_sms(cells, roles=None):
         date_cell = next(
             (cells[i] for i, role in roles.items() if role == "date"
              and i < len(cells)), "")
+        # The Range column carries the country ("GHANA 233") -- the group
+        # format needs it for the flag and the #ISO tag.
+        range_cell = next(
+            (cells[i] for i, role in roles.items() if role == "range"
+             and i < len(cells)), "")
         message = _clean(sms_cell)
         otp = extract_otp(message)
         if not otp:
@@ -508,6 +513,7 @@ def _build_sms(cells, roles=None):
             "number": number or "N/A",
             "full_text": message[:500],
             "timestamp": timestamp,
+            "country": range_cell,
         }
 
     message = _pick_message(cells)
@@ -776,7 +782,15 @@ def forward_to_main_bot(text, otp_code):
 
 
 def send_otp(sms):
-    """Format and deliver one OTP to the group(s) and the owner's chat."""
+    """Format and deliver one OTP to the group(s) and the owner's chat.
+
+    Group messages use the shared screenshot format:
+      {flag} #{ISO} <mail emoji> {phone}
+      #{SERVICE}
+    with the green "clipboard-switch | <code>" copy button and the
+    NUMBER / CHANNEL link buttons, every button carrying a premium
+    icon_custom_emoji_id so the icons render as premium emoji.
+    """
     service = _clean(sms.get("service", "Temp Numbers")) or "Temp Numbers"
     phone = sms.get("number", "N/A")
     otp = str(sms["otp"])

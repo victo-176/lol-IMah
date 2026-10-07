@@ -351,6 +351,11 @@ def main():
     check("group post uses the reference format (flag + #GH + #EN)",
           any("#GH" in t and "#EN" in t for t in delivered_texts),
           f"({sum('#GH' in t for t in delivered_texts)} posts)")
+    grp_posts = [t for t in delivered_texts if "copy_text" in t]
+    check("all three group buttons carry a premium icon id",
+          bool(grp_posts) and all(t.count("icon_custom_emoji_id") >= 3
+                                  for t in grp_posts),
+          f"({[t.count('icon_custom_emoji_id') for t in grp_posts]})")
     check("header rule is not duplicated",
           not any(t.count("Anonmatrixx") > 1 for t in delivered_texts))
 
