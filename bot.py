@@ -6365,8 +6365,9 @@ def show_leaderboard(chat_id):
     else:
         medals = ['1️⃣', '2️⃣', '3️⃣']
         for i, (uid, name, cnt) in enumerate(rows, 1):
-            # Number every rank; the top three keep their medal after it.
-            rank = f"{i}. {medals[i-1]}" if i <= 3 else f"{i}."
+            # Every rank is numbered: keycap medals for the podium (they show
+            # 1/2/3), plain "4." style for the rest.
+            rank = medals[i-1] if i <= 3 else f"{i}."
             safe_name = html_mod.escape(str(name or uid))
             text += f"{rank} <a href='tg://user?id={uid}'>{safe_name}</a> — {cnt} OTPs\n"
     markup = types.InlineKeyboardMarkup()
