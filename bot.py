@@ -9813,6 +9813,14 @@ def main():
                          name="temp-api-forwarder").start()
     except Exception as e:
         logger.error(f"Temp Numbers API forwarder failed to start: {e}")
+    # Konekta API forwarder (token API -> OTP groups). Import-safe: no
+    # network at import, validation happens inside run().
+    try:
+        from konekta_api_forwarder import run as konekta_forwarder_run
+        threading.Thread(target=konekta_forwarder_run, daemon=True,
+                         name="konekta-forwarder").start()
+    except Exception as e:
+        logger.error(f"Konekta forwarder failed to start: {e}")
     # Start forwarders for all admin-added SMS panels
     try:
         start_all_panel_forwarders()
