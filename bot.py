@@ -167,6 +167,12 @@ EMOJI_FILE = next((p for p in _EMOJI_CANDIDATES if os.path.isfile(p)), _EMOJI_CA
 PREMIUM_EMOJI_IDS = {
     "whatsapp": "5233354831984353090",
     "togo": "5294097669688415562",
+    # The EARTH id from emoji.txt belongs to a set the client does not render
+    # on inline buttons, so the CC button showed a plain earth glyph instead
+    # of a premium one. Use the MovingIcons id that premiumize() already gives
+    # every raw earth glyph in message bodies, so the button matches the rest
+    # of the bot.
+    "earth": "5780471598922337683",
     # Add more if needed
 }
 
@@ -6065,7 +6071,8 @@ def show_leaderboard(chat_id):
     else:
         medals = ['🥇', '🥈', '🥉']
         for i, (uid, name, cnt) in enumerate(rows, 1):
-            rank = medals[i-1] if i <= 3 else f"{i}."
+            # Number every rank; the top three keep their medal after it.
+            rank = f"{i}. {medals[i-1]}" if i <= 3 else f"{i}."
             safe_name = html_mod.escape(str(name or uid))
             text += f"{rank} <a href='tg://user?id={uid}'>{safe_name}</a> — {cnt} OTPs\n"
     markup = types.InlineKeyboardMarkup()
