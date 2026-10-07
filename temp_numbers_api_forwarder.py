@@ -19,7 +19,7 @@ Every NEW row (deduplicated, existing rows skipped on startup) is forwarded
 to the configured Telegram OTP group(s) in the shared reference format via
 premium_emoji.build_otp_group_message():
 
-    {premium flag} #{ISO} {app icon} +2347●○●●6087
+    {premium flag} #{ISO} {app icon} +2347●○●○6087
     [ green full-width: {app icon} ⧉ Service | <real OTP>  (copy_text) ]
     [ blue NUMBER ] [ blue CHANNEL ]
 

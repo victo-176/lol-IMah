@@ -3678,7 +3678,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
         try:
             markup = types.InlineKeyboardMarkup()
             markup.row(ibtn("Owner", url="https://t.me/Jibohu1", style="primary", icon="admin"),
-                       ibtn("Channel", url="https://t.me/AnonmatrixxOtp", style="primary", icon="announcement"))
+                       ibtn("Channel", url="https://t.me/Anonmatrixx_channel", style="primary", icon="announcement"))
             msg = (f"{pe('fire', '🏆')} <b>MATRIXX SMS V3</b> {pe('fire', '🏆')}\n"
                    f"{flag_emoji_html(iso)} <b>Country:</b> {html_mod.escape(str(country_name))}\n"
                    f"{app_emoji} <b>Service:</b> {html_mod.escape(str(service))}\n"
@@ -3710,7 +3710,7 @@ def _otp_group_links():
     """URLs for the OTP group's NUMBER / CHANNEL buttons."""
     bot_link = get_setting('bot_link') or 'https://t.me/Anon_MatrixxV3bot'
     number_link = get_setting('number_link') or bot_link
-    channel_link = get_setting('channel_link') or 'https://t.me/AnonmatrixxOtp'
+    channel_link = get_setting('channel_link') or 'https://t.me/Anonmatrixx_channel'
     return number_link, channel_link
 
 
@@ -7328,22 +7328,52 @@ def show_admin_panel(chat_id, message_id=None):
     else:
         bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
+# Admin menu sections. The top level stays short: Dashboard / Users /
+# Withdrawals up front, then Utility, Panels and Settings open their own
+# screens so the flat 13-button list is grouped instead.
+ADMIN_MENU_GROUPS = {
+    "utility": {
+        "title": "UTILITY",
+        "icon": "wrench",
+        "fallback": "🛠️",
+        "buttons": [
+            ("Manage Combos", "admin_combos", "list", "primary"),
+            ("Manage Numbers", "admin_numbers", "phone", "primary"),
+            ("OTP Groups", "admin_otp_groups", "announcement", "primary"),
+        ],
+    },
+    "panels": {
+        "title": "PANELS",
+        "icon": "link",
+        "fallback": "🔗",
+        "buttons": [
+            ("All Panels", "admin_all_panels", "link", "primary"),
+            ("SMS Panels", "admin_sms_panels", "link", "primary"),
+            ("Choice SMS", "admin_choice_sms", "link", "primary"),
+        ],
+    },
+    "settings": {
+        "title": "SETTINGS",
+        "icon": "settings",
+        "fallback": "⚙️",
+        "buttons": [
+            ("Settings", "admin_settings", "settings", "danger"),
+            ("Admins", "admin_manage_admins", "admin", "primary"),
+            ("Backup / Restore", "admin_backup", "archive", "success"),
+        ],
+    },
+}
+
 def get_admin_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     # Fixed: removed Unicode emoji from text, only premium icon via icon= parameter
     buttons = [
         ibtn("Dashboard", callback_data="admin_dashboard", style="success", icon="stats"),
-        ibtn("Manage Combos", callback_data="admin_combos", style="primary", icon="list"),
-        ibtn("Manage Numbers", callback_data="admin_numbers", style="primary", icon="phone"),
-        ibtn("OTP Groups", callback_data="admin_otp_groups", style="primary", icon="announcement"),
         ibtn("Users", callback_data="admin_users", style="primary", icon="people"),
         ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"),
-        ibtn("All Panels", callback_data="admin_all_panels", style="primary", icon="link"),
-        ibtn("SMS Panels", callback_data="admin_sms_panels", style="primary", icon="link"),
-        ibtn("Choice SMS", callback_data="admin_choice_sms", style="primary", icon="link"),
-        ibtn("Settings", callback_data="admin_settings", style="danger", icon="settings"),
-        ibtn("Admins", callback_data="admin_manage_admins", style="primary", icon="admin"),
-ibtn("Backup / Restore", callback_data="admin_backup", style="success", icon="archive"),
+        ibtn("Utility", callback_data="admin_grp|utility", style="primary", icon="wrench"),
+        ibtn("Panels", callback_data="admin_grp|panels", style="primary", icon="link"),
+        ibtn("Settings", callback_data="admin_grp|settings", style="danger", icon="settings"),
         ibtn("Leave", callback_data="nav_back", style="danger", icon="back")
     ]
     for i in range(0, len(buttons), 2):
@@ -7366,6 +7396,24 @@ def handle_admin_callback(call, data, chat_id, msg_id):
                 pass
     except Exception:
         pass
+    # Grouped admin menu: each section opens its own screen, Back returns
+    # to the main panel. Unknown sections fall back to the main panel.
+    if data.startswith("admin_grp|"):
+        key = data.split("|", 1)[1]
+        group = ADMIN_MENU_GROUPS.get(key)
+        if not group:
+            show_admin_panel(chat_id, msg_id)
+            return
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        for label, cb, icon, style in group["buttons"]:
+            markup.add(ibtn(label, callback_data=cb, style=style, icon=icon))
+        markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
+        heading = (f"{pe(group['icon'], group['fallback'])} <b>{group['title']}</b>\n"
+                   f"Pick an option:")
+        bot.edit_message_text(heading, chat_id, msg_id, parse_mode="HTML",
+                              reply_markup=markup)
+        return
+
     if data == "admin_dashboard":
         stats = get_dashboard_stats()
         text = (f"{pe('stats', '📊')} <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"

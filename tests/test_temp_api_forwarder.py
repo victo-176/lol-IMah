@@ -126,7 +126,7 @@ check("delivered", ok is True)
 check("one send call", len(sent_calls) == 1, str(len(sent_calls)))
 chat_id, body, kb = sent_calls[0]
 check("sent to the group", chat_id == -100123, str(chat_id))
-check("body has watermark number", "+2347●○●●6087" in body, body)
+check("body has watermark number", "+2347●○●○6087" in body, body)
 check("body has #ISO tag", "#NG" in body, body)
 check("raw phone number is masked out", "2347020296087" not in body, body)
 premium_body = premiumize(body)
