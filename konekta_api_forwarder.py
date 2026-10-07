@@ -208,6 +208,24 @@ def _tg_send(chat_id, text, reply_markup=None):
                                 "(rejected emoji id)", chat_id)
                     return True
                 desc = (r.text or "")[:160]
+        elif r.status_code == 521 or r.status_code == 502 or r.status_code == 503:
+            logger.warning(
+                "Telegram API unreachable (HTTP %s) while posting to %s — "
+                "retrying the whole send once as a plain-text fallback",
+                r.status_code, chat_id)
+            plain = _TG_EMOJI_RE.sub(r"\1", sent_text)
+            if plain != sent_text:
+                payload["text"] = plain
+                payload.pop("parse_mode", None)
+                r = requests.post(
+                    f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/sendMessage",
+                    data=payload, timeout=15,
+                )
+                if r.status_code == 200:
+                    logger.info("Sent to %s with premium tags stripped "
+                                "(server-side proxy error)", chat_id)
+                    return True
+                desc = (r.text or "")[:160]
         logger.warning("Telegram send to %s failed: HTTP %s — %s",
                        chat_id, r.status_code, desc)
     except Exception as exc:
@@ -221,6 +239,13 @@ def send_to_groups(text, reply_markup=None, otp=""):
     If a group rejects the copy_text button, retry once with the same
     keyboard downgraded to a `copy_<otp>` callback so the OTP still lands.
     """
+    if not OTP_GROUPS:
+        logger.warning(
+            "No OTP groups configured for %s — nothing to forward to. "
+            "Add them via bot admin > OTP Groups (or set default_otp_group).",
+            PANEL_NAME)
+        return False
+
     sent = 0
     for gid in OTP_GROUPS:
         ok = _tg_send(gid, text, reply_markup)

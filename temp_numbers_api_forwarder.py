@@ -278,6 +278,13 @@ def send_to_groups(text, reply_markup=None, otp=""):
     If a group rejects the copy_text button, retry once with the same
     keyboard downgraded to a `copy_<otp>` callback so the OTP still lands.
     """
+    if not OTP_GROUPS:
+        logger.warning(
+            "No OTP groups configured for %s — nothing to forward to. "
+            "Add them via bot admin > OTP Groups (or default_otp_group).",
+            PANEL_NAME)
+        return False
+
     sent = 0
     for gid in OTP_GROUPS:
         ok = _tg_send(gid, text, reply_markup)
