@@ -73,6 +73,35 @@ try:
     empty = kf.fetch_records()
     check("'No Records Found' -> [] (no crash)", empty == [], str(empty))
 
+    # The REAL success payload observed live (2026-10-07 19:10): a dict
+    # with status/total/data, rows keyed dt/num/cli/message — this shape
+    # was previously dropped wholesale, so nothing reached the group.
+    captured["payload"] = {
+        "status": "success", "total": 1,
+        "data": [{
+            "dt": "2026-10-07 19:02:26", "num": "263787140515",
+            "cli": "PayPal",
+            "message": "# PayPal Your security code is 980088 Your code "
+                       "expires in 10 minutes Please dont reply 33p3o0TedB",
+            "payout": "0.015",
+        }],
+    }
+    ok_rows = kf.fetch_records()
+    check("success dict payload parsed", len(ok_rows) == 1,
+          str(len(ok_rows)))
+    check("num -> number", ok_rows and ok_rows[0]["number"] == "263787140515",
+          str(ok_rows and ok_rows[0].get("number")))
+    check("dt -> timestamp",
+          ok_rows and ok_rows[0]["timestamp"] == "2026-10-07 19:02:26",
+          str(ok_rows and ok_rows[0].get("timestamp")))
+    check("cli -> service", ok_rows and ok_rows[0]["service"] == "PayPal",
+          str(ok_rows and ok_rows[0].get("service")))
+    check("otp extracted from 'code is 980088'",
+          ok_rows and ok_rows[0]["otp"] == "980088",
+          str(ok_rows and ok_rows[0].get("otp")))
+    captured["payload"] = {"status": "success", "total": 0, "data": []}
+    check("success with empty data -> []", kf.fetch_records() == [])
+
     captured["payload"] = {"status": "error", "msg": "Invalid Authtype"}
     auth = kf.fetch_records()
     check("auth error -> [] (logged, no crash)", auth == [], str(auth))
@@ -156,26 +185,29 @@ finally:
 check("delivery succeeds after downgrade", ok_fb is True)
 check("two attempts made", len(attempts) == 2, str(len(attempts)))
 
-print("\n=== dedupe / first_run / retry semantics ===")
+print("\n=== dedupe / delivery semantics ===")
 sent_keys = []
 real_seen, real_send_otp = kf._seen, kf.send_otp
 kf._seen = set()
 kf.send_otp = lambda sms: sent_keys.append(sms["otp"]) or True
 try:
-    n_first = kf.handle_rows(rows, first_run=True)
+    # The panel's current records must reach the group immediately (this
+    # is what "didn't drop in otp grp" was about) — no startup skip.
+    n_first = kf.handle_rows(rows)
     after_first = list(sent_keys)
-    n_dup = kf.handle_rows(rows, first_run=False)
+    n_dup = kf.handle_rows(rows)
     after_dup = list(sent_keys)
     fresh = [dict(rows[0], otp="999111", timestamp="2026-10-07 09:00:00")]
-    n_new = kf.handle_rows(fresh, first_run=False)
+    n_new = kf.handle_rows(fresh)
 finally:
     kf.send_otp = real_send_otp
     kf._seen = real_seen
-check("first run sends nothing", n_first == 0 and not after_first,
+check("current records are posted immediately",
+      n_first == 2 and after_first == ["734622", "241626"],
       f"{n_first} {after_first}")
-check("repeat rows are deduped", n_dup == 0 and not after_dup,
+check("repeat rows are deduped", n_dup == 0 and after_dup == ["734622", "241626"],
       f"{n_dup} {after_dup}")
-check("new row is forwarded once", n_new == 1 and sent_keys == ["999111"],
+check("new row is forwarded once", n_new == 1 and sent_keys[-1] == "999111",
       str(sent_keys))
 
 print("\n=== failed delivery is retried ===")
@@ -190,8 +222,8 @@ def fail_once(sms):
 
 kf.send_otp = fail_once
 try:
-    kf.handle_rows(rows, first_run=False)
-    retry_sent = kf.handle_rows(rows, first_run=False)
+    kf.handle_rows(rows)
+    retry_sent = kf.handle_rows(rows)
 finally:
     kf.send_otp = real_send_otp
     kf._seen = real_seen
@@ -202,6 +234,20 @@ print("\n=== state isolation from the temp numbers forwarder ===")
 import temp_numbers_api_forwarder as tf  # noqa: E402
 check("separate dedupe sets", kf._seen is not tf._seen)
 check("separate send functions", kf.send_otp is not tf.send_otp)
+
+print("\n=== heartbeat ===")
+hb = []
+kf._tg_send = lambda gid, text, reply_markup=None: hb.append((gid, text)) or True
+kf.OTP_GROUPS = [-1004435037471]
+try:
+    kf._heartbeat()
+finally:
+    kf._tg_send = real_send
+    kf.OTP_GROUPS = real_groups
+check("heartbeat posted to the first group", hb and hb[0][0] == -1004435037471,
+      str(hb))
+check("heartbeat announces the panel", "KONEKTA" in (hb[0][1] if hb else ""),
+      str(hb))
 
 print("\n=== run() safety ===")
 real_env = os.environ.get("KONEKTA_FORWARDER")

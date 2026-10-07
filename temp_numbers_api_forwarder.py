@@ -205,10 +205,12 @@ def parse_records(data):
         if isinstance(rec, dict):
             service = (rec.get("service") or rec.get("cli")
                        or rec.get("sender") or "Unknown")
-            number = rec.get("number") or rec.get("phone") or "N/A"
+            number = (rec.get("number") or rec.get("phone")
+                       or rec.get("num") or "N/A")
             text = (rec.get("message") or rec.get("text")
                     or rec.get("content") or "")
-            ts = rec.get("time") or rec.get("timestamp") or rec.get("date") or ""
+            ts = (rec.get("time") or rec.get("timestamp") or rec.get("date")
+                  or rec.get("dt") or "")
         elif isinstance(rec, (list, tuple)) and len(rec) >= 3:
             service = rec[0]
             number = rec[1]

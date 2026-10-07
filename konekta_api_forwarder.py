@@ -13,11 +13,15 @@ API behaviour (probed live, 2026-10-07):
                                            "msg":"No Records Found"}
   * wrong token              -> HTTP 200 {"msg":"Invalid Authtype"}
   * missing token            -> HTTP 200 {"msg":"Not Authorized"}
-  * with traffic             -> JSON array of rows
-        [service, number, message_text, timestamp]
+  * with traffic (success)   -> HTTP 200
+        {"status":"success","total":4,
+         "data":[{"dt":"2026-10-07 19:02:26", "num":"263787140515",
+                   "cli":"PayPal", "message":"# PayPal Your security
+                   code is 980088 ...", "payout":"0.015"}, ...]}
 
-Every NEW row (deduplicated; existing rows skipped on startup) is forwarded
-to the configured Telegram OTP group(s) in the shared reference format:
+Every row the API returns is forwarded to the configured Telegram OTP
+group(s) in the shared reference format (deduplicated within the process,
+so the same row is only ever posted once per run):
 
     {premium flag} #{ISO} {app icon} +2347●○●○6087
     [ green full-width: {app icon} ⧉ Service | <real OTP>  (copy_text) ]
@@ -141,6 +145,14 @@ def fetch_records():
         return parse_records(data)
 
     if isinstance(data, dict):
+        # Success payload: {"status":"success","total":N,"data":[{...}]}.
+        # Without this branch every record was silently dropped, which is
+        # why nothing reached the OTP group.
+        payload = data.get("data")
+        if payload is None:
+            payload = data.get("records")
+        if isinstance(payload, list):
+            return parse_records(payload)
         msg = str(data.get("msg") or data.get("message") or data)
         if "no records" in msg.lower():
             logger.debug("Konekta: no records right now")
@@ -242,20 +254,18 @@ def send_otp(sms):
 _seen = set()
 
 
-def handle_rows(rows, first_run=False):
+def handle_rows(rows):
     """Forward every not-yet-seen row; returns how many were delivered.
 
-    ``first_run`` marks the existing backlog as seen without sending, so
-    starting the forwarder never spams the groups with old OTPs. Failed
-    deliveries stay unseen and are retried on the next poll.
+    The panel's current records are posted immediately (the OTP group is
+    supposed to show them), rows are deduplicated within the process so a
+    record is only posted once, and failed deliveries stay unseen so they
+    are retried on the next poll.
     """
     sent = 0
     for sms in rows:
         key = _sms_key(sms)
         if key in _seen:
-            continue
-        if first_run:
-            _seen.add(key)
             continue
         if send_otp(sms):
             _seen.add(key)
@@ -266,6 +276,16 @@ def handle_rows(rows, first_run=False):
             logger.warning("Delivery failed for OTP %s — will retry next poll",
                            sms.get("otp"))
     return sent
+
+
+def _heartbeat():
+    """Post a startup notice so the group shows the forwarder is live."""
+    if OTP_GROUPS:
+        _tg_send(
+            OTP_GROUPS[0],
+            f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
+            f"Polling every {POLL_INTERVAL}s",
+        )
 
 
 def run():
@@ -287,16 +307,12 @@ def run():
     logger.info("Konekta API forwarder: polling %s every %ss "
                 "(records=%s, groups=%s)",
                 API_URL, POLL_INTERVAL, RECORDS, len(OTP_GROUPS))
+    _heartbeat()
 
-    first_run = True
     while True:
         try:
             rows = fetch_records()
-            handle_rows(rows, first_run=first_run)
-            if first_run:
-                logger.info("Init: %s existing row(s) marked as seen",
-                            len(_seen))
-                first_run = False
+            handle_rows(rows)
             if len(_seen) > 5000:
                 for stale in list(_seen)[:2000]:
                     _seen.discard(stale)
@@ -334,12 +350,6 @@ def main():
         print("-" * 55)
         sys.exit(1)
 
-    if OTP_GROUPS:
-        _tg_send(
-            OTP_GROUPS[0],
-            f"\U0001F7E2 <b>{PANEL_NAME} Forwarder Started!</b>\n"
-            f"Polling every {POLL_INTERVAL}s",
-        )
     run()
 
 
