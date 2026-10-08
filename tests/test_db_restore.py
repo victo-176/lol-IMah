@@ -98,6 +98,8 @@ def fake_reply_to(message, text, *a, **k):
 bot.bot.get_file = fake_get_file
 bot.bot.download_file = fake_download_file
 bot.bot.reply_to = fake_reply_to
+bot.bot.send_message = fake_reply_to  # capture menu/fallback messages too
+bot.bot.edit_message_text = fake_reply_to
 
 
 def make_message(name, size=None):
@@ -106,6 +108,8 @@ def make_message(name, size=None):
     m.chat.id = OWNER
     m.from_user = Obj()
     m.from_user.id = OWNER
+    m.from_user.first_name = "Tester"
+    m.from_user.username = "tester"  # Telegram User objects always carry this
     m.content_type = "document"
     m.document = Obj()
     m.document.file_name = name
@@ -189,6 +193,65 @@ if handler_entry is not None:
     check("filter matches owner + state + document", bool(test(handler_entry, msg)))
     bot.user_states.pop(OWNER, None)
     check("filter rejects once state is gone", not test(handler_entry, msg))
+
+# ------------------------------------------------ 5) old-schema backup healed on restore
+# The exact production failure: a backup whose `users` table predates the
+# current columns. Before the fix, /start then died with
+# "table users has no column named last_name" and replied
+# "❌ An error occurred. Please try again later."
+old_path = os.path.join(tmpdir, "old_v1.db")
+conn = sqlite3.connect(old_path)
+conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")  # ancient schema
+conn.execute("CREATE TABLE admins (user_id INTEGER PRIMARY KEY)")
+conn.execute("CREATE TABLE bot_settings (key TEXT PRIMARY KEY, value TEXT)")
+conn.execute("INSERT INTO bot_settings (key, value) VALUES ('maintenance', '0')")
+conn.commit()
+conn.close()
+
+payload["bytes"] = open(old_path, "rb").read()
+replies.clear()
+msg5 = make_message("old_v1.db")
+bot.set_state(OWNER, "waiting_db_file")
+bot.handle_db_restore_file(msg5)
+check("old-schema backup restores successfully",
+      any("Database restored" in r for r in replies), f"replies={replies!r}")
+
+conn = sqlite3.connect(f"file:{live_db}?mode=ro", uri=True)
+user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+conn.close()
+expected_user_cols = {
+    "user_id", "username", "first_name", "last_name", "country_code",
+    "assigned_number", "is_banned", "private_combo_country", "join_date",
+    "last_active", "balance", "remove_cc",
+}
+check("users table backfilled to the current schema",
+      expected_user_cols <= user_cols,
+      f"missing={sorted(expected_user_cols - user_cols)}")
+check("tables missing from the old backup are created on restore",
+      {"user_activity", "force_sub_channels"} <= tables,
+      f"missing={sorted({'user_activity', 'force_sub_channels'} - tables)}")
+
+# the exact call /start makes — raised "no such column" before the fix
+save_err = None
+try:
+    bot.save_user(424242, username="probe", first_name="Probe", balance=0.0)
+except Exception as e:  # noqa: BLE001
+    save_err = e
+check("save_user works on the healed DB", save_err is None, f"raised: {save_err!r}")
+
+# full /start path: must not fall back to the generic error reply
+replies.clear()
+msg.text = "/start"
+send_err = None
+try:
+    bot.send_welcome(msg)
+except Exception as e:  # noqa: BLE001
+    send_err = e
+check("send_welcome runs without raising", send_err is None, f"raised: {send_err!r}")
+check("no generic error fallback after restore",
+      not any("An error occurred" in r for r in replies), f"replies={replies!r}")
+check("main menu delivered", len(replies) > 0, f"replies={replies!r}")
 
 # ------------------------------------------------ summary
 print()

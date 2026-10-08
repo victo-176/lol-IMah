@@ -1140,6 +1140,60 @@ def init_db():
             details TEXT,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        # Backfill columns on tables restored from older backups.
+        # CREATE TABLE IF NOT EXISTS cannot alter an existing table, so a
+        # restored DB with an old schema (e.g. users without username/
+        # first_name/last_name) breaks every INSERT and /start dies with
+        # "no such column". Parse our own CREATE statements above as the
+        # single source of truth and add whatever is missing.
+        try:
+            import inspect as _inspect
+            _src = _inspect.getsource(init_db)
+            _expected = {}
+            for _m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", _src):
+                _tbl = _m.group(1)
+                _i = _m.end()
+                _depth, _j = 1, _i
+                while _j < len(_src) and _depth:
+                    if _src[_j] == '(':
+                        _depth += 1
+                    elif _src[_j] == ')':
+                        _depth -= 1
+                    _j += 1
+                _parts, _buf, _d = [], "", 0
+                for _ch in _src[_i:_j - 1]:
+                    if _ch == '(':
+                        _d += 1
+                    elif _ch == ')':
+                        _d -= 1
+                    if _ch == ',' and _d == 0:
+                        _parts.append(_buf)
+                        _buf = ""
+                    else:
+                        _buf += _ch
+                _parts.append(_buf)
+                for _p in _parts:
+                    _p = _p.strip()
+                    if not _p:
+                        continue
+                    _name = _p.split()[0].strip('`"[]')
+                    if _name.upper() in ("PRIMARY", "UNIQUE", "CHECK", "FOREIGN", "CONSTRAINT"):
+                        continue  # table-level constraint, not a column
+                    _expected.setdefault(_tbl, {})[_name] = _p
+            for _tbl, _cols in _expected.items():
+                _have = {r[1] for r in c.execute(f"PRAGMA table_info({_tbl})")}
+                if not _have:
+                    continue  # table did not exist — the CREATE above made it complete
+                for _name, _decl in _cols.items():
+                    if _name not in _have:
+                        try:
+                            c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_decl}")
+                            logger.info(f"Schema backfill: added {_tbl}.{_name}")
+                        except Exception:
+                            pass  # e.g. a constraint column ALTER cannot add
+        except Exception as e:
+            logger.warning(f"Schema backfill skipped: {e}")
+
         owner_id = ADMIN_IDS[0]
         c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (owner_id,))
         for eid in EXTRA_ADMINS:
@@ -8710,6 +8764,14 @@ def handle_db_restore_file(message):
     if not ok:
         bot.reply_to(message, f"{pe('cross', '❌')} Restore failed.\n{html_mod.escape(str(result))}", parse_mode="HTML")
         return
+
+    # Heal the restored file immediately: create any tables the current
+    # code needs and backfill columns older backups are missing, so /start
+    # works right away instead of dying with "no such column".
+    try:
+        init_db()
+    except Exception as e:
+        logger.error(f"Post-restore schema heal failed: {e}")
 
     bot.reply_to(message,
         f"{pe('checkmark', '✅')} <b>Database restored!</b>\n\n"
