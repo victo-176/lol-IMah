@@ -8659,8 +8659,10 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 def handle_db_restore_file(message):
     chat_id = message.chat.id
     doc = message.document
-    clear_state(chat_id)
-    clear_state(message.from_user.id)
+    # clear_state takes the message object (it pops chat.id and from_user.id).
+    # Passing the bare ids raised AttributeError here, so the handler died
+    # before ever downloading the file — the restore silently never ran.
+    clear_state(message)
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Back to Backup", callback_data="admin_backup", style="primary", icon="back"))
 
@@ -8679,7 +8681,13 @@ def handle_db_restore_file(message):
 
     tmp_path = os.path.join(BACKUP_DIR, f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}")
     try:
-        telebot.apihelper.download_file(bot.token, doc.file_id, tmp_path)
+        # pyTelegramBotAPI's apihelper.download_file(token, file_path) takes a
+        # server file path, not a file_id + destination — resolve the path
+        # first (same pattern as the combo upload handler).
+        file_info = bot.get_file(doc.file_id)
+        content = bot.download_file(file_info.file_path)
+        with open(tmp_path, "wb") as f:
+            f.write(content)
     except Exception as e:
         logger.error(f"DB upload download failed: {e}", exc_info=True)
         bot.reply_to(message, f"{pe('cross', '❌')} Download failed: {html_mod.escape(str(e)[:120])}", parse_mode="HTML")
