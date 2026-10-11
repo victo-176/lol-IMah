@@ -1321,12 +1321,25 @@ def get_sms_panel(panel_id):
     return row
 
 def save_sms_panel(name, url, login_type, username, password):
+    """Save a panel, keyed by name.
+
+    Re-adding a panel with the same name UPDATES it instead of inserting a new
+    row: duplicate rows would each spawn their own forwarder thread and post
+    the same OTP to the group several times over.
+    """
     with _db_lock:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO sms_panels (name, url, login_type, username, password) VALUES (?, ?, ?, ?, ?)",
-                  (name, url, login_type, username, password))
-        panel_id = c.lastrowid
+        c.execute("SELECT id FROM sms_panels WHERE name=? COLLATE NOCASE", (name,))
+        existing = c.fetchone()
+        if existing:
+            panel_id = existing[0]
+            c.execute("UPDATE sms_panels SET url=?, login_type=?, username=?, password=? WHERE id=?",
+                      (url, login_type, username, password, panel_id))
+        else:
+            c.execute("INSERT INTO sms_panels (name, url, login_type, username, password) VALUES (?, ?, ?, ?, ?)",
+                      (name, url, login_type, username, password))
+            panel_id = c.lastrowid
         conn.commit()
         conn.close()
     return panel_id
@@ -5543,19 +5556,25 @@ class SMSPanelForwarder:
                     country = cname
             # Normalize ISO/UTC timestamps to a readable form
             # (real Dream SMS values carry milliseconds: 2026-09-17T17:32:31.730Z)
+            # Panels that already send "YYYY-MM-DD HH:MM:SS" are kept verbatim.
+            # Anything unparseable keeps its RAW value rather than "now": the
+            # timestamp is part of the dedupe key, so stamping it with the
+            # current time would make the same OTP look new on every poll.
             ts = date_val
-            try:
-                ts_dt = datetime.strptime(date_val.replace("Z", "").split(".")[0][:19], "%Y-%m-%dT%H:%M:%S")
-                ts = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                pass
+            for ts_fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    ts_dt = datetime.strptime(date_val.replace("Z", "").split(".")[0][:19], ts_fmt)
+                    ts = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    break
+                except Exception:
+                    continue
             results.append({
                 'otp': otp,
                 'service': service,
                 'phone': phone,
                 'country': country,
                 'full_text': sms_val[:500],
-                'timestamp': ts if ts else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                'timestamp': ts if ts else date_val,
             })
         return results
 
@@ -5631,6 +5650,30 @@ class SMSPanelForwarder:
         cfg = self.panel_cfg
         return (cfg.get("api_token") or self.username or "").strip()
 
+    # Documented list-row layouts per API style: (cli, number, sms, date).
+    # The crapi viewstats panels (Temp Numbers, Konekta) return rows as
+    # [service, number, message_text, timestamp].
+    _STYLE_LIST_COLS = {
+        "crapi": (0, 1, 2, 3),
+    }
+
+    def _style_list_row(self, rec, style):
+        """Map a list-row API record to the dict field names the parser expects."""
+        cols = self._STYLE_LIST_COLS.get(style)
+        if cols is None:
+            cfg = self.panel_cfg
+            cols = (cfg.get("cli_col", 3), cfg.get("num_col", 2),
+                    cfg.get("sms_col", 5), cfg.get("date_col", 0))
+        cli_i, num_i, sms_i, date_i = cols
+
+        def cell(i):
+            if isinstance(rec, (list, tuple)) and 0 <= i < len(rec) and rec[i] is not None:
+                return str(rec[i])
+            return ""
+
+        return {"cli": cell(cli_i), "number": cell(num_i),
+                "message": cell(sms_i), "time": cell(date_i)}
+
     @staticmethod
     def _style_api_records(data):
         """Pull the record list out of an API payload (tolerant of shapes)."""
@@ -5700,6 +5743,12 @@ class SMSPanelForwarder:
             for rec in records:
                 if isinstance(rec, dict):
                     parsed.extend(self._dreamsms_parse([rec]))
+                elif isinstance(rec, (list, tuple)):
+                    # List rows have a style-specific column order (the crapi
+                    # viewstats panels return [service, number, text, time]);
+                    # map them to the dict field names the tolerant parser
+                    # expects instead of assuming the SMSCDRStats layout.
+                    parsed.extend(self._dreamsms_parse([self._style_list_row(rec, style)]))
                 else:
                     one = self._extract_from_record(rec)
                     if one:
@@ -6499,6 +6548,28 @@ def start_all_panel_forwarders():
                 start_panel_forwarder(pid)
             except Exception as e:
                 logger.error(f"Failed to start panel [{name}]: {e}")
+
+
+def _endpoint_covered_by_panel(api_url):
+    """True when an enabled API panel already polls this endpoint.
+
+    Built-in forwarders (Temp Numbers, Konekta) poll a hard-coded viewstats
+    URL. If the admin also added that same endpoint through the Add Panel
+    wizard, two threads would fetch the same rows and post every OTP twice —
+    so the built-in one yields to the admin-configured panel.
+    """
+    try:
+        target = (api_url or "").strip().lower().rstrip("/")
+        if not target:
+            return False
+        for _pid, _name, url, login_type, _user, enabled in get_all_sms_panels():
+            if not enabled or (login_type or "").lower() != "api":
+                continue
+            if (url or "").strip().lower().rstrip("/") == target:
+                return True
+    except Exception as e:
+        logger.debug(f"_endpoint_covered_by_panel check failed: {e}")
+    return False
 
 
 # =========================== SOCKET.IO MONITOR (fixed) ===========================
@@ -10613,10 +10684,16 @@ def main():
     threading.Thread(target=temp_email_watcher_loop, daemon=True).start()
     # Temp Numbers API forwarder (token API -> OTP groups). Import-safe: no
     # network at import, validation happens inside run().
+    # Skipped when the admin added a panel for the same endpoint: the panel
+    # forwarder already polls it, and both posting would double every OTP.
     try:
-        from temp_numbers_api_forwarder import run as temp_api_forwarder_run
-        threading.Thread(target=temp_api_forwarder_run, daemon=True,
-                         name="temp-api-forwarder").start()
+        from temp_numbers_api_forwarder import API_URL as _TEMP_API_URL, run as temp_api_forwarder_run
+        if _endpoint_covered_by_panel(_TEMP_API_URL):
+            logger.info("Temp Numbers API forwarder not started: an admin-added "
+                        "panel already covers %s", _TEMP_API_URL)
+        else:
+            threading.Thread(target=temp_api_forwarder_run, daemon=True,
+                             name="temp-api-forwarder").start()
     except Exception as e:
         logger.error(f"Temp Numbers API forwarder failed to start: {e}")
     # Konekta API forwarder (token API -> OTP groups). Import-safe: no
