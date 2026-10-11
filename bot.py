@@ -49,6 +49,21 @@ try:
 except ImportError:
     BS4_AVAILABLE = False
 
+# Panel-format helpers for the admin "Add Panel" wizard: auto-captcha login,
+# no-captcha login, REST API (auto-detects augestel_iprn / crapi /
+# query_token / bearer_json) and live WebSocket panels. Kept in a standalone
+# module so the builders are reusable and self-test (python3 all_formats.py).
+from all_formats import (
+    api_auth_headers,
+    api_request_params,
+    build_api_panel_config,
+    build_login_panel_config,
+    build_socket_panel_config,
+    detect_api_style,
+    resolve_signin_url,
+    wizard_start,
+)
+
 # =========================== CONFIGURATION ===========================
 # Bot token stored base64-encoded to avoid a plain-text token in source.
 # Decodes to the bot token; env var BOT_TOKEN overrides it.
@@ -3814,30 +3829,188 @@ def _retry_after(body):
     return int(m.group(1)) + 1 if m else 10
 
 
-def post_otp_group(chat_id, text, kb, otp="", tag="GROUP"):
-    """Post one OTP-group message over the raw Bot API with fallbacks.
+# Telegram rejects any sendMessage body over 4096 characters, so long SMS
+# bodies are split into chunks that are each independently valid HTML.
+TELEGRAM_TEXT_LIMIT = 4096
+CHUNK_MAX_ATTEMPTS = 3
+CHUNK_RETRY_BACKOFF = 2.0
+_VOID_HTML_TAGS = {"br", "hr", "img", "meta", "input", "wbr"}
 
-    Tries the full keyboard, then the same keyboard with copy buttons as
-    `copy_<otp>` callbacks; on a parse error it retries the plain text with
-    tags stripped — the OTP must always land. Returns (ok, retry_after,
-    message_id); retry_after > 0 means HTTP 429, already computed for the
-    caller to sleep out.
+
+def _html_tag_name(raw):
+    m = re.match(r'</?\s*([a-zA-Z][a-zA-Z0-9_-]*)', raw or "")
+    return m.group(1).lower() if m else ""
+
+
+def _html_closing_tag(raw):
+    """Closing tag for an opening tag (void/self-closing tags need none)."""
+    name = _html_tag_name(raw)
+    if not name or name in _VOID_HTML_TAGS:
+        return ""
+    return f"</{name}>"
+
+
+def _html_track_tag(atom, stack):
+    """Update the open-tag stack for one whole tag atom."""
+    if not (atom.startswith("<") and atom.endswith(">")):
+        return
+    if atom.startswith("</"):
+        name = _html_tag_name(atom)
+        for i in range(len(stack) - 1, -1, -1):
+            if _html_tag_name(stack[i]) == name:
+                del stack[i]
+                break
+        return
+    if atom.endswith("/>") or _html_tag_name(atom) in _VOID_HTML_TAGS:
+        return
+    stack.append(atom)
+
+
+def _html_atoms(text):
+    """Tokenize HTML text into atomic pieces: tags, entities, whitespace, words."""
+    atoms = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "<":
+            j = text.find(">", i + 1)
+            j = n - 1 if j == -1 else j
+            atoms.append(text[i:j + 1])
+            i = j + 1
+        elif ch == "&":
+            j = text.find(";", i + 1)
+            if j != -1 and j - i <= 12:
+                atoms.append(text[i:j + 1])
+                i = j + 1
+            else:
+                atoms.append(ch)
+                i += 1
+        elif ch.isspace():
+            j = i
+            while j < n and text[j].isspace():
+                j += 1
+            atoms.append(text[i:j])
+            i = j
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in "<&":
+                j += 1
+            atoms.append(text[i:j])
+            i = j
+    return atoms
+
+
+def _safe_cut_atom(atom, room):
+    """How much of an atom may be cut at a chunk boundary (tags/entities: none)."""
+    if room <= 0:
+        return ""
+    if atom.startswith("<") or atom.startswith("&"):
+        return "" if len(atom) > room else atom
+    return atom if len(atom) <= room else atom[:room]
+
+
+def split_html_message(text, limit=TELEGRAM_TEXT_LIMIT):
+    """Split an HTML message into chunks that each fit Telegram's limit.
+
+    - never splits inside an HTML tag (<...>) or an entity (&...;)
+    - closes open tags at a chunk boundary and reopens them on the next
+      chunk, so every chunk is valid HTML on its own (and those reopened /
+      closing tags count against the limit)
+    - prefers a newline, then breaks at a word boundary — a hard cut is only
+      used for a single atom longer than the whole limit (e.g. a huge URL)
     """
-    # This posts through the raw Bot API, so it never reaches the send_message
-    # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
-    # the OTP groups get plain unicode while every other message is premium.
-    text = premiumize(text)
+    text = str(text or "")
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    stack = []     # open tags, raw source, in order
+    prefix = ""    # reopened tags at the start of the current chunk
+    content = ""   # content of the current chunk (prefix not included)
+    cur_len = 0    # len(prefix) + len(content)
+
+    def suffix():
+        return "".join(reversed([_html_closing_tag(t) for t in stack]))
+
+    def flush(spill=""):
+        nonlocal prefix, content, cur_len
+        body = content.strip()
+        if body:
+            chunks.append(prefix + body + suffix())
+        prefix = "".join(stack)
+        content = spill
+        cur_len = len(prefix) + len(content)
+
+    for atom in _html_atoms(text):
+        if not atom:
+            continue
+        if atom.isspace() and not content:
+            continue  # never start a chunk with whitespace
+        while atom and cur_len + len(suffix()) + len(atom) > limit:
+            # Prefer a newline boundary near the cut point when one exists
+            span = len(content)
+            nl = content.rfind("\n", max(0, span - max(40, span // 4)))
+            if nl != -1 and span - nl > 1:
+                spill = content[nl + 1:].lstrip()
+                content = content[:nl]
+                flush(spill=spill)
+                continue
+            if content:
+                # Not enough room left: end the chunk on a word boundary
+                flush()
+                continue
+            # A fresh chunk still cannot hold this atom
+            room = limit - cur_len - len(suffix())
+            if room > 0:
+                cut = _safe_cut_atom(atom, room)
+                if cut:
+                    content += cut
+                    cur_len += len(cut)
+                    atom = atom[len(cut):]
+                    continue
+            # Pathological: a single atom longer than the whole limit
+            content += atom
+            cur_len += len(atom)
+            atom = ""
+            break
+        if atom:
+            _html_track_tag(atom, stack)
+            content += atom
+            cur_len += len(atom)
+    flush()
+    return chunks or [text]
+
+
+def _schedule_delete(chat_id, msg_id, delay=300):
+    """Delete one Bot API message after `delay` seconds (errors ignored)."""
+    def _do():
+        try:
+            time.sleep(delay)
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                data={"chat_id": chat_id, "message_id": msg_id}, timeout=10)
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def _post_otp_group_chunk(chat_id, text, markup, otp, tag):
+    """POST one chunk over the raw Bot API with the usual fallbacks.
+
+    Tries the given keyboard, then the same keyboard with copy buttons as
+    `copy_<otp>` callbacks; on a parse error it retries the plain text with
+    tags stripped. Returns (ok, retry_after, message_id).
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    attempts = [kb] if kb else [None]
-    if kb:
-        no_copy = _kb_without_copy(kb, otp)
-        if no_copy != kb:
+    attempts = [markup] if markup else [None]
+    if markup:
+        no_copy = _kb_without_copy(markup, otp)
+        if no_copy != markup:
             attempts.append(no_copy)
     last_err = ""
-    for markup in attempts:
+    for mk in attempts:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        if markup:
-            payload["reply_markup"] = json.dumps(markup)
+        if mk:
+            payload["reply_markup"] = json.dumps(mk)
         status, body = _tg_post(url, payload)
         if status == 200:
             return True, 0, _tg_msg_id(body)
@@ -3852,7 +4025,7 @@ def post_otp_group(chat_id, text, kb, otp="", tag="GROUP"):
             # Hostile SMS HTML: drop parse_mode and the tags, keep the
             # keyboard — and never publish the raw <tg-emoji> tags.
             payload2 = {"chat_id": chat_id, "text": strip_html_tags(text),
-                        "reply_markup": json.dumps(markup) if markup else None}
+                        "reply_markup": json.dumps(mk) if mk else None}
             status2, body2 = _tg_post(url, payload2)
             if status2 == 200:
                 return True, 0, _tg_msg_id(body2)
@@ -3861,6 +4034,54 @@ def post_otp_group(chat_id, text, kb, otp="", tag="GROUP"):
             last_err = f"HTTP {status2} - {body2[:300]}"
     logger.error("[%s] OTP post failed to %s: %s", tag, chat_id, last_err)
     return False, 0, 0
+
+
+def post_otp_group(chat_id, text, kb, otp="", tag="GROUP"):
+    """Post one OTP-group message over the raw Bot API with fallbacks.
+
+    Messages longer than Telegram's 4096-char limit are split into chunks;
+    each chunk is retried up to CHUNK_MAX_ATTEMPTS times (2s apart) and the
+    keyboard rides on the last chunk. Returns (ok, retry_after, message_id);
+    retry_after > 0 means HTTP 429, already computed for the caller to sleep
+    out.
+    """
+    # This posts through the raw Bot API, so it never reaches the send_message
+    # wrapper that upgrades emoji elsewhere. Premiumize here as well, otherwise
+    # the OTP groups get plain unicode while every other message is premium.
+    text = premiumize(text)
+    chunks = split_html_message(text)
+    total = len(chunks)
+    if total > 1:
+        logger.info("[%s] %d-char message split into %d chunks for %s",
+                    tag, len(text), total, chat_id)
+    msg_ids = []
+    offset = 0
+    for idx, chunk in enumerate(chunks):
+        markup = kb if idx == total - 1 else None
+        ok, rate, msg_id = False, 0, 0
+        for attempt in range(1, CHUNK_MAX_ATTEMPTS + 1):
+            ok, rate, msg_id = _post_otp_group_chunk(chat_id, chunk, markup, otp, tag)
+            if ok or rate:
+                break
+            if attempt < CHUNK_MAX_ATTEMPTS:
+                logger.warning("[%s] chunk %d/%d (offset %d, %d chars) failed for %s, retry %d/%d in %.0fs",
+                               tag, idx + 1, total, offset, len(chunk), chat_id,
+                               attempt, CHUNK_MAX_ATTEMPTS, CHUNK_RETRY_BACKOFF)
+                time.sleep(CHUNK_RETRY_BACKOFF)
+        if rate:
+            logger.error("[%s] rate limited on chunk %d/%d (offset %d) for %s",
+                         tag, idx + 1, total, offset, chat_id)
+            return False, rate, 0
+        if not ok:
+            logger.error("[%s] chunk %d/%d (offset %d, %d chars) failed for %s after %d attempts",
+                         tag, idx + 1, total, offset, len(chunk), chat_id, CHUNK_MAX_ATTEMPTS)
+            return False, 0, 0
+        msg_ids.append(msg_id)
+        offset += len(chunk) + 1
+    # The caller deletes the FIRST message id; clean up the extra chunks here.
+    for extra in msg_ids[1:]:
+        _schedule_delete(chat_id, extra)
+    return True, 0, (msg_ids[0] if msg_ids else 0)
 
 
 def send_to_telegram_group(text, otp_code, number, kb=None):
@@ -3914,22 +4135,48 @@ def strip_html_tags(text):
 
 
 def send_html_safe(chat_id, text, reply_markup=None):
-    """Send an HTML message; on Telegram parse-entity failure, retry plain.
+    """Send an HTML message in <=4096-char chunks.
 
-    Guarantees the OTP still lands in the group/DM even when the SMS body
-    contains characters that break Telegram's HTML parser.
+    Every chunk falls back to plain text when Telegram rejects the HTML and is
+    retried a few times before giving up. Guarantees the OTP still lands even
+    when the SMS body contains characters that break Telegram's HTML parser.
     """
-    try:
-        return bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e:
-        err = str(e).lower()
-        if 'parse' in err or 'entity' in err or 'html' in err or 'tag' in err:
-            try:
-                return bot.send_message(chat_id, strip_html_tags(text), reply_markup=reply_markup)
-            except Exception as e2:
-                logger.error(f"[SEND] Plain fallback failed for {chat_id}: {e2}")
+    chunks = split_html_message(text)
+    total = len(chunks)
+    last = None
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == total - 1 else None
+        last = _send_html_chunk(chat_id, chunk, markup, idx, total)
+    return last
+
+
+def _send_html_chunk(chat_id, chunk, markup, idx, total):
+    """Send one chunk; retry transient failures, fall back to plain on parse errors."""
+    last_err = None
+    for attempt in range(1, CHUNK_MAX_ATTEMPTS + 1):
+        try:
+            return bot.send_message(chat_id, chunk, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            last_err = e
+            err = str(e).lower()
+            if 'parse' in err or 'entity' in err or 'html' in err or 'tag' in err:
+                try:
+                    return bot.send_message(chat_id, strip_html_tags(chunk), reply_markup=markup)
+                except Exception as e2:
+                    last_err = e2
+            elif '429' in err or 'too many requests' in err:
+                # Rate limits are the caller's job — propagate immediately.
                 raise
-        raise
+            if attempt < CHUNK_MAX_ATTEMPTS:
+                logger.warning("[SEND] chunk %d/%d (%d chars) failed for %s, retry %d/%d in %.0fs",
+                               idx + 1, total, len(chunk), chat_id,
+                               attempt, CHUNK_MAX_ATTEMPTS, CHUNK_RETRY_BACKOFF)
+                time.sleep(CHUNK_RETRY_BACKOFF)
+    logger.error("[SEND] chunk %d/%d failed for %s after %d attempts: %s",
+                 idx + 1, total, chat_id, CHUNK_MAX_ATTEMPTS, last_err)
+    if isinstance(last_err, Exception):
+        raise last_err
+    raise RuntimeError(str(last_err))
 
 
 # =========================== CHOICE SMS FORWARDER ====================
@@ -5057,9 +5304,79 @@ PANEL_LOGIN_CONFIGS = {
 }
 
 
+# ======================== WIZARD-BUILT PANEL CONFIGS ========================
+# The admin "Add Panel" wizard builds a per-panel config for all 4 formats
+# (captcha / no-captcha / API / live socket) via all_formats.py. They are kept
+# in bot_settings so get_panel_config() can return the panel's real config
+# instead of the generic SMSCDRStats default.
+
+PANEL_FORMAT_CFGS_KEY = "panel_format_configs"
+
+# A pattern that never matches: panels added as "no captcha" must never have a
+# bogus 'capt' value posted from unrelated numbers found on the page.
+_NO_CAPTCHA_PATTERN = r'(?!)'
+
+
+def get_panel_format_configs():
+    """All wizard-built panel configs, keyed by lowercased panel name."""
+    try:
+        raw = get_setting(PANEL_FORMAT_CFGS_KEY)
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_panel_format_config(name, cfg):
+    """Persist the wizard-built config for one panel (keyed by its name)."""
+    data = get_panel_format_configs()
+    data[(name or "").strip().lower()] = cfg
+    set_setting(PANEL_FORMAT_CFGS_KEY, json.dumps(data))
+    return cfg
+
+
+def get_panel_format_config(name):
+    """Wizard-built config for a panel name, or {} when none was saved."""
+    cfg = get_panel_format_configs().get((name or "").strip().lower())
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _forwarder_cfg_from_format(raw):
+    """Adapt an all_formats wizard config to the keys the forwarder reads."""
+    cfg = dict(raw or {})
+    ftype = cfg.get("type")
+    if ftype in ("api", "socket"):
+        return cfg  # API / socket configs are consumed as-is
+    # Standard web panels (auto-captcha and no-captcha): the forwarder joins
+    # paths onto the panel origin, so it needs PATHS, not full URLs.
+    out = dict(cfg)
+    out["type"] = "standard"
+    out["login_url"] = cfg.get("login_path") or "/login"
+    out["signin_url"] = cfg.get("signin_path") or "/signin"
+    out.setdefault("login_fields", {"username": "username", "password": "password", "captcha": "capt"})
+    out["captcha_pattern"] = _NO_CAPTCHA_PATTERN if cfg.get("no_captcha") else r'(\d+)\s*\+\s*(\d+)'
+    pages = []
+    if cfg.get("sms_path"):
+        pages.append(cfg["sms_path"])
+    pages.extend(["/{type}/SMSCDRStats", "/client/SMSCDRStats", "/agent/SMSCDRStats"])
+    out["sesskey_pages"] = pages
+    out.setdefault("sesskey_patterns", [
+        r'data_smscdr\.php\?[^\"\']*sesskey=([a-f0-9]{32})',
+        r'sesskey=([a-f0-9]{32})',
+        r'"sesskey"\s*:\s*"([a-f0-9]{32})"',
+    ])
+    out["otp_endpoint"] = cfg.get("ajax_path") or "/{type}/res/data_smscdr.php"
+    return out
+
+
 def get_panel_config(panel_name):
     """Get the login config for a specific panel. Falls back to default SMSCDRStats config."""
     key = panel_name.strip().lower()
+    wizard_cfg = get_panel_format_configs().get(key)
+    if isinstance(wizard_cfg, dict) and wizard_cfg:
+        # Config saved by the admin "Add Panel" wizard wins over the registry:
+        # it carries the panel's real login/signin paths, API style or ws URL.
+        return _forwarder_cfg_from_format(wizard_cfg)
     if key in PANEL_LOGIN_CONFIGS:
         return PANEL_LOGIN_CONFIGS[key]
     # Default SMSCDRStats config for panels not explicitly listed
@@ -5098,11 +5415,20 @@ class SMSPanelForwarder:
         self._cached_sesskey = None
         self._no_sesskey = False
         self.stop_event = threading.Event()
-        # Panel-type detection: REST API panels (Dream SMS) vs SMSCDRStats panels
+        # Live socket panels (all_formats.py): WebSocketApp + inbox queue
+        from collections import deque as _deque
+        self._ws_app = None
+        self._ws_started = False
+        self._ws_inbox = _deque()
+        # Panel-type detection: REST API panels vs SMSCDRStats panels vs socket
         self.panel_cfg = get_panel_config(self.name)
         if self.panel_cfg.get("type") == "api" or (login_type or "").lower() == "api":
             self.panel_cfg = dict(self.panel_cfg)
             self.panel_cfg.setdefault("type", "api")
+        elif (login_type or "").lower() == "socket" or self.panel_cfg.get("type") == "socket":
+            self.panel_cfg = dict(self.panel_cfg)
+            self.panel_cfg.setdefault("type", "socket")
+            self.panel_cfg.setdefault("ws_url", self.url)
         self._api_last_poll = 0.0
 
     def _dreamsms_validate(self):
@@ -5294,10 +5620,251 @@ class SMSPanelForwarder:
             logger.error(f"Panel [{self.name}]: Dream SMS unexpected error: {e}")
             return []
 
+    # ---------- Generic REST API styles (built by all_formats.py) ----------
+    # augestel_iprn (Bearer + /api/v1/iprn/...), crapi (token query),
+    # query_token (.php?token=) and bearer_json (generic Bearer).
+    def _style_api_url(self):
+        cfg = self.panel_cfg
+        return (cfg.get("api_url") or cfg.get("api_path") or self.url or "").strip()
+
+    def _style_api_token(self):
+        cfg = self.panel_cfg
+        return (cfg.get("api_token") or self.username or "").strip()
+
+    @staticmethod
+    def _style_api_records(data):
+        """Pull the record list out of an API payload (tolerant of shapes)."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("records", "data", "aaData", "messages", "items",
+                        "rows", "result", "results", "list"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, dict):
+                    for k2 in ("records", "messages", "items", "list", "data"):
+                        if isinstance(val.get(k2), list):
+                            return val[k2]
+            return []
+        return []
+
+    def _style_api_validate(self):
+        """Minimal authenticated request to verify the API token/style."""
+        return self._style_api_fetch(only_check_auth=True) is not None
+
+    def _style_api_fetch(self, only_check_auth=False):
+        """Fetch + parse messages for any auto-detected API style.
+
+        Returns parsed sms dicts, [] on an empty/odd response, or None on auth
+        failure (same contract as _dreamsms_fetch)."""
+        cfg = self.panel_cfg
+        style = cfg.get("api_style") or "bearer_json"
+        url = self._style_api_url()
+        token = self._style_api_token()
+        headers = api_auth_headers(style, token)
+        params = api_request_params(style, token)
+        if only_check_auth:
+            params = dict(params)
+            params["limit"] = "1"
+        elif cfg.get("page_size"):
+            params = dict(params)
+            params.setdefault("limit", str(cfg["page_size"]))
+        try:
+            resp = self.session.get(url, headers=headers, params=params, timeout=30)
+            if resp.status_code == 429:
+                retry_after = 1.5
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "1")) + 0.5
+                except (TypeError, ValueError):
+                    pass
+                logger.info(f"Panel [{self.name}]: API rate limited, waiting {retry_after:.1f}s")
+                time.sleep(retry_after)
+                resp = self.session.get(url, headers=headers, params=params, timeout=30)
+            if resp.status_code in (401, 403):
+                logger.error(f"Panel [{self.name}]: {style} auth failed ({resp.status_code}): {(resp.text or '')[:120]}")
+                return None
+            if resp.status_code != 200:
+                logger.warning(f"Panel [{self.name}]: {style} API {resp.status_code}: {(resp.text or '')[:120]}")
+                return []
+            if only_check_auth:
+                logger.info(f"Panel [{self.name}]: {style} API token OK")
+                return []
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.warning(f"Panel [{self.name}]: {style} non-JSON response")
+                return []
+            records = self._style_api_records(data)
+            parsed = []
+            for rec in records:
+                if isinstance(rec, dict):
+                    parsed.extend(self._dreamsms_parse([rec]))
+                else:
+                    one = self._extract_from_record(rec)
+                    if one:
+                        parsed.append(one)
+            if parsed:
+                logger.info(f"Panel [{self.name}]: {style} returned {len(records)} records, {len(parsed)} with OTP")
+            return parsed
+        except requests.RequestException as e:
+            logger.error(f"Panel [{self.name}]: {style} fetch error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Panel [{self.name}]: {style} unexpected error: {e}")
+            return []
+
+    # ---------- Live socket panels (built by all_formats.py) ----------
+    def _socket_url(self):
+        cfg = self.panel_cfg
+        return (cfg.get("ws_url") or self.url or "").strip()
+
+    def _socket_on_message(self, _ws, raw):
+        try:
+            sms = self._parse_socket_frame(raw)
+            if sms:
+                self._ws_inbox.append(sms)
+        except Exception as e:
+            logger.debug(f"Panel [{self.name}]: socket frame error: {e}")
+
+    @staticmethod
+    def _socket_body_and_number(data):
+        """Find the SMS body + sender number inside a decoded JSON frame."""
+        body = ""
+        number = ""
+        if isinstance(data, dict):
+            for k in ("message", "sms", "text", "content", "body"):
+                if data.get(k):
+                    body = str(data[k])
+                    break
+            for k in ("number", "phone", "msisdn", "to", "recipient", "num"):
+                if data.get(k):
+                    number = str(data[k])
+                    break
+            if not body:
+                for v in data.values():
+                    if isinstance(v, dict):
+                        b, n = SMSPanelForwarder._socket_body_and_number(v)
+                        if b:
+                            return b, (number or n)
+        elif isinstance(data, list):
+            for v in data:
+                b, n = SMSPanelForwarder._socket_body_and_number(v)
+                if b:
+                    return b, (number or n)
+        return body, number
+
+    def _parse_socket_frame(self, raw):
+        """Turn one WebSocket frame (JSON or plain SMS text) into an sms dict."""
+        if raw is None:
+            return None
+        text = raw if isinstance(raw, str) else str(raw)
+        data = None
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            data = None
+        body, phone = "", ""
+        if isinstance(data, (dict, list)):
+            body, phone = self._socket_body_and_number(data)
+            if not body:
+                return None  # control/keepalive frame
+        else:
+            # plain text frame (or a bare JSON scalar like "482913")
+            body = text
+        otp = self._dreamsms_otp(body)
+        if not otp:
+            # bare-code frames: a whole frame that is just the OTP
+            bare = text.strip()
+            if re.fullmatch(r'\d{4,8}', bare):
+                otp = bare
+        if not otp or otp == "N/A":
+            return None
+        if not phone or sum(ch.isdigit() for ch in phone) < 7:
+            m = re.search(r'\+?\d{7,15}', body)
+            phone = m.group(0) if m else "N/A"
+        phone = re.sub(r'\D', '', phone) if phone != "N/A" else "N/A"
+        service = "Unknown"
+        if isinstance(data, dict):
+            for k in ("cli", "service", "sender", "from_name", "app"):
+                if data.get(k):
+                    service = str(data[k]).strip()
+                    break
+        country = "Unknown"
+        if phone != "N/A":
+            cname, _iso, _x = get_country_info(phone)
+            if cname != "Unknown":
+                country = cname
+        return {
+            'otp': otp,
+            'service': service or "Unknown",
+            'phone': phone,
+            'country': country,
+            'full_text': body[:500],
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    def _socket_start(self):
+        """Lazily open the WebSocket listener thread for this panel."""
+        if self._ws_started and self._ws_app is not None:
+            return True
+        url = self._socket_url()
+        if not url:
+            logger.error(f"Panel [{self.name}]: no ws_url configured for socket panel")
+            return False
+        try:
+            import websocket
+        except ImportError:
+            logger.error(f"Panel [{self.name}]: websocket-client not installed; socket panel disabled")
+            return False
+
+        def _on_open(ws):
+            logger.info(f"Panel [{self.name}]: socket connected {url[:70]}")
+            token = (self.username or "").strip()
+            if token:  # some panels expect the token as the first frame
+                try:
+                    ws.send(token)
+                except Exception as send_err:
+                    logger.debug(f"Panel [{self.name}]: socket token send failed: {send_err}")
+
+        def _on_error(_ws, err):
+            logger.warning(f"Panel [{self.name}]: socket error: {err}")
+
+        def _on_close(_ws, *args):
+            logger.info(f"Panel [{self.name}]: socket closed {args}")
+            self._ws_started = False
+
+        try:
+            self._ws_app = websocket.WebSocketApp(
+                url, on_message=self._socket_on_message,
+                on_open=_on_open, on_error=_on_error, on_close=_on_close)
+            t = threading.Thread(target=lambda: self._ws_app.run_forever(ping_interval=30),
+                                 daemon=True, name=f"panel-ws-{self.panel_id}")
+            t.start()
+            self._ws_started = True
+            return True
+        except Exception as e:
+            logger.error(f"Panel [{self.name}]: socket start error: {e}")
+            return False
+
+    def _socket_poll(self):
+        """Drain whatever the listener received since the last poll."""
+        if not self._socket_start():
+            return []
+        out = []
+        while self._ws_inbox:
+            out.append(self._ws_inbox.popleft())
+        return out
+
     def _do_login(self):
         """Login to panel with captcha solving. Tries multiple login paths."""
         cfg = self.panel_cfg
+        if cfg.get("type") == "socket":
+            # Live socket panels authenticate on the WebSocket itself
+            return True
         if cfg.get("type") == "api":
+            if cfg.get("api_style"):
+                return self._style_api_validate()
             return self._dreamsms_validate()
         if cfg.get("type") in ("websocket", "custom"):
             logger.warning(f"Panel [{self.name}]: Custom type, skipping login")
@@ -5720,9 +6287,15 @@ class SMSPanelForwarder:
 
     def fetch_otps(self):
         """Fetch OTPs from the panel API."""
-        # REST API panels (Dream SMS): token-auth fetch, no session/sesskey
+        # Live socket panels (all_formats.py): drain the WebSocket inbox
+        if self.panel_cfg.get("type") == "socket":
+            return self._socket_poll()
+        # REST API panels: token-auth fetch, no session/sesskey
         if self.panel_cfg.get("type") == "api":
-            res = self._dreamsms_fetch()
+            if self.panel_cfg.get("api_style"):
+                res = self._style_api_fetch()
+            else:
+                res = self._dreamsms_fetch()
             return res if res else []
         sesskey = self._ensure_session()
         # None = not logged in at all; "" = logged in but no sesskey
@@ -5758,8 +6331,8 @@ class SMSPanelForwarder:
             try:
                 otps = self.fetch_otps()
                 if not otps:
-                    if self.panel_cfg.get("type") == "api":
-                        empty_polls = 0  # token auth: no session to refresh
+                    if self.panel_cfg.get("type") in ("api", "socket"):
+                        empty_polls = 0  # token / socket auth: no session to refresh
                     else:
                         empty_polls += 1
                         if empty_polls >= 8:
@@ -5893,8 +6466,11 @@ def start_panel_forwarder(panel_id):
     stop_event = threading.Event()
     _panel_forwarder_stop[panel_id] = stop_event
     forwarder = SMSPanelForwarder(panel_id, name, url, login_type, username, password)
-    if getattr(forwarder, "panel_cfg", {}).get("type") == "api":
-        logger.info(f"Panel [{name}]: API mode (Dream SMS, token auth)")
+    _cfg_type = getattr(forwarder, "panel_cfg", {}).get("type")
+    if _cfg_type == "api":
+        logger.info(f"Panel [{name}]: API mode ({forwarder.panel_cfg.get('api_style') or 'dreamsms'}, token auth)")
+    elif _cfg_type == "socket":
+        logger.info(f"Panel [{name}]: Live socket mode ({forwarder._socket_url()[:60]})")
     forwarder.stop_event = stop_event
     t = threading.Thread(target=forwarder.run, daemon=True, name=f"panel-{panel_id}")
     _panel_forwarder_threads[panel_id] = t
@@ -6528,6 +7104,32 @@ def clear_state(message):
     user_states.pop(message.chat.id, None)
     user_states.pop(message.from_user.id, None)
 
+# SMS Panel format selection callback (must be before catch-all)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("panel_format|") and is_admin(call.from_user.id))
+def panel_format_handler(call):
+    """4-format picker from all_formats.py: captcha / nocaptcha / api / socket."""
+    kind = (call.data.split("|")[1] or "captcha").lower()
+    if kind not in ("captcha", "nocaptcha", "api", "socket"):
+        kind = "captcha"
+    state = get_state(call.message)
+    if not isinstance(state, dict):
+        bot.answer_callback_query(call.id, "Session expired. Start over.", show_alert=True)
+        return
+    state["format"] = kind
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    if kind == "api":
+        state["add_sms_panel_step"] = "api_url"
+    elif kind == "socket":
+        state["add_sms_panel_step"] = "ws_url"
+    else:
+        state["add_sms_panel_step"] = "login_url"
+    set_state(call.message.chat.id, state)
+    bot.answer_callback_query(call.id)
+    _step, prompt = wizard_start(kind)
+    bot.edit_message_text(prompt, call.message.chat.id, call.message.message_id,
+                          parse_mode="HTML", reply_markup=markup)
+
 # SMS Panel type selection callback (must be before catch-all)
 @bot.callback_query_handler(func=lambda call: call.data.startswith("sms_panel_type|") and is_admin(call.from_user.id))
 def sms_panel_type_handler(call):
@@ -6543,6 +7145,7 @@ def sms_panel_type_handler(call):
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
     if login_type == "api":
         # API panels (Dream SMS): token goes in the username field, no password
+        state.setdefault("format", "api")
         state["add_sms_panel_step"] = "token"
         set_state(call.message.chat.id, state)
         bot.edit_message_text(
@@ -6550,6 +7153,7 @@ def sms_panel_type_handler(call):
             "<code>(the long token from your Dream SMS panel — API page)</code>",
             call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
     else:
+        state.setdefault("format", "captcha")
         state["add_sms_panel_step"] = "username"
         set_state(call.message.chat.id, state)
         bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
@@ -8428,7 +9032,13 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         set_state(chat_id, "add_sms_panel_name")
         markup = types.InlineKeyboardMarkup()
         markup.add(ibtn(pe("back", "⬅") + " Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
-        bot.edit_message_text(pe("plus", "➕") + " <b>Add SMS Panel</b>\n\nSend the panel name (e.g., My Choice SMS):", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(
+            pe("plus", "➕") + " <b>ADD PANEL</b>\n\n"
+            "Step 1: Send the panel <b>name</b> (e.g. My Choice SMS).\n\n"
+            "Then pick one of the 4 formats:\n"
+            "🧩 Auto Captcha  •  🔓 No Captcha\n"
+            "🔑 API Panel  •  🔌 Live Socket",
+            chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
     if data.startswith("admin_view_panel|"):
@@ -8484,6 +9094,38 @@ def handle_admin_callback(call, data, chat_id, msg_id):
         try:
             import requests as _req
             cfg = get_panel_config(name)
+            if cfg.get("type") == "socket":
+                # Live socket panel: quick handshake test
+                ws_url = (cfg.get("ws_url") or url or "").strip()
+                try:
+                    import websocket as _ws
+                    _conn = _ws.create_connection(ws_url, timeout=8)
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+                    bot.answer_callback_query(call.id, "Connected! WebSocket handshake OK", show_alert=True)
+                except TypeError:
+                    bot.answer_callback_query(call.id, "Error: websocket-client not installed", show_alert=True)
+                except Exception as ws_err:
+                    bot.answer_callback_query(call.id, "Socket failed: " + str(ws_err)[:70], show_alert=True)
+                return
+            if cfg.get("type") == "api" and cfg.get("api_style"):
+                # Auto-detected API style: one authenticated request
+                style = cfg["api_style"]
+                api_url = (cfg.get("api_url") or url or "").strip()
+                token = (cfg.get("api_token") or username or "").strip()
+                _p = dict(api_request_params(style, token))
+                _p["limit"] = "1"
+                r = _req.get(api_url, headers=api_auth_headers(style, token),
+                             params=_p, timeout=20)
+                if r.status_code in (200, 204):
+                    bot.answer_callback_query(call.id, f"Connected! {style} OK ({r.status_code})", show_alert=True)
+                elif r.status_code in (401, 403):
+                    bot.answer_callback_query(call.id, f"Auth failed ({r.status_code}) - check token", show_alert=True)
+                else:
+                    bot.answer_callback_query(call.id, f"{style} returned {r.status_code}", show_alert=True)
+                return
             sess = _req.Session()
             sess.verify = False
             sess.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
@@ -9600,16 +10242,141 @@ def broadcast_handler(message):
 
 
 # ======================== SMS PANEL ADD HANDLERS ========================
+# Admin "Add Panel" wizard — all 4 formats from all_formats.py:
+#   captcha | nocaptcha (web login) → api (auto-detected style) → socket (wss)
+# Flow: name → format → format-specific fields → config built → panel saved.
+
+def _finish_add_panel(message, password=""):
+    """Build the chosen format's config, save the panel, start its forwarder."""
+    state = get_state(message) or {}
+    name = state.get("panel_name", "Unnamed")
+    url = state.get("panel_url", "")
+    fmt = (state.get("format") or "captcha").lower()
+    login_type = state.get("login_type") or "client"
+    username = state.get("panel_username", "")
+    try:
+        # all_formats.py builds the per-format config
+        if fmt == "api":
+            _, format_cfg = build_api_panel_config(name, url, username)
+            login_type = "api"
+            url = format_cfg.get("api_url") or url
+        elif fmt == "socket":
+            _, format_cfg = build_socket_panel_config(name, url)
+            login_type = "socket"
+            username = ""
+            password = ""
+        else:
+            _, format_cfg = build_login_panel_config(
+                name, url, username, password, no_captcha=(fmt == "nocaptcha"))
+        save_panel_format_config(name, format_cfg)
+        panel_id = save_sms_panel(name, url, login_type, username, password)
+        # Auto-start the forwarder for the new panel
+        try:
+            start_panel_forwarder(panel_id)
+        except Exception as start_err:
+            logger.error(f"Failed to auto-start panel {name}: {start_err}")
+        clear_state(message)
+        style_line = ""
+        if fmt == "api":
+            style_line = pe("info_bw", "ℹ") + " Style: <b>" + str(format_cfg.get("api_style", "")) + "</b>\n"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("View Panels", callback_data="admin_sms_panels", style="success", icon="list"))
+        markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
+        bot.reply_to(message,
+            pe("checkmark", "✅") + " <b>PANEL ADDED!</b>\n\n"
+            + pe("info_bw", "ℹ") + " Name: " + name + "\n"
+            + pe("link", "🔗") + " URL: <code>" + url + "</code>\n"
+            + pe("profile", "👤") + " Type: " + login_type.upper() + "\n"
+            + pe("key", "🔑") + " Format: " + fmt.upper() + "\n"
+            + style_line
+            + (pe("key", "🔑") + " User: <code>" + username + "</code>\n" if username else "")
+            + "\nPanel is now active and monitoring for new OTPs.",
+            parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        clear_state(message)
+        bot.reply_to(message, "❌ Error saving panel: " + str(e), parse_mode="HTML")
+
 @bot.message_handler(func=lambda msg: get_state(msg) == "add_sms_panel_name" and is_admin(msg.from_user.id))
 def sms_panel_name_handler(message):
-    name = message.text.strip()
+    name = (message.text or "").strip()
     if not name:
         bot.reply_to(message, "❌ Name cannot be empty.", parse_mode="HTML")
         return
-    set_state(message.chat.id, {"add_sms_panel_step": "url", "panel_name": name})
+    set_state(message.chat.id, {"add_sms_panel_step": "format", "panel_name": name})
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(ibtn("🧩 Auto Captcha", callback_data="panel_format|captcha", style="primary", icon="plus"))
+    markup.add(ibtn("🔓 No Captcha", callback_data="panel_format|nocaptcha", style="success", icon="key"))
+    markup.add(ibtn("🔑 API Panel", callback_data="panel_format|api", style="success", icon="key"))
+    markup.add(ibtn("🔌 Live Socket", callback_data="panel_format|socket", style="primary", icon="link"))
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.reply_to(message,
+        pe("plus", "➕") + " <b>ADD PANEL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Name: <b>" + html_mod.escape(name) + "</b>\n\n"
+        "Step 2: Choose the panel format:",
+        parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "login_url" and is_admin(msg.from_user.id))
+def sms_panel_login_url_handler(message):
+    """captcha / nocaptcha formats: the full login link."""
+    state = get_state(message)
+    login_url = (message.text or "").strip()
+    if not login_url:
+        bot.reply_to(message, "❌ Login URL cannot be empty.", parse_mode="HTML")
+        return
+    if "://" not in login_url:
+        login_url = "http://" + login_url
+    state["panel_url"] = login_url
+    # Resolve the POST target with the same helper the reference wizard uses
+    state["signin_url"] = resolve_signin_url(login_url)
+    state["add_sms_panel_step"] = "role"
+    set_state(message.chat.id, state)
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(ibtn("Agent", callback_data="sms_panel_type|agent", style="primary", icon="admin"))
+    markup.add(ibtn("Client", callback_data="sms_panel_type|client", style="primary", icon="profile"))
+    markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
+    bot.reply_to(message, pe("info_bw", "ℹ") + " Is this an <b>Agent</b> or <b>Client</b> panel?", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "api_url" and is_admin(msg.from_user.id))
+def sms_panel_api_url_handler(message):
+    """api format: the endpoint URL; the style is auto-detected from it."""
+    state = get_state(message)
+    api_url = (message.text or "").strip()
+    if not api_url:
+        bot.reply_to(message, "❌ API URL cannot be empty.", parse_mode="HTML")
+        return
+    if "://" not in api_url:
+        api_url = "http://" + api_url
+    style = detect_api_style(api_url)
+    state["panel_url"] = api_url
+    state["api_style"] = style
+    state["login_type"] = "api"
+    state["add_sms_panel_step"] = "token"
+    set_state(message.chat.id, state)
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
-    bot.reply_to(message, pe("link", "🔗") + " Send the panel URL (e.g., http://51.77.52.79/ints):", parse_mode="HTML", reply_markup=markup)
+    bot.reply_to(message,
+        pe("info_bw", "ℹ") + " Detected API style: <b>" + style + "</b>\n\n"
+        + pe("key", "🔑") + " Send the API token:",
+        parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "ws_url" and is_admin(msg.from_user.id))
+def sms_panel_ws_url_handler(message):
+    """socket format: the live wss:// endpoint (no credentials needed)."""
+    state = get_state(message)
+    ws_url = (message.text or "").strip()
+    if not ws_url:
+        bot.reply_to(message, "❌ WebSocket URL cannot be empty.", parse_mode="HTML")
+        return
+    if not ws_url.startswith(("ws://", "wss://")):
+        if "://" in ws_url:
+            bot.reply_to(message, "❌ Send a <b>ws://</b> or <b>wss://</b> URL.", parse_mode="HTML")
+            return
+        ws_url = "wss://" + ws_url
+    state["panel_url"] = ws_url
+    state["login_type"] = "socket"
+    set_state(message.chat.id, state)
+    _finish_add_panel(message, password="")
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "url" and is_admin(msg.from_user.id))
 def sms_panel_url_handler(message):
@@ -9627,22 +10394,17 @@ def sms_panel_url_handler(message):
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "token" and is_admin(msg.from_user.id))
 def sms_panel_token_handler(message):
-    """API panels (Dream SMS): the token IS the username; no password needed."""
+    """API panels: the token IS the username; no password needed."""
     state = get_state(message)
     token = (message.text or "").strip()
     if not token:
         bot.reply_to(message, "❌ Token cannot be empty. Send the API token:", parse_mode="HTML")
         return
+    state.setdefault("format", "api")
     state["panel_username"] = token
     state["panel_password"] = ""  # not used by API panels
-    state["add_sms_panel_step"] = "password"
     set_state(message.chat.id, state)
-    # Jump straight to save: reuse the password handler with an empty password
-    try:
-        sms_panel_password_handler(message)
-    except Exception as e:
-        logger.error(f"API panel save error: {e}")
-        bot.reply_to(message, "❌ Error saving panel: " + str(e), parse_mode="HTML")
+    _finish_add_panel(message, password="")
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "username" and is_admin(msg.from_user.id))
 def sms_panel_username_handler(message):
@@ -9652,7 +10414,8 @@ def sms_panel_username_handler(message):
     set_state(message.chat.id, state)
     if state.get("login_type") == "api":
         # API panels: no password needed — go straight to save
-        sms_panel_password_handler(message)
+        state.setdefault("format", "api")
+        _finish_add_panel(message, password="")
         return
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Cancel", callback_data="admin_sms_panels", style="danger", icon="back"))
@@ -9660,34 +10423,7 @@ def sms_panel_username_handler(message):
 
 @bot.message_handler(func=lambda msg: isinstance(get_state(msg), dict) and get_state(msg).get("add_sms_panel_step") == "password" and is_admin(msg.from_user.id))
 def sms_panel_password_handler(message):
-    state = get_state(message)
-    password = message.text.strip()
-    name = state.get("panel_name", "Unnamed")
-    url = state.get("panel_url", "")
-    login_type = state.get("login_type", "client")
-    username = state.get("panel_username", "")
-    try:
-        panel_id = save_sms_panel(name, url, login_type, username, password)
-        # Auto-start the forwarder for the new panel
-        try:
-            start_panel_forwarder(panel_id)
-        except Exception as start_err:
-            logger.error(f"Failed to auto-start panel {name}: {start_err}")
-        clear_state(message)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(ibtn("View Panels", callback_data="admin_sms_panels", style="success", icon="list"))
-        markup.add(ibtn("Back", callback_data="admin_panel", style="primary", icon="back"))
-        bot.reply_to(message,
-            pe("checkmark", "✅") + " <b>SMS Panel Added!</b>\n\n"
-            + pe("info_bw", "ℹ") + " Name: " + name + "\n"
-            + pe("link", "🔗") + " URL: <code>" + url + "</code>\n"
-            + pe("profile", "👤") + " Type: " + login_type.upper() + "\n"
-            + pe("key", "🔑") + " User: <code>" + username + "</code>\n\n"
-            "Panel is now active and will auto-connect to SMSCDRStats.",
-            parse_mode="HTML", reply_markup=markup)
-    except Exception as e:
-        clear_state(message)
-        bot.reply_to(message, "❌ Error saving panel: " + str(e), parse_mode="HTML")
+    _finish_add_panel(message, password=(message.text or "").strip())
 
 # ======================== ADD ADMIN HANDLER ========================
 @bot.message_handler(func=lambda msg: get_state(msg) == "add_new_admin" and is_admin(msg.from_user.id))
