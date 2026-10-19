@@ -159,9 +159,20 @@ def main():
     print("\n=== button labels ===")
     txt, icon_id = _btn_text_and_icon("✅ Confirm", None, None)
     check("button strips tg-emoji tags", "<tg-emoji" not in txt, f"(got {txt})")
-    check("button keeps plain glyph", txt == "✅ Confirm")
+    # The leading glyph is now removed when the icon renders it, so the
+    # button no longer shows both the premium icon and the plain glyph.
+    check("button drops the glyph its icon already renders", txt == "Confirm",
+          f"(got {txt!r})")
     check("button derives icon from leading emoji",
           icon_id == body_ids["✅"], f"(got {icon_id})")
+    # A glyph-only label must survive (buttons cannot have empty text).
+    solo, solo_icon = _btn_text_and_icon("✅", None, None)
+    check("glyph-only label keeps its glyph", solo == "✅" and solo_icon == body_ids["✅"],
+          f"(got {solo!r}, {solo_icon})")
+    # A non-leading glyph elsewhere in the label is untouched.
+    mid, mid_icon = _btn_text_and_icon("Next ✅ Confirm", None, None)
+    check("non-leading glyph stays put", mid == "Next ✅ Confirm",
+          f"(got {mid!r})")
     _t, named_icon = _btn_text_and_icon("Any", "ok", None)
     check("explicit icon name resolves",
           named_icon == named["ok"][1], f"(got {named_icon})")

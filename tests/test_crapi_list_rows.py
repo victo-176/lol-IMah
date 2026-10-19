@@ -134,6 +134,13 @@ conn.close()
 check("disabled panel does not suppress built-in",
       botmod._endpoint_covered_by_panel("http://147.135.212.197/crapi/st/viewstats") is False)
 
+print("\n=== 6. main() still wires the gate in ===")
+import inspect
+_main_src = inspect.getsource(botmod.main)
+check("main() consults the gate before starting the built-in forwarder",
+      "_endpoint_covered_by_panel" in _main_src)
+check("gate is callable", callable(botmod._endpoint_covered_by_panel))
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} -> {failures}")

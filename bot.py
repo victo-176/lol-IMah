@@ -863,6 +863,11 @@ def _btn_text_and_icon(text, icon, icon_id):
     its plain glyph and the id is carried on icon_custom_emoji_id instead.
     When no icon is named, one is derived from the label's leading emoji so
     buttons still get a premium icon.
+
+    A leading glyph that is already rendered by the resolved icon is dropped
+    from the label: otherwise the button shows the emoji twice (the premium
+    icon plus the leftover plain unicode). The glyph is only kept when it is
+    the label's entire text, since a button cannot have an empty label.
     """
     if isinstance(text, str):
         text = _BTN_STRIP_RE.sub(r'\1', text)
@@ -870,6 +875,13 @@ def _btn_text_and_icon(text, icon, icon_id):
         icon_id = premium_icon(icon)
     if icon_id is None:
         icon_id = _derive_icon_id(text)
+    if icon_id and isinstance(text, str) and _BODY_EMOJI_RE is not None:
+        lead = text.lstrip()
+        m = _BODY_EMOJI_RE.match(lead)
+        if m and PREMIUM_BODY_IDS.get(m.group(0)) == icon_id:
+            rest = lead[m.end():].lstrip(" \t\u2013\u2014-|\u00b7:")
+            if rest:
+                text = rest
     return text, icon_id
 
 def ibtn(text, callback_data=None, url=None, style=None, copy_text_str=None, icon=None, icon_id=None):
@@ -963,8 +975,15 @@ def init_db():
             timestamp TEXT,
             assigned_to INTEGER,
             service TEXT,
-            country TEXT
+            country TEXT,
+            panel TEXT
         )''')
+        # Migration: add the panel column to otp_logs if the table predates it,
+        # so OTPs can be grouped by the panel that delivered them.
+        try:
+            c.execute("ALTER TABLE otp_logs ADD COLUMN panel TEXT")
+        except Exception:
+            pass  # column already exists
         c.execute('''CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             referrer_id INTEGER NOT NULL,
@@ -2182,16 +2201,42 @@ def get_available_numbers(country_code, combo_index=1, user_id=None):
     conn.close()
     return [num for num in all_numbers if _num_key(num) not in used_numbers]
 
-def log_otp(number, otp, full_message, assigned_to=None):
+def credit_unmatched_otp():
+    """Count an OTP that matched no user against the admin on the leaderboard.
+
+    Unowned traffic still proves the panels work, so it is credited to the
+    primary admin id and shown in the admin panel's OTP breakdown.
+    """
+    try:
+        admin_id = get_all_admins()[0] if get_all_admins() else ADMIN_ID
+    except Exception:
+        admin_id = ADMIN_ID
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO otp_counts (user_id, count) VALUES (?, 1) "
+                      "ON CONFLICT(user_id) DO UPDATE SET count = count + 1",
+                      (admin_id,))
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"credit_unmatched_otp failed: {e}")
+
+def log_otp(number, otp, full_message, assigned_to=None, panel=None):
     service = detect_service(full_message)
     country_name, iso, _ = get_country_info(number)
     with _db_lock:
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("INSERT INTO otp_logs (number, otp, full_message, timestamp, assigned_to, service, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (number, otp, full_message, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), assigned_to, service, country_name))
+        c.execute("INSERT INTO otp_logs (number, otp, full_message, timestamp, assigned_to, service, country, panel) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (number, otp, full_message, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), assigned_to, service, country_name, panel))
         conn.commit()
         conn.close()
+    # Traffic + unmatched accounting happen outside the insert lock.
+    log_traffic(service, country_name)
+    if not assigned_to:
+        credit_unmatched_otp()
 
 def get_otp_logs_for_number(number, limit=5):
     conn = sqlite3.connect(DB_PATH)
@@ -2209,6 +2254,80 @@ def get_total_otp_count():
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM otp_logs")
     return c.fetchone()[0] or 0
+
+def log_traffic(app_name, country):
+    """Record one received OTP against its app+country for the Traffic screen.
+
+    The traffic_log row is keyed by 'app|country' and just counts upwards, so
+    the Traffic view can show per-app/per-country volume, each one's share of
+    all traffic, and a High/Medium/Low/Poor grade.
+    """
+    app = (str(app_name or "Unknown").strip() or "Unknown")
+    ctry = (str(country or "Unknown").strip() or "Unknown")
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO traffic_log (app_name, country, count) VALUES (?, ?, 1) "
+                      "ON CONFLICT(app_name, country) DO UPDATE SET count = count + 1",
+                      (app, ctry))
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"log_traffic failed: {e}")
+
+def get_traffic_rows(limit=25):
+    """Traffic rows with each entry's share of total traffic, newest-first."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT app_name, country, count FROM traffic_log ORDER BY count DESC LIMIT ?", (limit,))
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    total = sum(r[2] or 0 for r in rows) or 0
+    out = []
+    for app, ctry, cnt in rows:
+        cnt = cnt or 0
+        pct = (cnt / total * 100.0) if total else 0.0
+        out.append((app, ctry, cnt, pct))
+    return out, total
+
+def traffic_grade(pct):
+    """Map a traffic share percentage to High / Medium / Low / Poor."""
+    try:
+        p = float(pct)
+    except (TypeError, ValueError):
+        return "Poor"
+    if p >= 35:
+        return "High"
+    if p >= 15:
+        return "Medium"
+    if p >= 5:
+        return "Low"
+    return "Poor"
+
+def grade_emoji(grade):
+    """Coloured marker for a traffic grade so it reads at a glance."""
+    return {
+        "High": "\U0001F7E2",    # green
+        "Medium": "\U0001F7E1",  # yellow
+        "Low": "\U0001F7E0",     # orange
+        "Poor": "\U0001F534",    # red
+    }.get(grade, "\u25CF")
+
+def get_unmatched_otp_count():
+    """OTPs that matched no user (credited to the admin on the leaderboard)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COUNT(*) FROM otp_logs WHERE assigned_to IS NULL")
+        n = c.fetchone()[0] or 0
+    except Exception:
+        n = 0
+    conn.close()
+    return n
 
 def log_user_activity(user_id, action, details=""):
     try:
@@ -2384,6 +2503,15 @@ def get_ngn_amount(usd):
     except Exception:
         return 0.0
 
+def _wd_first(details, keys):
+    """First non-empty value among *keys* (withdrawal details are stored under
+    several alias names depending on the method that collected them)."""
+    for k in keys:
+        v = details.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
 def format_withdrawal_notification(user_id, amount, method, details, req_id):
     """Build the full withdrawal notification with user info + payment details."""
     u = get_user(user_id)
@@ -2392,13 +2520,37 @@ def format_withdrawal_notification(user_id, amount, method, details, req_id):
     tg_line = f"{html_mod.escape(tname)}" if tname else "N/A"
     if uname:
         tg_line += f" (@{html_mod.escape(uname)})"
-    phone = html_mod.escape(str(details.get("phone", "") or details.get("upi_id", "") or ""))
-    address = html_mod.escape(str(details.get("address", "") or details.get("withdraw_address", "") or ""))
-    full_name = html_mod.escape(str(details.get("full_name", "") or details.get("withdraw_name", "") or ""))
-    extras = details.get("extras", {})
+    details = details or {}
+    # Account numbers arrive under different keys per method (Opay phone,
+    # UPI id, bank account number, wallet address). Resolve every alias so
+    # the admin always SEES the account number instead of a blank/N/A.
+    phone = html_mod.escape(_wd_first(details, (
+        "phone", "account_number", "others_account", "withdraw_phone",
+        "number", "account")))
+    upi = html_mod.escape(_wd_first(details, ("upi_id", "withdraw_upi")))
+    address = html_mod.escape(_wd_first(details, (
+        "address", "withdraw_address", "wallet", "crypto_address")))
+    full_name = html_mod.escape(_wd_first(details, (
+        "full_name", "account_holder", "holder", "withdraw_name",
+        "others_holder")))
+    bank = html_mod.escape(_wd_first(details, ("bank_name", "others_bank", "bank")))
+    currency = html_mod.escape(_wd_first(details, ("currency", "others_currency")))
+    consumed = {"phone", "account_number", "others_account", "withdraw_phone",
+                "number", "account", "upi_id", "withdraw_upi", "address",
+                "withdraw_address", "wallet", "crypto_address", "full_name",
+                "account_holder", "holder", "withdraw_name", "others_holder",
+                "bank_name", "others_bank", "bank", "currency", "others_currency",
+                "extras"}
+    extras = details.get("extras", {}) if isinstance(details.get("extras", {}), dict) else {}
+    # Any detail key we did not already surface explicitly still gets shown so
+    # no account field is silently dropped from the admin's view.
+    leftover = {k: v for k, v in details.items()
+                if k not in consumed and v not in (None, "") and not isinstance(v, dict)}
+    if leftover:
+        extras = {**leftover, **extras}
     extras_str = ""
     if extras:
-        extras_str = "\n".join(f"{html_mod.escape(str(k).title())}: {html_mod.escape(str(v))}" for k, v in extras.items() if v)
+        extras_str = "\n".join(f"{html_mod.escape(str(k).replace('_', ' ').title())}: {html_mod.escape(str(v))}" for k, v in extras.items() if v)
     rate = get_ngn_rate()
     ngn = get_ngn_amount(amount)
     msg = (
@@ -2414,8 +2566,14 @@ def format_withdrawal_notification(user_id, amount, method, details, req_id):
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"\U0001F3E6 <b>Method:</b> {html_mod.escape(method.upper())}\n"
     )
+    if currency:
+        msg += f"\U0001F4B2 <b>Currency:</b> {currency}\n"
     if phone:
         msg += f"\U0001F4F1 <b>Account No:</b> <code>{phone}</code>\n"
+    if upi:
+        msg += f"\U0001F4F1 <b>UPI ID:</b> <code>{upi}</code>\n"
+    if bank:
+        msg += f"\U0001F3E6 <b>Bank:</b> {bank}\n"
     if address:
         msg += f"\U0001F4DD <b>Address:</b> <code>{address}</code>\n"
     if extras_str:
@@ -2532,7 +2690,19 @@ def get_dashboard_stats():
     active_assign = c.fetchone()[0] or 0
     c.execute("SELECT COUNT(*) FROM combos")
     combos = c.fetchone()[0] or 0
+    # Panel / unmatched breakdown for the detailed dashboard
+    try:
+        c.execute("SELECT COUNT(*) FROM otp_logs WHERE assigned_to IS NULL")
+        unmatched = c.fetchone()[0] or 0
+    except Exception:
+        unmatched = 0
+    try:
+        c.execute("SELECT COUNT(*) FROM otp_logs WHERE timestamp LIKE ?", (datetime.now().strftime("%Y-%m-%d") + '%',))
+        otps_today = c.fetchone()[0] or otps_today
+    except Exception:
+        pass
     conn.close()
+    panel_rows, _p_total = get_otp_panel_summary()
     return {
         'active_users_24h': active_users_24h,
         'total_users': total_users,
@@ -2540,8 +2710,77 @@ def get_dashboard_stats():
         'otps_today': otps_today,
         'banned_users': banned,
         'active_assignments': active_assign,
-        'total_combos': combos
+        'total_combos': combos,
+        'unmatched_otps': unmatched,
+        'panel_count': len(panel_rows),
+        'top_panel': (panel_rows[0][0] if panel_rows else None),
     }
+
+def get_otp_panel_summary():
+    """Group otp_logs by panel, newest activity first.
+
+    Returns (rows, total) where each row is
+    (panel, total, otps_today, first_ts, last_ts).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        c.execute("""
+            SELECT COALESCE(NULLIF(panel, ''), 'IVASMS Live') AS p,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN timestamp LIKE ? THEN 1 ELSE 0 END) AS today,
+                   MIN(timestamp) AS first_ts,
+                   MAX(timestamp) AS last_ts
+            FROM otp_logs
+            GROUP BY p
+            ORDER BY total DESC
+        """, (today + '%',))
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return rows, sum(r[1] or 0 for r in rows)
+
+def get_panel_day_detail(panel, limit=40):
+    """Per-day rollup for one panel: date, total, first and last OTP time."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT substr(timestamp, 1, 10) AS day,
+                   COUNT(*) AS total,
+                   MIN(timestamp) AS first_ts,
+                   MAX(timestamp) AS last_ts
+            FROM otp_logs
+            WHERE COALESCE(NULLIF(panel, ''), 'IVASMS Live') = ?
+            GROUP BY day
+            ORDER BY day DESC
+            LIMIT 30
+        """, (panel,))
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return rows
+
+def get_panel_recent_otps(panel, limit=15):
+    """Most recent OTP rows for one panel (time, number, service, country)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT timestamp, number, otp, service, country
+            FROM otp_logs
+            WHERE COALESCE(NULLIF(panel, ''), 'IVASMS Live') = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (panel, limit))
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return rows
 
 def get_uptime():
     delta = datetime.now() - BOT_START_TIME
@@ -3731,7 +3970,7 @@ def send_otp_to_user_and_group(date_str, number, sms, app_name=None):
     user_id = get_user_by_number(number)
     logger.info(f"IVASMS: get_user_by_number('{number}') => {user_id}")
     try:
-        log_otp(number, otp, sms, user_id)
+        log_otp(number, otp, sms, user_id, panel="IVASMS Live")
     except Exception as e:
         logger.error(f"log_otp failed: {e}")
     # Credit user per-OTP price (combo-specific price, else global default)
@@ -4623,8 +4862,16 @@ class ChoiceSMSForwarder:
 
                     # Log OTP to admin panel
                     try:
-                        log_otp(phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', ''), 
-                                otp_display, sms.get('full_text', ''), None)
+                        _log_num = phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', '')
+                        _log_owner = None
+                        try:
+                            _pd = re.sub(r'\D', '', str(_log_num or ''))
+                            if len(_pd) >= 7:
+                                _log_owner = get_user_by_number(_pd)
+                        except Exception:
+                            _log_owner = None
+                        log_otp(_log_num, otp_display, sms.get('full_text', ''), _log_owner,
+                                panel="Choice SMS")
                     except Exception as log_err:
                         logger.error(f"Choice SMS: log_otp failed: {log_err}")
 
@@ -6470,8 +6717,16 @@ class SMSPanelForwarder:
 
                     # Log OTP
                     try:
-                        log_otp(phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', ''),
-                                otp_display, sms.get('full_text', ''), None)
+                        _log_num = phone_digits if phone_digits and phone_digits != 'N/A' else sms.get('phone', '')
+                        _log_owner = None
+                        try:
+                            _pd = re.sub(r'\D', '', str(_log_num or ''))
+                            if len(_pd) >= 7:
+                                _log_owner = get_user_by_number(_pd)
+                        except Exception:
+                            _log_owner = None
+                        log_otp(_log_num, otp_display, sms.get('full_text', ''), _log_owner,
+                                panel=self.name)
                     except:
                         pass
 
@@ -7006,10 +7261,12 @@ def show_traffic(chat_id):
         rates = c.fetchall()
     except Exception:
         pass
-    c.execute("SELECT app_name, country, count FROM traffic_log ORDER BY count DESC LIMIT 20")
-    rows = c.fetchall()
     conn.close()
+    rows, total = get_traffic_rows(25)
     text = pe('stats', '\U0001F4CA') + " <b>NETWORK TRAFFIC</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+    text += pe('phone', '\U0001F4F1') + " <b>Total OTPs:</b> " + str(total) + "\n"
+    text += pe('stats', '\U0001F4CA') + " <b>Routes:</b> " + str(len(rows)) + "\n"
+    text += "\u2501" * 19 + "\n"
     if rates:
         text += "<b>Rates:</b>\n"
         for name, pct in rates:
@@ -7022,8 +7279,9 @@ def show_traffic(chat_id):
         text += "\n<b>Live Traffic:</b>\n"
     if not rows and not rates:
         text += "No data yet."
-    for app, country, count in rows:
+    for app, country, count, pct in rows:
         app_emoji = app_emoji_html(app)
+        grade = traffic_grade(pct)
         rate_disp = ""
         try:
             r = get_traffic_rate(app, country)
@@ -7031,7 +7289,11 @@ def show_traffic(chat_id):
                 rate_disp = " \u2022 " + str(r) + "%"
         except Exception:
             pass
-        text += app_emoji + " <b>" + app + "</b> \u2014 " + country_flag(country) + " " + html_mod.escape(str(country)) + " (" + str(count) + ")" + rate_disp + "\n"
+        text += (app_emoji + " <b>" + html_mod.escape(str(app)) + "</b> \u2014 "
+                 + country_flag(country) + " " + html_mod.escape(str(country)) + "\n"
+                 + "    " + pe('phone', '\U0001F4F1') + " OTPs: <b>" + str(count) + "</b>"
+                 + rate_disp + " \u2022 Match: <b>" + format(pct, '.1f') + "%</b>"
+                 + " \u2022 " + grade_emoji(grade) + " <b>" + grade + "</b>\n")
     markup = types.InlineKeyboardMarkup()
     markup.add(ibtn("Refresh", callback_data="refresh_traffic", style="success", icon="refresh"))
     markup.add(ibtn("Close", callback_data="close_menu", style="danger", icon="cross"))
@@ -7229,6 +7491,40 @@ def sms_panel_type_handler(call):
         set_state(call.message.chat.id, state)
         bot.edit_message_text(pe("key", "🔑") + " Send the panel username:", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
+# ---- Navigation history (per chat) ----
+# Every screen a user opens is remembered so BACK returns to the exact
+# previous screen instead of always jumping to the main menu.
+_NAV_STACK = {}
+_NAV_MAX = 20
+
+def _nav_push(chat_id, data):
+    """Remember a rendered screen so BACK can return to it."""
+    if not data or data in ("nav_back", "close_menu"):
+        return
+    if data.startswith("refresh_"):
+        return  # a refresh re-renders the same screen; don't grow the stack
+    stack = _NAV_STACK.setdefault(chat_id, [])
+    if stack and stack[-1] == data:
+        return
+    stack.append(data)
+    if len(stack) > _NAV_MAX:
+        del stack[:-_NAV_MAX]
+
+def _nav_prev(chat_id):
+    """Pop the current screen and return the one before it (or None)."""
+    stack = _NAV_STACK.get(chat_id) or []
+    if stack:
+        stack.pop()
+    return stack[-1] if stack else None
+
+class _NavCall:
+    """Minimal CallbackQuery stand-in used to replay a previous screen."""
+    def __init__(self, src_call, data):
+        self.data = data
+        self.id = getattr(src_call, "id", None)
+        self.from_user = getattr(src_call, "from_user", None)
+        self.message = getattr(src_call, "message", None)
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.from_user.id
@@ -7263,11 +7559,29 @@ def _dispatch_callback(call, data, chat_id, msg_id, user_id):
         bot.answer_callback_query(call.id, "🚫 You are banned from this bot.", show_alert=True)
         return
 
+    # Remember this screen so a later BACK returns to it.
+    _nav_push(chat_id, data)
+
     if data == "nav_back":
-        # Back button: return to the main menu screen instead of closing
+        # Return to the exact previous screen; only fall back to the main
+        # menu when there is no history left.
+        prev = _nav_prev(chat_id)
+        if prev:
+            try:
+                _dispatch_callback(_NavCall(call, prev), prev, chat_id, msg_id, user_id)
+            except Exception as e:
+                logger.warning(f"nav_back replay of {prev!r} failed: {e}")
+                try:
+                    bot.delete_message(chat_id, msg_id)
+                except Exception:
+                    pass
+                user = get_user(chat_id)
+                fname = (user[2] if user and len(user) > 2 else "") or "User"
+                show_main_menu(chat_id, chat_id, fname)
+            return
         try:
             bot.delete_message(chat_id, msg_id)
-        except:
+        except Exception:
             pass
         user = get_user(chat_id)
         fname = (user[2] if user and len(user) > 2 else "") or "User"
@@ -7782,9 +8096,10 @@ def process_usdt_amount(message):
         bot.reply_to(message, error, parse_mode="HTML")
         return
     address = user_states.get(user_id, {}).get("withdraw_address", "")
-    req_id = create_withdrawal_request(user_id, amount, "usdt", {"address": address})
+    wd_details = {"address": address}
+    req_id = create_withdrawal_request(user_id, amount, "usdt", wd_details)
     bot.reply_to(message, f"✅ Withdrawal request of ${amount:.2f} via USDT submitted.", parse_mode="HTML")
-    notify_admin_withdrawal(user_id, amount, "USDT", details, req_id)
+    notify_admin_withdrawal(user_id, amount, "USDT", wd_details, req_id)
     user_states.pop(user_id, None)
 
 def process_upi_id(message):
@@ -8145,16 +8460,89 @@ def handle_admin_callback(call, data, chat_id, msg_id):
 
     if data == "admin_dashboard":
         stats = get_dashboard_stats()
-        text = (f"{pe('stats', '📊')} <b>DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        rows, p_total = get_otp_panel_summary()
+        top_line = ""
+        if stats.get('top_panel'):
+            top_line = (f"{pe('link', '🔗')} Top Panel: <b>{html_mod.escape(str(stats['top_panel']))}</b>\n")
+        panel_line = (f"{pe('link', '🔗')} Active Panels: <b>{stats.get('panel_count', 0)}</b>\n")
+        text = (f"{pe('stats', '📊')} <b>DASHBOARD</b>\n"
+                f"\u2501" * 19 + "\n"
                 f"{pe('people', '👥')} Active (24h): <b>{stats['active_users_24h']}</b>\n"
                 f"{pe('people', '👥')} Total Users: <b>{stats['total_users']}</b>\n"
                 f"{pe('phone', '📱')} OTPs Today: <b>{stats['otps_today']}</b>\n"
                 f"{pe('phone', '📱')} Total OTPs: <b>{stats['total_otps']}</b>\n"
+                f"{pe('warning_yellow', '⚠️')} Unmatched (admin): <b>{stats.get('unmatched_otps', 0)}</b>\n"
+                f"{panel_line}"
+                f"{top_line}"
                 f"{pe('archive', '📦')} Combos: <b>{stats['total_combos']}</b>\n"
-                f"{pe('hourglass', '⏱️')} Uptime: {get_uptime()}")
-        markup = types.InlineKeyboardMarkup()
+                f"{pe('hourglass', '⏱️')} Uptime: {get_uptime()}\n"
+                f"\u2501" * 19)
+        if rows:
+            text += f"\n{pe('chart_up', '📈')} <b>PANEL BREAKDOWN</b>\n"
+            for p, total, today, _f, _l in rows[:6]:
+                pct = (total / p_total * 100.0) if p_total else 0.0
+                text += (f"\u2022 {html_mod.escape(str(p))}: <b>{total}</b> "
+                         f"({format(pct, '.0f')}%) \u2022 today <b>{today or 0}</b>\n")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(ibtn("OTP Logs", callback_data="admin_otp_logs", style="success", icon="list"))
+        markup.add(ibtn("Withdrawals", callback_data="admin_withdrawals", style="primary", icon="card"))
         markup.add(ibtn("Refresh", callback_data="admin_dashboard", style="success", icon="refresh"))
         markup.add(ibtn("Back", callback_data="admin_panel", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data == "admin_otp_logs":
+        rows, p_total = get_otp_panel_summary()
+        text = (f"{pe('list', '🗂')} <b>OTP LOGS BY PANEL</b>\n"
+                f"\u2501" * 19 + "\n"
+                f"{pe('phone', '📱')} Total OTPs: <b>{p_total}</b>\n"
+                f"{pe('link', '🔗')} Panels: <b>{len(rows)}</b>\n\n")
+        if not rows:
+            text += "No OTPs received yet."
+        else:
+            text += f"{pe('info_bw', 'ℹ')} Tap a panel for day-by-day detail.\n\n"
+            for p, total, today, first_ts, last_ts in rows[:12]:
+                pct = (total / p_total * 100.0) if p_total else 0.0
+                text += (f"{pe('link', '🔗')} <b>{html_mod.escape(str(p))}</b>\n"
+                         f"    \u2022 Total: <b>{total}</b> ({format(pct, '.0f')}%)\n"
+                         f"    \u2022 Today: <b>{today or 0}</b>\n"
+                         f"    \u2022 Last: <code>{html_mod.escape(str(last_ts or 'n/a'))}</code>\n")
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for p, total, _t, _f, _l in rows[:12]:
+            markup.add(ibtn(f"{p} \u2014 {total}", callback_data="admin_otp_panel|" + str(p),
+                            style="primary", icon="list"))
+        markup.add(ibtn("Refresh", callback_data="admin_otp_logs", style="success", icon="refresh"))
+        markup.add(ibtn("Back", callback_data="admin_dashboard", style="danger", icon="back"))
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if data.startswith("admin_otp_panel|"):
+        panel = data.split("|", 1)[1]
+        days = get_panel_day_detail(panel)
+        recent = get_panel_recent_otps(panel, 10)
+        total = sum(d[1] or 0 for d in days)
+        text = (f"{pe('link', '🔗')} <b>{html_mod.escape(panel)}</b>\n"
+                f"\u2501" * 19 + "\n"
+                f"{pe('phone', '📱')} Total OTPs: <b>{total}</b>\n"
+                f"{pe('calendar', '📅')} Active days: <b>{len(days)}</b>\n\n"
+                f"{pe('chart_up', '📈')} <b>BY DAY</b>\n")
+        if not days:
+            text += "No records.\n"
+        else:
+            for day, cnt, first_ts, last_ts in days[:14]:
+                f_t = (str(first_ts or "").split(" ")[-1]) or "--:--"
+                l_t = (str(last_ts or "").split(" ")[-1]) or "--:--"
+                text += (f"\u2022 <code>{html_mod.escape(str(day))}</code>: <b>{cnt}</b> "
+                         f"\u2022 {f_t}\u2192{l_t}\n")
+        if recent:
+            text += f"\n{pe('info_bw', 'ℹ')} <b>RECENT</b>\n"
+            for ts, num, otp, svc, ctry in recent[:6]:
+                t = (str(ts or "").split(" ")[-1]) or "--:--"
+                text += (f"\u2022 {t} \u2022 {html_mod.escape(str(svc or 'svc'))} "
+                         f"\u2022 {country_flag(ctry)} {html_mod.escape(str(num or ''))}\n")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(ibtn("Back to Panels", callback_data="admin_otp_logs", style="primary", icon="back"))
+        markup.add(ibtn("Back to Dashboard", callback_data="admin_dashboard", style="danger", icon="back"))
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         return
 
@@ -8654,6 +9042,7 @@ def handle_admin_callback(call, data, chat_id, msg_id):
             conn.close()
             if row:
                 try:
+                    amt_str = f"${row[1]:.2f}"
                     bot.send_message(row[0], pe('checkmark', "\u2705") + " <b>Withdrawal Approved</b>\n" + amt_str + " has been processed.", parse_mode="HTML")
                 except:
                     pass
@@ -9695,7 +10084,15 @@ def combo_custom_app_handler(message):
 
 def admin_reject_reason_step(message):
     st = user_states.get(message.chat.id, {})
-    reason = message.text if message.text.lower() != '/skip' else "Rejected by admin"
+    if not isinstance(st, dict):
+        st = {}
+    # The pending request id was stashed by the admin_reject_wd callback.
+    req_id = st.get("reject_reason")
+    if not req_id:
+        bot.send_message(message.chat.id, "❌ No pending rejection. Use /withdrawals to review requests.", parse_mode="HTML")
+        return
+    raw = (message.text or "").strip()
+    reason = "Rejected by admin" if raw.lower() == '/skip' else (raw or "Rejected by admin")
     success, result = reject_withdrawal(req_id, message.chat.id, reason)
     if success:
         bot.send_message(message.chat.id, f"{pe('checkmark', '✅')} Withdrawal {req_id} rejected.", parse_mode="HTML")
